@@ -46,12 +46,6 @@ export class MainKbModal extends Modal {
       return;
     }
 
-    contentEl.createEl("p", {
-      text:
-        `Connects this vault to a personal repo in ${org}. Everything stays private by default — ` +
-        `only notes and folders you mark “Share to my knowledge base” are backed up there for the team.`,
-    });
-
     // Mode tabs
     const tabs = contentEl.createDiv("covault-tabs");
     const tab = (label: string, mode: Mode) => {
@@ -65,8 +59,8 @@ export class MainKbModal extends Modal {
         this.onOpen(); // full re-render; mode/name/selection live in fields
       };
     };
-    tab("Use an existing repo", "existing");
-    tab("Create a new repo", "create");
+    tab("Use an existing knowledge base", "existing");
+    tab("Create a new one", "create");
 
     this.bodyEl = contentEl.createDiv();
     this.renderBody();
@@ -122,33 +116,22 @@ export class MainKbModal extends Modal {
     const org = this.plugin.settings.baseOrg;
 
     if (this.mode === "existing") {
-      const setting = new Setting(this.bodyEl)
-        .setName("Repository")
-        .setDesc(this.repos === null ? `Loading repos in ${org}…` : `Repos you can access in ${org}.`);
-      if (this.repos !== null) {
-        if (this.repos.length === 0) {
-          setting.setDesc(`No repos found in ${org} — create one instead.`);
-        } else {
-          setting.addDropdown((dd) => {
-            for (const r of this.repos ?? []) dd.addOption(r, r);
-            dd.setValue(this.selected).onChange((v) => (this.selected = v));
-          });
-        }
+      const setting = new Setting(this.bodyEl).setName("Knowledge base");
+      if (this.repos === null) setting.setDesc("Loading…");
+      else if (this.repos.length === 0) setting.setDesc(`Nothing in ${org} yet — create one instead.`);
+      else {
+        setting.addDropdown((dd) => {
+          for (const r of this.repos ?? []) dd.addOption(r, r);
+          dd.setValue(this.selected).onChange((v) => (this.selected = v));
+        });
       }
-      this.bodyEl.createEl("p", {
-        cls: "setting-item-description",
-        text:
-          "Its contents will be pulled into this vault. Where a note exists on both sides, " +
-          "the repo's version is used and yours is kept next to it as “(local copy)”.",
-      });
       this.cta("Connect and pull", () => void this.submit("adopt"), this.repos !== null && this.repos.length > 0);
       return;
     }
 
     // Create mode
     new Setting(this.bodyEl)
-      .setName("Repository name")
-      .setDesc(`Created private in ${org} — convention: personal-kb-<you>.`)
+      .setName("Name")
       .addText((t) =>
         t.setValue(this.name).onChange((v) => {
           this.name = v.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
@@ -158,19 +141,19 @@ export class MainKbModal extends Modal {
     const status = this.bodyEl.createDiv({ cls: "setting-item-description" });
     switch (this.nameState) {
       case "checking":
-        status.setText(`Checking ${org}/${this.name}…`);
+        status.setText("Checking…");
         break;
       case "free":
-        status.setText(`✨ ${org}/${this.name} is available — your marked notes will be its first commit.`);
+        status.setText(`✨ ${this.name} is available.`);
         break;
       case "taken":
-        status.setText(`⚠ ${org}/${this.name} already exists. Pick another name, or use the existing-repo tab.`);
+        status.setText(`⚠ ${this.name} already exists — pick another name.`);
         break;
       case "unknown":
-        status.setText("Couldn't check the name — you can still continue.");
+        status.setText("Couldn't check the name.");
         break;
       default:
-        status.setText("Enter a repository name.");
+        status.setText("Enter a name.");
     }
     this.cta("Create and connect", () => void this.submit("create"), this.nameState !== "taken" && !!this.name);
   }

@@ -67,11 +67,17 @@ export interface SyncResult {
   conflictFilepaths: string[];
 }
 
-/** "notes/plan.md" → "notes/plan (local copy).md" */
-function backupNameFor(filepath: string): string {
+/** "notes/plan.md" → "notes/plan (local copy 2026-08-13 17-42).md" — the
+ *  stamp keeps repeat setups from clobbering an earlier backup and tells
+ *  the user when the copy was taken. */
+function backupNameFor(filepath: string, now = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  const stamp =
+    `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} ` + `${p(now.getHours())}-${p(now.getMinutes())}`;
+  const tag = `(local copy ${stamp})`;
   const dot = filepath.lastIndexOf(".");
   const slash = filepath.lastIndexOf("/");
-  return dot > slash ? `${filepath.slice(0, dot)} (local copy)${filepath.slice(dot)}` : `${filepath} (local copy)`;
+  return dot > slash ? `${filepath.slice(0, dot)} ${tag}${filepath.slice(dot)}` : `${filepath} ${tag}`;
 }
 
 function dirnameOf(absolutePath: string): string {

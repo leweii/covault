@@ -184,8 +184,9 @@ describe("GitEngine against a real smart-HTTP remote", () => {
     // Remote content materialized; the overlapping file kept aside.
     expect(fs.existsSync(path.join(vaultRoot, "old-notes.md"))).toBe(true);
     expect(fs.readFileSync(path.join(vaultRoot, "both.md"), "utf8")).toContain("Remote wins");
-    expect(backedUp).toEqual(["both (local copy).md"]);
-    expect(fs.readFileSync(path.join(vaultRoot, "both (local copy).md"), "utf8")).toContain("Local version");
+    expect(backedUp).toHaveLength(1);
+    expect(backedUp[0]).toMatch(/^both \(local copy \d{4}-\d{2}-\d{2} \d{2}-\d{2}\)\.md$/);
+    expect(fs.readFileSync(path.join(vaultRoot, backedUp[0]!), "utf8")).toContain("Local version");
     // Local-only files survive untouched and uncommitted (nothing marked yet).
     expect(fs.existsSync(path.join(vaultRoot, "my-note.md"))).toBe(true);
     expect(await engineA.localChanges(ref, { include: [] })).toEqual([]);
