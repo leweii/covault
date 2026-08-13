@@ -38,7 +38,7 @@ function fhRenderDiff(container: HTMLElement, diffText: string): void {
     container.createEl("p", { cls: "covault-fh-diff-empty", text: "No changes." });
     return;
   }
-  const table = container.createEl("div", { cls: "covault-fh-diff-table" });
+  const table = container.createDiv({ cls: "covault-fh-diff-table" });
   let oldLine = 0,
     newLine = 0;
   for (const line of diffText.split("\n")) {
@@ -61,10 +61,10 @@ function fhRenderDiff(container: HTMLElement, diffText: string): void {
       continue;
     }
 
-    const row = table.createEl("div", { cls: "covault-fh-diff-line" });
-    const oldNumEl = row.createEl("span", { cls: "covault-fh-diff-lno" });
-    const newNumEl = row.createEl("span", { cls: "covault-fh-diff-lno" });
-    const textEl = row.createEl("span", { cls: "covault-fh-diff-text" });
+    const row = table.createDiv({ cls: "covault-fh-diff-line" });
+    const oldNumEl = row.createSpan({ cls: "covault-fh-diff-lno" });
+    const newNumEl = row.createSpan({ cls: "covault-fh-diff-lno" });
+    const textEl = row.createSpan({ cls: "covault-fh-diff-text" });
     textEl.textContent = line;
     if (line.startsWith("+")) {
       row.addClass("covault-fh-diff-add");

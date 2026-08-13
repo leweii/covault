@@ -71,6 +71,7 @@ export default class CovaultPlugin extends Plugin {
       http: obsidianHttp,
       tokens: this.appAuth,
       author: () => this.gitAuthor(),
+      configDir: () => this.app.vault.configDir,
     });
     this.libraryManifest = new ManifestStore(this.vaultBasePath());
     await this.migrateReposToManifest();

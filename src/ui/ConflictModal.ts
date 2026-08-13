@@ -288,7 +288,7 @@ export class ConflictModal extends Modal {
 
     // Hunk nav
     const nav = main.createDiv("covault-cv2-hunk-nav");
-    nav.createEl("span", {
+    nav.createSpan({
       cls: "covault-cv2-hunk-label",
       text: `Conflict ${this.currentHunk + 1} of ${this.file().hunks.length}${this.editMode ? " — editing" : ""}`,
     });

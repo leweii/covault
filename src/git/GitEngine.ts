@@ -36,6 +36,8 @@ export interface GitEngineDeps {
   http: HttpClient;
   tokens: TokenProvider;
   author: () => Author;
+  /** Obsidian's config folder name — user-configurable, not always ".obsidian". */
+  configDir?: () => string;
 }
 
 export type ChangeKind = "added" | "modified" | "deleted";
@@ -74,8 +76,9 @@ function hasConflictMarkers(content: string): boolean {
 /** Vault paths that must never be committed into a knowledge repo.
  *  (.covault/covault.json is NOT excluded: it must ride along in the
  *  main repo — that's how libraries/marks propagate across machines.
- *  .covault/main.git IS: it's the main repo's own git directory.) */
-const ALWAYS_EXCLUDED = [".obsidian", ".trash", ".covault/main.git"];
+ *  .covault/main.git IS: it's the main repo's own git directory. The
+ *  Obsidian config folder is appended per-engine via deps.configDir.) */
+const ALWAYS_EXCLUDED = [".trash", ".covault/main.git"];
 
 export class GitEngine {
   constructor(private deps: GitEngineDeps) {}
@@ -185,7 +188,7 @@ export class GitEngine {
    * at all — the personal main repo shares nothing by default.
    */
   async localChanges(ref: RepoRef, opts: { exclude?: string[]; include?: string[] } = {}): Promise<LocalChange[]> {
-    const excluded = [...ALWAYS_EXCLUDED, ...(opts.exclude ?? [])];
+    const excluded = [...ALWAYS_EXCLUDED, this.deps.configDir?.() ?? ".obsidian", ...(opts.exclude ?? [])];
     const include = opts.include;
     const matrix = await git.statusMatrix({
       fs: this.deps.fs,
