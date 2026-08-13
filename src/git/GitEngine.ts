@@ -192,13 +192,12 @@ export class GitEngine {
       dir: ref.dir,
       gitdir: ref.gitdir,
       filter: (f) => {
-        // Exclusion always wins — even include "*" can never leak a
+        // Exclusion is evaluated first — no include value can leak a
         // nested library (or vault machinery) into this repo.
         if (excluded.some((e) => f === e || f.startsWith(`${e}/`))) return false;
         if (!include) return true;
         // Only the manifest itself — never .covault/main.git or other state.
         if (f === ".covault/manifest.json") return true;
-        if (include.includes("*")) return true; // share-everything mode
         return include.some((p) => f === p || f.startsWith(`${p}/`));
       },
     });
