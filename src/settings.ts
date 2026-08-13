@@ -1,0 +1,77 @@
+/**
+ * Covault settings model.
+ *
+ * Secret fields (deviceId, githubToken, githubApp.connections, llmKeys)
+ * are never written to data.json — they live in the per-device secret
+ * store outside the vault (see config/secretStore.ts). Everything else is
+ * plain machine state that is safe to sync with the vault.
+ */
+
+export interface GitHubAppInstallation {
+  id: number;
+  accountLogin: string;
+}
+
+export interface GitHubAppConnection {
+  /** Backend session id — pairs with deviceId, treat as a secret. */
+  sessionId: string;
+  /** GitHub login of the user who authorized. */
+  login: string;
+  installations: GitHubAppInstallation[];
+}
+
+export type AuthMethod = "githubApp" | "pat";
+
+/** One shared knowledge library: a vault subfolder backed by its own repo.
+ *  (M3 moves this list into .covault/manifest.json so it propagates.) */
+export interface SharedRepoSetting {
+  /** Vault-relative folder path, e.g. "teams/platform-kb". */
+  path: string;
+  url: string;
+  branch: string;
+}
+
+export interface CovaultSettings {
+  authMethod: AuthMethod;
+  /** PAT fallback mode (secret). */
+  githubToken: string;
+  /** Per-device id, half of the backend device binding (secret). */
+  deviceId: string;
+  /** GitHub App connections (secret — carry backend session ids). */
+  githubApp: { connections: GitHubAppConnection[] };
+
+  /** Selected LLM provider/model (pi-ai provider id + model id), plus
+   *  user-authored rules appended to the conflict-merge system prompt. */
+  llm: { provider: string; model: string; conflictInstructions: string };
+  /** API keys keyed by pi-ai provider id (secret). */
+  llmKeys: Record<string, string>;
+
+  sync: {
+    auto: boolean;
+    intervalMinutes: number;
+  };
+
+  repos: SharedRepoSetting[];
+
+  /** Commit identity ("who saved this"). Empty → derived from the login. */
+  author: { name: string; email: string };
+
+  /** The org every knowledge repo (shared libraries + personal KBs) lives in. */
+  baseOrg: string;
+  /** Personal knowledge base: the vault root synced to a personal repo. */
+  mainRepo: { url: string; branch: string } | null;
+}
+
+export const DEFAULT_SETTINGS: CovaultSettings = {
+  authMethod: "githubApp",
+  githubToken: "",
+  deviceId: "",
+  githubApp: { connections: [] },
+  llm: { provider: "anthropic", model: "", conflictInstructions: "" },
+  llmKeys: {},
+  sync: { auto: true, intervalMinutes: 10 },
+  repos: [],
+  author: { name: "", email: "" },
+  baseOrg: "",
+  mainRepo: null,
+};
