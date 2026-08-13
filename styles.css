@@ -59,19 +59,24 @@
 }
 /* ─── File History Modal ──────────────────────────────────────── */
 
-.covault-fh-modal {
-  width: min(95vw, 1100px) !important;
-  height: min(90vh, 860px) !important;
-  display: flex !important;
-  flex-direction: column !important;
+/* Specificity (.modal.covault-fh-modal, 0-2-0) beats Obsidian's own
+   .modal sizing rules without resorting to !important — same pattern as
+   the conflict modal below. */
+.modal.covault-fh-modal {
+  width: min(95vw, 1100px);
+  max-width: none;
+  height: min(90vh, 860px);
+  max-height: none;
+  display: flex;
+  flex-direction: column;
 }
 
-.covault-fh-content {
+.modal.covault-fh-modal .covault-fh-content {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  padding: 0 !important;
+  padding: 0;
 }
 
 .covault-fh-header {
