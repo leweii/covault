@@ -23,7 +23,7 @@ export interface GitHubAppConnection {
 export type AuthMethod = "githubApp" | "pat";
 
 /** One shared knowledge library: a vault subfolder backed by its own repo.
- *  (M3 moves this list into .covault/manifest.json so it propagates.) */
+ *  (M3 moved this list into .covault/covault.json so it propagates.) */
 export interface SharedRepoSetting {
   /** Vault-relative folder path, e.g. "teams/platform-kb". */
   path: string;

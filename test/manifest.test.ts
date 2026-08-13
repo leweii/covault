@@ -64,9 +64,10 @@ describe("ManifestStore", () => {
 
   it("survives a corrupt file", () => {
     fs.mkdirSync(path.join(vault, ".covault"));
-    fs.writeFileSync(path.join(vault, ".covault", "manifest.json"), "{not json");
+    fs.writeFileSync(path.join(vault, ".covault", "covault.json"), "{not json");
     expect(new ManifestStore(vault).load()).toEqual({ version: 1, repos: [], include: [] });
   });
+
 });
 
 describe("ensureIgnored", () => {

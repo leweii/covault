@@ -201,7 +201,7 @@ describe("GitEngine against a real smart-HTTP remote", () => {
     fs.writeFileSync(path.join(vaultRoot, "private", "diary.md"), "# secret\n");
     fs.writeFileSync(path.join(vaultRoot, "loose-note.md"), "# loose\n");
     fs.writeFileSync(path.join(vaultRoot, "shared-notes", "howto.md"), "# howto\n");
-    fs.writeFileSync(path.join(vaultRoot, ".covault", "manifest.json"), `{"version":1,"repos":[],"include":["shared-notes"]}\n`);
+    fs.writeFileSync(path.join(vaultRoot, ".covault", "covault.json"), `{"version":1,"repos":[],"include":["shared-notes"]}\n`);
     const ref: RepoRef = { dir: vaultRoot, url: `${server.url}/optin-kb.git`, branch: "main" };
 
     await engineA.adoptRemote(ref, "Set up personal knowledge base", { include: ["shared-notes"] });
@@ -209,7 +209,7 @@ describe("GitEngine against a real smart-HTTP remote", () => {
     const check: RepoRef = { dir: path.join(root, "optin-check"), url: ref.url, branch: "main" };
     await engineB.clone(check);
     expect(fs.existsSync(path.join(check.dir, "shared-notes", "howto.md"))).toBe(true);
-    expect(fs.existsSync(path.join(check.dir, ".covault", "manifest.json"))).toBe(true); // manifest propagates
+    expect(fs.existsSync(path.join(check.dir, ".covault", "covault.json"))).toBe(true); // manifest propagates
     expect(fs.existsSync(path.join(check.dir, "private"))).toBe(false);
     expect(fs.existsSync(path.join(check.dir, "loose-note.md"))).toBe(false);
 

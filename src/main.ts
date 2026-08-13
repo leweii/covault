@@ -232,7 +232,7 @@ export default class CovaultPlugin extends Plugin {
     return repos;
   }
 
-  /** One-time migration: settings.repos (M2) → .covault/manifest.json. */
+  /** One-time migration: settings.repos (M2) → the .covault manifest. */
   private async migrateReposToManifest(): Promise<void> {
     if (this.settings.repos.length === 0) return;
     for (const repo of this.settings.repos) this.libraryManifest.add(repo);

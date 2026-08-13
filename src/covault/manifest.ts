@@ -1,5 +1,5 @@
 /**
- * .covault/manifest.json — the single source of truth for which vault
+ * .covault/covault.json — the single source of truth for which vault
  * folders are shared knowledge libraries (the "virtual submodule" map).
  *
  * It lives at the vault root so that users who sync their vault root as a
@@ -33,7 +33,7 @@ export class ManifestStore {
   constructor(private vaultBase: string) {}
 
   private filePath(): string {
-    return path.join(this.vaultBase, ".covault", "manifest.json");
+    return path.join(this.vaultBase, ".covault", "covault.json");
   }
 
   load(): CovaultManifest {

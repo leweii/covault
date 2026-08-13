@@ -72,7 +72,7 @@ function hasConflictMarkers(content: string): boolean {
 }
 
 /** Vault paths that must never be committed into a knowledge repo.
- *  (.covault/manifest.json is NOT excluded: it must ride along in the
+ *  (.covault/covault.json is NOT excluded: it must ride along in the
  *  main repo — that's how libraries/marks propagate across machines.
  *  .covault/main.git IS: it's the main repo's own git directory.) */
 const ALWAYS_EXCLUDED = [".obsidian", ".trash", ".covault/main.git"];
@@ -197,7 +197,7 @@ export class GitEngine {
         if (excluded.some((e) => f === e || f.startsWith(`${e}/`))) return false;
         if (!include) return true;
         // Only the manifest itself — never .covault/main.git or other state.
-        if (f === ".covault/manifest.json") return true;
+        if (f === ".covault/covault.json") return true;
         return include.some((p) => f === p || f.startsWith(`${p}/`));
       },
     });
