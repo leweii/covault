@@ -67,6 +67,18 @@ export interface SyncResult {
   conflictFilepaths: string[];
 }
 
+/** "notes/plan.md" → "notes/plan (local copy).md" */
+function backupNameFor(filepath: string): string {
+  const dot = filepath.lastIndexOf(".");
+  const slash = filepath.lastIndexOf("/");
+  return dot > slash ? `${filepath.slice(0, dot)} (local copy)${filepath.slice(dot)}` : `${filepath} (local copy)`;
+}
+
+function dirnameOf(absolutePath: string): string {
+  const slash = absolutePath.lastIndexOf("/");
+  return slash <= 0 ? "/" : absolutePath.slice(0, slash);
+}
+
 /** All three git conflict markers at line starts — a note merely *talking*
  *  about git (one marker in a code block) doesn't trip this. */
 function hasConflictMarkers(content: string): boolean {
@@ -112,11 +124,15 @@ export class GitEngine {
    * branch, point origin at the (empty) remote, commit everything, push.
    * Idempotent enough to retry after a partial failure.
    */
-  async initAndPush(ref: RepoRef, message: string): Promise<void> {
+  async initAndPush(
+    ref: RepoRef,
+    message: string,
+    opts: { exclude?: string[]; include?: string[] } = {},
+  ): Promise<void> {
     const { fs } = this.deps;
     await git.init({ fs, dir: ref.dir, gitdir: ref.gitdir, defaultBranch: ref.branch });
     await git.addRemote({ fs, dir: ref.dir, gitdir: ref.gitdir, remote: "origin", url: ref.url, force: true });
-    const changes = await this.localChanges(ref);
+    const changes = await this.localChanges(ref, opts);
     const hasHead = (await this.resolve(ref, "HEAD")) !== null;
     if (changes.length > 0 || !hasHead) {
       await this.commitAll(ref, message, changes);
@@ -125,48 +141,58 @@ export class GitEngine {
   }
 
   /**
-   * Bind an existing content-bearing folder (typically the vault root) to
-   * a remote that may or may not already have history: init, commit local
-   * content, and — when the remote has commits — merge them in
-   * (allowUnrelatedHistories, since the two sides never shared a base).
-   * A same-file conflict throws MergeConflictError for the caller's UI.
+   * Bind a content-bearing folder (typically the vault root) to a remote
+   * that already has history, taking the remote as the truth.
+   *
+   * Deliberately never merges: the two sides share no history, so a merge
+   * would conflict on every overlapping file — and this runs during setup,
+   * before the user has necessarily configured an AI provider to resolve
+   * anything. Instead the local branch is pointed at the remote and
+   * checked out; a local file the remote would overwrite is copied aside
+   * first ("note (local copy).md") so nothing is lost silently.
+   *
+   * Local files the remote doesn't have are untouched and uncommitted —
+   * the next sync ships whichever of them are marked for sharing, as a
+   * plain fast-forward.
    */
-  async adoptRemote(
-    ref: RepoRef,
-    message: string,
-    opts: { exclude?: string[]; include?: string[] } = {},
-  ): Promise<void> {
+  async adoptRemote(ref: RepoRef, opts: { onBackup?: (path: string) => void } = {}): Promise<string[]> {
     const { fs } = this.deps;
     await git.init({ fs, dir: ref.dir, gitdir: ref.gitdir, defaultBranch: ref.branch });
     await git.addRemote({ fs, dir: ref.dir, gitdir: ref.gitdir, remote: "origin", url: ref.url, force: true });
+    await git.fetch({ ...this.common(ref), remote: "origin", ref: ref.branch, singleBranch: true });
 
-    const changes = await this.localChanges(ref, opts);
-    const hasHead = (await this.resolve(ref, "HEAD")) !== null;
-    if (changes.length > 0 || !hasHead) {
-      await this.commitAll(ref, message, changes);
-    }
-
-    try {
-      await git.fetch({ ...this.common(ref), remote: "origin", ref: ref.branch, singleBranch: true });
-    } catch {
-      /* brand-new empty remote — nothing to fetch */
-    }
     const remote = await this.resolve(ref, `refs/remotes/origin/${ref.branch}`);
-    const local = await this.resolve(ref, `refs/heads/${ref.branch}`);
-    if (remote && local && remote !== local) {
-      await git.merge({
-        fs,
-        dir: ref.dir,
-        gitdir: ref.gitdir,
-        ours: ref.branch,
-        theirs: `remotes/origin/${ref.branch}`,
-        abortOnConflict: false,
-        allowUnrelatedHistories: true,
-        author: this.deps.author(),
-      });
-      await git.checkout({ fs, dir: ref.dir, gitdir: ref.gitdir, ref: ref.branch });
+    if (!remote) throw new Error(`The remote has no "${ref.branch}" branch yet.`);
+
+    // Preserve local versions of files the remote checkout would replace.
+    const backedUp: string[] = [];
+    for (const filepath of await git.listFiles({ fs, dir: ref.dir, gitdir: ref.gitdir, ref: remote })) {
+      const absolute = `${ref.dir}/${filepath}`;
+      let local: string;
+      try {
+        local = await fs.promises.readFile(absolute, "utf8");
+      } catch {
+        continue; // not present locally — the checkout just creates it
+      }
+      const incoming = await this.readFileAt(ref, remote, filepath);
+      if (incoming === null || incoming === local) continue;
+      const backupPath = backupNameFor(filepath);
+      await fs.promises.mkdir(dirnameOf(`${ref.dir}/${backupPath}`), { recursive: true });
+      await fs.promises.writeFile(`${ref.dir}/${backupPath}`, local);
+      backedUp.push(backupPath);
+      opts.onBackup?.(backupPath);
     }
-    await this.push(ref);
+
+    await git.writeRef({
+      fs,
+      dir: ref.dir,
+      gitdir: ref.gitdir,
+      ref: `refs/heads/${ref.branch}`,
+      value: remote,
+      force: true,
+    });
+    await git.checkout({ fs, dir: ref.dir, gitdir: ref.gitdir, ref: ref.branch, force: true });
+    return backedUp;
   }
 
   async isRepo(ref: RepoRef): Promise<boolean> {

@@ -1,26 +1,30 @@
 import { Modal, Notice, Setting, type App } from "obsidian";
 import type CovaultPlugin from "../main";
 import { addCollaborator, createOrgRepo, repoExists, RepoExistsError } from "../git/githubApi";
-import { ConfirmModal } from "./ConfirmModal";
+
+type Mode = "existing" | "create";
 
 /**
- * Guided personal knowledge base setup. One editable repo-name field,
- * validated live (debounced) against the base org:
- *   - name exists  → "will connect to it and pull" / button: Connect
- *   - name is free → "will be created"            / button: Create
- * Probing uses an un-narrowed token — narrowed tokens 404 on everything
- * outside their allowlist, which would make the check meaningless.
+ * Guided personal knowledge base setup, with two paths that both avoid
+ * merge conflicts entirely (setup often happens before an AI provider is
+ * configured, so there'd be nothing to resolve them with):
+ *
+ *   existing → pick one of your org's repos; its content wins and is
+ *              pulled in, local versions of overlapping notes are kept
+ *              aside as "(local copy)".
+ *   create   → name a repo that doesn't exist yet; your marked notes
+ *              become its first commit, so there is nothing to conflict.
  */
 export class MainKbModal extends Modal {
+  private mode: Mode = "create";
+  private repos: string[] | null = null; // null = still loading
+  private selected = "";
   private name: string;
-  private exists: boolean | null = null; // null = check pending/unknown
+  private nameState: "idle" | "checking" | "free" | "taken" | "unknown" = "idle";
   private token = "";
   private busy = false;
-  private checkSeq = 0;
   private debounceId: number | null = null;
-
-  private statusEl!: HTMLElement;
-  private ctaBtn!: HTMLButtonElement;
+  private bodyEl!: HTMLElement;
 
   constructor(
     app: App,
@@ -34,12 +38,11 @@ export class MainKbModal extends Modal {
   onOpen(): void {
     this.titleEl.setText("Set up your personal knowledge base");
     const { contentEl } = this;
+    contentEl.empty();
     const org = this.plugin.settings.baseOrg;
 
     if (!org) {
-      contentEl.createEl("p", {
-        text: "Choose a base organization first (Settings → Covault → GitHub).",
-      });
+      contentEl.createEl("p", { text: "Choose a base organization first (Settings → Covault → GitHub)." });
       return;
     }
 
@@ -49,129 +52,186 @@ export class MainKbModal extends Modal {
         `only notes and folders you mark “Share to my knowledge base” are backed up there for the team.`,
     });
 
-    new Setting(contentEl)
-      .setName("Repository name")
-      .setDesc(`In ${org} — convention: personal-kb-<you>.`)
-      .addText((t) =>
-        t.setValue(this.name).onChange((v) => {
-          this.name = v.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
-          this.scheduleCheck();
-        }),
-      );
+    // Mode tabs
+    const tabs = contentEl.createDiv("covault-tabs");
+    const tab = (label: string, mode: Mode) => {
+      const btn = tabs.createEl("button", {
+        text: label,
+        cls: "covault-tab" + (this.mode === mode ? " is-active" : ""),
+      });
+      btn.onclick = () => {
+        if (this.mode === mode) return;
+        this.mode = mode;
+        this.onOpen(); // full re-render; mode/name/selection live in fields
+      };
+    };
+    tab("Use an existing repo", "existing");
+    tab("Create a new repo", "create");
 
-    this.statusEl = contentEl.createDiv({ cls: "setting-item-description" });
+    this.bodyEl = contentEl.createDiv();
+    this.renderBody();
 
-    new Setting(contentEl).addButton((btn) => {
-      this.ctaBtn = btn.buttonEl;
-      btn
-        .setButtonText("Set up")
-        .setCta()
-        .onClick(() => void this.submit());
-    });
-
-    void this.runCheck();
-  }
-
-  private scheduleCheck(): void {
-    if (this.debounceId !== null) window.clearTimeout(this.debounceId);
-    this.exists = null;
-    this.statusEl.setText(this.name ? "…" : "Enter a repository name.");
-    this.ctaBtn.disabled = true;
-    this.debounceId = window.setTimeout(() => void this.runCheck(), 450);
-  }
-
-  /** Live existence check; stale responses (fast typing) are discarded. */
-  private async runCheck(): Promise<void> {
-    const org = this.plugin.settings.baseOrg;
-    const name = this.name;
-    if (!name) return;
-    const seq = ++this.checkSeq;
-    this.statusEl.setText(`Checking ${org}/${name}…`);
-    this.ctaBtn.disabled = true;
-    try {
-      if (!this.token) this.token = await this.plugin.appAuth.getRepoCreationToken(org);
-      const exists = await repoExists(this.token, org, name);
-      if (seq !== this.checkSeq) return; // superseded by newer input
-      this.exists = exists;
-      if (exists) {
-        this.statusEl.setText(
-          `✓ ${org}/${name} already exists — your vault will connect to it and pull its contents in.`,
-        );
-        this.ctaBtn.setText("Connect and pull");
-      } else {
-        this.statusEl.setText(`✨ ${org}/${name} doesn't exist yet — it will be created (private).`);
-        this.ctaBtn.setText("Create and set up");
-      }
-      this.ctaBtn.disabled = false;
-    } catch (e) {
-      if (seq !== this.checkSeq) return;
-      // Can't verify (offline, token trouble): allow submit, which
-      // re-validates via the create→exists fallback anyway.
-      this.exists = null;
-      this.statusEl.setText(`Couldn't check (${(e as Error).message}) — you can still continue.`);
-      this.ctaBtn.setText("Set up");
-      this.ctaBtn.disabled = false;
-    }
-  }
-
-  private async submit(): Promise<void> {
-    if (this.busy || !this.name) return;
-    const s = this.plugin.settings;
-    const org = s.baseOrg;
-    const login = s.githubApp.connections[0]?.login;
-    const idleLabel = this.ctaBtn.textContent ?? "Set up";
-    this.busy = true;
-    this.ctaBtn.disabled = true;
-    this.ctaBtn.setText("Setting up…");
-    try {
-      const token = this.token || (await this.plugin.appAuth.getRepoCreationToken(org));
-
-      if (this.exists !== true) {
-        try {
-          await createOrgRepo(token, org, this.name, true);
-        } catch (e) {
-          // Check was skipped/stale and the name is taken — same answer:
-          // offer to connect to the existing repo.
-          if (!(e instanceof RepoExistsError)) throw e;
-          const ok = await ConfirmModal.ask(this.app, {
-            title: "Repository already exists",
-            message:
-              `"${this.name}" already exists in ${org}. Connect your vault to it instead? ` +
-              `Its current contents will be pulled in and merged with your notes first.`,
-            cta: "Connect and pull",
-          });
-          if (!ok) {
-            this.busy = false;
-            this.ctaBtn.disabled = false;
-            this.ctaBtn.setText(idleLabel);
-            return;
-          }
-        }
-      }
-
-      if (login) {
-        // Best-effort: the App owns the repo's creation, so make sure the
-        // human owner can write. Others keep the org default (read-only).
-        try {
-          await addCollaborator(token, org, this.name, login, "admin");
-        } catch (e) {
-          console.warn("[covault] couldn't add owner as collaborator:", e);
-        }
-      }
-
-      await this.plugin.setupMainKb(`https://github.com/${org}/${this.name}.git`, "main");
-      new Notice(`Covault: your personal knowledge base is connected to ${org}/${this.name}.`);
-      this.close();
-    } catch (e) {
-      new Notice(`Covault: setup failed — ${(e as Error).message}`);
-      this.ctaBtn.disabled = false;
-      this.ctaBtn.setText(idleLabel);
-      this.busy = false;
-    }
+    if (this.mode === "existing" && this.repos === null) void this.loadRepos();
+    if (this.mode === "create" && this.nameState === "idle") void this.checkName();
   }
 
   onClose(): void {
     if (this.debounceId !== null) window.clearTimeout(this.debounceId);
     this.contentEl.empty();
+  }
+
+  private async loadRepos(): Promise<void> {
+    const org = this.plugin.settings.baseOrg;
+    const groups = await this.plugin.appAuth.listAccessibleRepos();
+    const all = (groups.find((g) => g.login === org)?.repos ?? []).map((r) => r.split("/")[1] ?? r);
+    // Personal KBs first — they're what this dialog is usually for.
+    this.repos = [...all.filter((r) => r.startsWith("personal-kb-")), ...all.filter((r) => !r.startsWith("personal-kb-"))];
+    if (!this.selected) this.selected = this.repos[0] ?? "";
+    this.renderBody();
+  }
+
+  private scheduleNameCheck(): void {
+    if (this.debounceId !== null) window.clearTimeout(this.debounceId);
+    this.nameState = "checking";
+    this.renderBody();
+    this.debounceId = window.setTimeout(() => void this.checkName(), 450);
+  }
+
+  private async checkName(): Promise<void> {
+    const org = this.plugin.settings.baseOrg;
+    if (!this.name) {
+      this.nameState = "idle";
+      this.renderBody();
+      return;
+    }
+    this.nameState = "checking";
+    this.renderBody();
+    try {
+      if (!this.token) this.token = await this.plugin.appAuth.getRepoCreationToken(org);
+      const taken = await repoExists(this.token, org, this.name);
+      this.nameState = taken ? "taken" : "free";
+    } catch {
+      this.nameState = "unknown"; // offline etc — submit re-validates
+    }
+    this.renderBody();
+  }
+
+  private renderBody(): void {
+    if (!this.bodyEl) return;
+    this.bodyEl.empty();
+    const org = this.plugin.settings.baseOrg;
+
+    if (this.mode === "existing") {
+      const setting = new Setting(this.bodyEl)
+        .setName("Repository")
+        .setDesc(this.repos === null ? `Loading repos in ${org}…` : `Repos you can access in ${org}.`);
+      if (this.repos !== null) {
+        if (this.repos.length === 0) {
+          setting.setDesc(`No repos found in ${org} — create one instead.`);
+        } else {
+          setting.addDropdown((dd) => {
+            for (const r of this.repos ?? []) dd.addOption(r, r);
+            dd.setValue(this.selected).onChange((v) => (this.selected = v));
+          });
+        }
+      }
+      this.bodyEl.createEl("p", {
+        cls: "setting-item-description",
+        text:
+          "Its contents will be pulled into this vault. Where a note exists on both sides, " +
+          "the repo's version is used and yours is kept next to it as “(local copy)”.",
+      });
+      this.cta("Connect and pull", () => void this.submit("adopt"), this.repos !== null && this.repos.length > 0);
+      return;
+    }
+
+    // Create mode
+    new Setting(this.bodyEl)
+      .setName("Repository name")
+      .setDesc(`Created private in ${org} — convention: personal-kb-<you>.`)
+      .addText((t) =>
+        t.setValue(this.name).onChange((v) => {
+          this.name = v.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
+          this.scheduleNameCheck();
+        }),
+      );
+    const status = this.bodyEl.createDiv({ cls: "setting-item-description" });
+    switch (this.nameState) {
+      case "checking":
+        status.setText(`Checking ${org}/${this.name}…`);
+        break;
+      case "free":
+        status.setText(`✨ ${org}/${this.name} is available — your marked notes will be its first commit.`);
+        break;
+      case "taken":
+        status.setText(`⚠ ${org}/${this.name} already exists. Pick another name, or use the existing-repo tab.`);
+        break;
+      case "unknown":
+        status.setText("Couldn't check the name — you can still continue.");
+        break;
+      default:
+        status.setText("Enter a repository name.");
+    }
+    this.cta("Create and connect", () => void this.submit("create"), this.nameState !== "taken" && !!this.name);
+  }
+
+  private cta(label: string, onClick: () => void, enabled: boolean): void {
+    new Setting(this.bodyEl).addButton((btn) => {
+      btn.setButtonText(label).setCta().onClick(onClick);
+      btn.setDisabled(!enabled || this.busy);
+      this.ctaBtn = btn.buttonEl;
+    });
+  }
+
+  private ctaBtn: HTMLButtonElement | null = null;
+
+  private async submit(mode: "adopt" | "create"): Promise<void> {
+    if (this.busy) return;
+    const s = this.plugin.settings;
+    const org = s.baseOrg;
+    const login = s.githubApp.connections[0]?.login;
+    const repoName = mode === "adopt" ? this.selected : this.name;
+    if (!repoName) return;
+
+    this.busy = true;
+    const btn = this.ctaBtn;
+    const idle = btn?.textContent ?? "Set up";
+    if (btn) {
+      btn.disabled = true;
+      btn.setText("Setting up…");
+    }
+    try {
+      if (mode === "create") {
+        const token = this.token || (await this.plugin.appAuth.getRepoCreationToken(org));
+        try {
+          await createOrgRepo(token, org, repoName, true);
+        } catch (e) {
+          if (e instanceof RepoExistsError) {
+            throw new Error(`"${repoName}" already exists — pick another name or use the existing-repo tab.`);
+          }
+          throw e;
+        }
+        if (login) {
+          // The App created the repo, so grant the human owner write access.
+          // Other org members keep the org's default (read-only) permission.
+          try {
+            await addCollaborator(token, org, repoName, login, "admin");
+          } catch (e) {
+            console.warn("[covault] couldn't add owner as collaborator:", e);
+          }
+        }
+      }
+
+      await this.plugin.setupMainKb(`https://github.com/${org}/${repoName}.git`, "main", mode);
+      new Notice(`Covault: your personal knowledge base is connected to ${org}/${repoName}.`);
+      this.close();
+    } catch (e) {
+      new Notice(`Covault: setup failed — ${(e as Error).message}`, 10_000);
+      this.busy = false;
+      if (btn) {
+        btn.disabled = false;
+        btn.setText(idle);
+      }
+    }
   }
 }

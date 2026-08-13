@@ -392,32 +392,55 @@ export default class CovaultPlugin extends Plugin {
     await this.shareFolder(folderPath, repo.url);
   }
 
-  /** Bind a folder to an already-existing library repo: pull the remote
-   *  in (merging with any local folder content), then keep it synced. */
+  /** Bind a folder to an already-existing library repo: the library's
+   *  content wins (local versions of overlapping notes are kept aside),
+   *  then keep it synced. */
   async attachExistingLibrary(folderPath: string, url: string, branch: string): Promise<void> {
     const dir = path.join(this.vaultBasePath(), folderPath);
     const hasContent = fs.existsSync(dir) && fs.readdirSync(dir).length > 0;
-    if (hasContent) {
-      await this.engine.adoptRemote({ dir, url, branch }, `Share ${folderPath} as a knowledge library`);
-      this.libraryManifest.add({ path: folderPath, url, branch });
-      this.sharedRepos(); // refresh .gitignore
-      this.refreshSettingsUI();
-      void this.sync.syncAll("manual");
-    } else {
+    if (!hasContent) {
       // Empty/missing folder: plain clone via the normal add path.
       await this.addLibrary({ path: folderPath, url, branch });
+      return;
     }
+    const backedUp = await this.engine.adoptRemote({ dir, url, branch });
+    this.libraryManifest.add({ path: folderPath, url, branch });
+    this.sharedRepos(); // refresh .gitignore
+    this.refreshSettingsUI();
+    if (backedUp.length > 0) {
+      new Notice(`Covault: kept your versions of ${backedUp.length} note(s) as "(local copy)".`, 10_000);
+    }
+    void this.sync.syncAll("manual");
   }
 
-  /** Bind the vault root to a personal repo (main KB) and sync. Opt-in:
-   *  the initial commit carries only marked paths + the manifest. */
-  async setupMainKb(url: string, branch: string): Promise<void> {
-    const exclude = this.sharedRepos().map((r) => r.path); // also refreshes .gitignore first
-    await this.engine.adoptRemote(
-      { dir: this.vaultBasePath(), url, branch, gitdir: this.mainGitDir() },
-      "Set up personal knowledge base",
-      { exclude, include: this.libraryManifest.load().include },
-    );
+  /**
+   * Bind the vault root to a personal repo (main KB).
+   *
+   * mode "create": the repo is brand new — the marked notes become its
+   * first commit. mode "adopt": the repo already has content, which wins;
+   * overlapping local notes are kept aside as "(local copy)". Neither
+   * path can produce a merge conflict, which matters because setup often
+   * happens before an AI provider is configured.
+   */
+  async setupMainKb(url: string, branch: string, mode: "create" | "adopt"): Promise<void> {
+    const ref = { dir: this.vaultBasePath(), url, branch, gitdir: this.mainGitDir() };
+    // A previous failed attempt may have left a half-built repo; it holds
+    // nothing anyone depends on (mainRepo was never saved), so restart clean.
+    fs.rmSync(ref.gitdir, { recursive: true, force: true });
+
+    if (mode === "create") {
+      const exclude = this.sharedRepos().map((r) => r.path); // also refreshes .gitignore
+      await this.engine.initAndPush(ref, "Set up personal knowledge base", {
+        exclude,
+        include: this.libraryManifest.load().include,
+      });
+    } else {
+      const backedUp = await this.engine.adoptRemote(ref);
+      if (backedUp.length > 0) {
+        new Notice(`Covault: kept your versions of ${backedUp.length} note(s) as "(local copy)".`, 10_000);
+      }
+    }
+
     this.settings.mainRepo = { url, branch };
     await this.saveSettings();
     this.refreshSettingsUI();

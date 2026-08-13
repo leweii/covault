@@ -159,35 +159,39 @@ describe("GitEngine against a real smart-HTTP remote", () => {
     expect(fs.readFileSync(path.join(other.dir, "howto.md"), "utf8")).toContain("How to");
   });
 
-  it("adopts a remote with unrelated history (personal KB setup)", async () => {
-    // Remote already has content (e.g. an existing personal-kb repo)…
+  it("adopts an existing remote by force-pulling it, keeping local copies", async () => {
+    // Remote already has content (e.g. a personal-kb repo from another machine)…
     const bare = path.join(root, "personal-kb.git");
     execFileSync("git", ["init", "--bare", "-b", "main", bare]);
     execFileSync("git", ["config", "http.receivepack", "true"], { cwd: bare });
     const seed = path.join(root, "kb-seed");
     execFileSync("git", ["clone", bare, seed]);
     fs.writeFileSync(path.join(seed, "old-notes.md"), "# Old\n");
+    fs.writeFileSync(path.join(seed, "both.md"), "# Remote wins\n");
     execFileSync("git", ["add", "."], { cwd: seed });
     execFileSync("git", ["-c", "user.name=s", "-c", "user.email=s@t", "commit", "-m", "seed"], { cwd: seed });
     execFileSync("git", ["push", "origin", "main"], { cwd: seed });
 
-    // …and the local vault root has its own unrelated content.
+    // …and the local vault has its own content, one file overlapping.
     const vaultRoot = path.join(root, "vault-adopt");
-    fs.mkdirSync(path.join(vaultRoot, "teams", "some-lib"), { recursive: true });
+    fs.mkdirSync(vaultRoot, { recursive: true });
     fs.writeFileSync(path.join(vaultRoot, "my-note.md"), "# Mine\n");
-    fs.writeFileSync(path.join(vaultRoot, "teams", "some-lib", "lib-note.md"), "# Lib\n");
+    fs.writeFileSync(path.join(vaultRoot, "both.md"), "# Local version\n");
     const ref: RepoRef = { dir: vaultRoot, url: `${server.url}/personal-kb.git`, branch: "main" };
 
-    await engineA.adoptRemote(ref, "Set up personal knowledge base", { exclude: ["teams/some-lib"] });
+    const backedUp = await engineA.adoptRemote(ref);
 
-    // Both sides merged, excluded library folder never committed.
+    // Remote content materialized; the overlapping file kept aside.
     expect(fs.existsSync(path.join(vaultRoot, "old-notes.md"))).toBe(true);
-    const changes = await engineA.localChanges(ref, { exclude: ["teams/some-lib"] });
-    expect(changes).toEqual([]);
-    const other: RepoRef = { dir: path.join(root, "kb-check"), url: ref.url, branch: "main" };
-    await engineB.clone(other);
-    expect(fs.existsSync(path.join(other.dir, "my-note.md"))).toBe(true);
-    expect(fs.existsSync(path.join(other.dir, "teams", "some-lib"))).toBe(false);
+    expect(fs.readFileSync(path.join(vaultRoot, "both.md"), "utf8")).toContain("Remote wins");
+    expect(backedUp).toEqual(["both (local copy).md"]);
+    expect(fs.readFileSync(path.join(vaultRoot, "both (local copy).md"), "utf8")).toContain("Local version");
+    // Local-only files survive untouched and uncommitted (nothing marked yet).
+    expect(fs.existsSync(path.join(vaultRoot, "my-note.md"))).toBe(true);
+    expect(await engineA.localChanges(ref, { include: [] })).toEqual([]);
+    // Single lineage: the local branch is exactly the remote commit.
+    const local = await engineA.fileLog(ref, "old-notes.md");
+    expect(local[0]?.message).toBe("seed");
   });
 
   it("opt-in include list: only marked paths sync to the personal repo", async () => {
@@ -205,7 +209,7 @@ describe("GitEngine against a real smart-HTTP remote", () => {
     fs.writeFileSync(path.join(vaultRoot, ".covault", "covault.json"), `{"version":1,"repos":[],"include":["shared-notes"]}\n`);
     const ref: RepoRef = { dir: vaultRoot, url: `${server.url}/optin-kb.git`, branch: "main" };
 
-    await engineA.adoptRemote(ref, "Set up personal knowledge base", { include: ["shared-notes"] });
+    await engineA.initAndPush(ref, "Set up personal knowledge base", { include: ["shared-notes"] });
 
     const check: RepoRef = { dir: path.join(root, "optin-check"), url: ref.url, branch: "main" };
     await engineB.clone(check);
@@ -241,7 +245,7 @@ describe("GitEngine against a real smart-HTTP remote", () => {
 
     const gitdir = path.join(vaultRoot, ".covault", "main.git");
     const ref: RepoRef = { dir: vaultRoot, url: `${server.url}/gitdir-kb.git`, branch: "main", gitdir };
-    await engineA.adoptRemote(ref, "Set up personal knowledge base", { include: ["shared-notes"] });
+    await engineA.initAndPush(ref, "Set up personal knowledge base", { include: ["shared-notes"] });
 
     const check: RepoRef = { dir: path.join(root, "gitdir-check"), url: ref.url, branch: "main" };
     await engineB.clone(check);
