@@ -1470,6 +1470,13 @@
 
 /* ─── Setup dialog (personal knowledge base) ───────────────────── */
 
+/* The tab strip sits flush so its 4px inner padding defines the dialog's
+   content edges; rows below match it, lining the dropdown / name field /
+   action button up with the tab buttons. */
+.covault-setup-modal .covault-tabs {
+  margin: 0 0 8px;
+}
+
 /* Both tabs render one control row + one status line + the action row,
    and the body's fixed height keeps the dialog from resizing on switch. */
 .covault-setup-body {
@@ -1480,7 +1487,7 @@
 
 .covault-setup-body .setting-item {
   border-top: none;
-  padding: 10px 0;
+  padding: 10px 4px;
   align-items: center;
 }
 
@@ -1495,7 +1502,7 @@
   font-size: 0.82em;
   color: var(--text-muted);
   min-height: 20px;
-  padding: 0 0 2px;
+  padding: 0 4px 2px;
 }
 
 .covault-setup-body .setting-item.covault-setup-actions {

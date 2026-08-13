@@ -69,8 +69,8 @@ export class MainKbModal extends Modal {
         if (mode === "create" && this.nameState === "idle") void this.checkName();
       };
     };
-    tab("Use an existing knowledge base", "existing");
-    tab("Create a new one", "create");
+    tab("Use an existing KB", "existing");
+    tab("Create a new KB", "create");
 
     this.bodyEl = contentEl.createDiv("covault-setup-body");
     this.renderBody();
@@ -117,7 +117,7 @@ export class MainKbModal extends Modal {
   }
 
   private renderCreate(): void {
-    new Setting(this.bodyEl).setName("Name").addText((t) =>
+    new Setting(this.bodyEl).setName("Knowledge base").addText((t) =>
       t.setValue(this.name).onChange((v) => {
         this.name = v.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
         this.scheduleNameCheck();
