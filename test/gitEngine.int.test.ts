@@ -223,6 +223,20 @@ describe("GitEngine against a real smart-HTTP remote", () => {
     ]);
   });
 
+  it("include '*' shares everything — except libraries, which exclusion always wins over", async () => {
+    // Reuses the vault-optin working dir from the earlier opt-in test.
+    const vaultRoot = path.join(root, "vault-optin");
+    fs.mkdirSync(path.join(vaultRoot, "teams", "lib-x"), { recursive: true });
+    fs.writeFileSync(path.join(vaultRoot, "teams", "lib-x", "team-note.md"), "# team\n");
+    const ref: RepoRef = { dir: vaultRoot, url: `${server.url}/optin-kb.git`, branch: "main" };
+
+    const changes = await engineA.localChanges(ref, { include: ["*"], exclude: ["teams/lib-x"] });
+    const paths = changes.map((c) => c.filepath);
+    expect(paths).toContain("private/diary.md"); // now visible under *
+    expect(paths).toContain("loose-note.md");
+    expect(paths.some((p) => p.startsWith("teams/lib-x"))).toBe(false); // library stays out
+  });
+
   it("separate gitdir: a fully-tracked vault .git can't leak into the personal repo", async () => {
     const bare = path.join(root, "gitdir-kb.git");
     execFileSync("git", ["init", "--bare", "-b", "main", bare]);
