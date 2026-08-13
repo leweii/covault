@@ -31,6 +31,9 @@ const context = await esbuild.context({
   logLevel: "info",
   sourcemap: prod ? false : "inline",
   treeShaking: true,
+  // Obsidian Sync's Standard plan caps synced files at 5 MB — minify the
+  // production bundle to stay well under it. Source stays readable here.
+  minify: prod,
   outfile: "main.js",
 });
 
