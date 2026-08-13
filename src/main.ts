@@ -144,23 +144,22 @@ export default class CovaultPlugin extends Plugin {
         // History — for anything that lives in a synced repo (team
         // libraries included; their files carry the whole team's history).
         if (file instanceof TFile) {
-          const owner = this.repoItemForPath(file.path);
-          if (owner) {
+          const ctx = this.historyContextFor(file.path);
+          if (ctx) {
             menu.addItem((item) =>
               item
                 .setTitle("View history")
                 .setIcon("history")
-                .onClick(() => {
-                  const rel = owner.path ? file.path.slice(owner.path.length + 1) : file.path;
+                .onClick(() =>
                   new FileHistoryModal(
                     this.app,
                     this.engine,
-                    this.toRef(owner),
-                    rel,
+                    ctx.ref,
+                    ctx.relPath,
                     file.path,
                     this.gitAuthor().email,
-                  ).open();
-                }),
+                  ).open(),
+                ),
             );
           }
         }
@@ -274,6 +273,18 @@ export default class CovaultPlugin extends Plugin {
       url: item.url,
       branch: item.branch,
       gitdir: item.gitdir,
+    };
+  }
+
+  /** Resolve a vault path to the repo tracking it, plus the path within
+   *  that repo — what the history views need. Null when untracked. */
+  historyContextFor(vaultPath: string): { ref: RepoRef; relPath: string; label: string } | null {
+    const owner = this.repoItemForPath(vaultPath);
+    if (!owner) return null;
+    return {
+      ref: this.toRef(owner),
+      relPath: owner.path ? vaultPath.slice(owner.path.length + 1) : vaultPath,
+      label: owner.label ?? owner.path,
     };
   }
 
@@ -431,6 +442,11 @@ export default class CovaultPlugin extends Plugin {
       this.settings.sync.intervalMinutes * 60_000,
     );
     this.registerInterval(this.syncIntervalId);
+  }
+
+  /** Commit email of the current user — history views mark their own rows. */
+  gitAuthorEmail(): string {
+    return this.gitAuthor().email;
   }
 
   private gitAuthor(): { name: string; email: string } {
