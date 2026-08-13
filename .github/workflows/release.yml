@@ -24,10 +24,7 @@ jobs:
           cache: "npm"
 
       - name: Install dependencies
-        # npm ci is out: the local environment's wrapped npm produces a
-        # lockfile stock npm considers out of sync. Fresh install + the
-        # build/test steps below validate the result instead.
-        run: npm install --no-audit --no-fund
+        run: npm ci
 
       - name: Build
         run: npm run build

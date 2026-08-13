@@ -30,6 +30,7 @@ function makeEngine(name: string): GitEngine {
     http: nodeHttp,
     tokens: new PatTokenProvider(() => ""),
     author: () => ({ name, email: `${name}@test.local` }),
+    configDir: () => ".obsidian",
   });
 }
 

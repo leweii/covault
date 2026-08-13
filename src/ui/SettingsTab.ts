@@ -1,53 +1,210 @@
-import { PluginSettingTab, Setting, type App } from "obsidian";
+import {
+  PluginSettingTab,
+  type App,
+  type Setting,
+  type SettingDefinitionGroup,
+  type SettingDefinitionItem,
+  type SettingDefinitionList,
+  type SettingGroupItem,
+} from "obsidian";
 import type CovaultPlugin from "../main";
 import { AddLibraryModal } from "./AddLibraryModal";
 import { MainKbModal } from "./MainKbModal";
 import { SharedItemsModal } from "./SharedItemsModal";
 
 /**
- * Covault settings page.
+ * Covault settings, declarative (Obsidian 1.13+): definitions feed the
+ * settings search index, and control values persist through the
+ * overridden getControlValue/setControlValue — which route through the
+ * plugin's redacting saveSettings() so secrets never reach data.json.
  *
- * Layout: GitHub (sign-in method tabs + base org) → personal knowledge
- * base → shared libraries → AI engine → sync behavior. Users never see
- * git vocabulary anywhere in this UI.
+ * Layout: GitHub (sign-in tabs + base org + identity) → personal
+ * knowledge base → shared libraries → AI engine → sync behavior. Users
+ * never see git vocabulary anywhere in this UI.
  */
 export class CovaultSettingTab extends PluginSettingTab {
-  private onConnected = () => this.display();
-
   constructor(
     app: App,
     private plugin: CovaultPlugin,
   ) {
     super(app, plugin);
-    // Re-render as soon as the browser deep-links back after Connect, so
-    // the page flips to "Connected as @…" without a manual reopen. The
-    // listener stays for the plugin's lifetime — display() on a hidden
-    // tab is harmless, and removing it on hide() would miss a Connect
-    // that completes while settings are closed.
-    plugin.appAuth.addConnectedListener(this.onConnected);
+    // Rebuild as soon as the browser deep-links back after Connect, so
+    // the page flips to "Connected as @…" without a manual reopen.
+    plugin.appAuth.addConnectedListener(() => this.update());
   }
 
-  display(): void {
-    const { containerEl } = this;
-    containerEl.empty();
+  getSettingDefinitions(): SettingDefinitionItem[] {
+    return [this.githubGroup(), this.personalKbGroup(), this.librariesList(), this.aiGroup(), this.syncGroup()];
+  }
 
-    this.renderGitHubSection(containerEl);
-    this.renderMainKbSection(containerEl);
-    this.renderLibrariesSection(containerEl);
-    this.renderAiSection(containerEl);
-    this.renderSyncSection(containerEl);
+  // ── Value plumbing ───────────────────────────────────────────────
+  // All keys route through the plugin's saveSettings(): it writes
+  // secrets to the per-device store and only redacted state to data.json.
+
+  getControlValue(key: string): unknown {
+    const s = this.plugin.settings;
+    switch (key) {
+      case "baseOrg":
+        return s.baseOrg;
+      case "authorName":
+        return s.author.name;
+      case "authorEmail":
+        return s.author.email;
+      case "llmProvider":
+        return s.llm.provider;
+      case "llmModel":
+        return s.llm.model;
+      case "conflictInstructions":
+        return s.llm.conflictInstructions;
+      case "syncAuto":
+        return s.sync.auto;
+      case "syncInterval":
+        return String(s.sync.intervalMinutes);
+      default:
+        return undefined;
+    }
+  }
+
+  async setControlValue(key: string, value: unknown): Promise<void> {
+    const s = this.plugin.settings;
+    switch (key) {
+      case "baseOrg":
+        s.baseOrg = String(value);
+        break;
+      case "authorName":
+        s.author.name = String(value).trim();
+        break;
+      case "authorEmail":
+        s.author.email = String(value).trim();
+        break;
+      case "llmProvider":
+        s.llm.provider = String(value);
+        s.llm.model = "";
+        break;
+      case "llmModel":
+        s.llm.model = String(value);
+        break;
+      case "conflictInstructions":
+        s.llm.conflictInstructions = String(value);
+        break;
+      case "syncAuto":
+        s.sync.auto = Boolean(value);
+        break;
+      case "syncInterval":
+        s.sync.intervalMinutes = Number(value);
+        break;
+      default:
+        return;
+    }
+    await this.plugin.saveSettings();
+    if (key === "syncAuto" || key === "syncInterval") this.plugin.applySyncSchedule();
+    if (key === "llmProvider") this.update(); // model options depend on it
   }
 
   // ── GitHub ───────────────────────────────────────────────────────
-  private renderGitHubSection(el: HTMLElement): void {
-    new Setting(el).setName("GitHub").setHeading();
-
+  private githubGroup(): SettingDefinitionGroup {
     const s = this.plugin.settings;
-    const card = el.createDiv("covault-card");
+    const connections = s.githubApp.connections;
+    const orgOptions = [...new Set(connections.flatMap((c) => c.installations.map((i) => i.accountLogin)))];
+    if (!s.baseOrg && orgOptions.length === 1) {
+      s.baseOrg = orgOptions[0] ?? "";
+      void this.plugin.saveSettings();
+    }
+    const login = connections[0]?.login;
 
-    // Segmented tabs — the two sign-in methods are alternatives, not
-    // fields to fill side by side.
-    const tabs = card.createDiv("covault-tabs");
+    const items: SettingGroupItem[] = [
+      {
+        name: "Sign in with",
+        aliases: ["github app", "personal access token", "pat", "connect"],
+        render: (setting: Setting) => this.renderAuthTabs(setting),
+      },
+      {
+        name: "Personal access token",
+        desc: "Advanced: a GitHub PAT with repo access. Most users should sign in with the GitHub App instead.",
+        visible: () => this.plugin.settings.authMethod === "pat",
+        render: (setting: Setting) =>
+          setting.addText((t) => {
+            t.inputEl.type = "password";
+            t.setPlaceholder("ghp_… or github_pat_…")
+              .setValue(this.plugin.settings.githubToken)
+              .onChange(async (v) => {
+                this.plugin.settings.githubToken = v.trim();
+                await this.plugin.saveSettings();
+              });
+          }),
+      },
+      {
+        name: "Connect to GitHub",
+        desc: "Authorize Covault in your browser — one click, no tokens to copy.",
+        visible: () => this.plugin.settings.authMethod === "githubApp" && connections.length === 0,
+        render: (setting: Setting) =>
+          setting.addButton((btn) =>
+            btn
+              .setButtonText("Connect")
+              .setCta()
+              .onClick(() => void this.plugin.appAuth.beginConnect()),
+          ),
+      },
+      ...connections.map((conn) => {
+        const orgs = conn.installations.map((i) => i.accountLogin).join(", ");
+        return {
+          name: `Connected as @${conn.login}`,
+          desc: orgs ? `Access to: ${orgs}` : "No installations yet — install the app on your org.",
+          visible: () => this.plugin.settings.authMethod === "githubApp",
+          render: (setting: Setting) => {
+            setting.addExtraButton((btn) =>
+              btn
+                .setIcon("refresh-cw")
+                .setTooltip("Refresh organizations")
+                .onClick(async () => {
+                  await this.plugin.appAuth.refreshInstallations(conn.login);
+                  this.update();
+                }),
+            );
+            setting.addButton((btn) =>
+              btn
+                .setButtonText("Disconnect")
+                .setWarning()
+                .onClick(async () => {
+                  await this.plugin.appAuth.disconnect(conn.login);
+                  this.update();
+                }),
+            );
+          },
+        };
+      }),
+      {
+        name: "Knowledge base organization",
+        desc: "Shared libraries and personal knowledge bases all live in this organization.",
+        visible: () => this.plugin.settings.authMethod === "githubApp" && orgOptions.length > 0,
+        control: {
+          type: "dropdown",
+          key: "baseOrg",
+          options: Object.fromEntries([["", "— choose —"], ...orgOptions.map((o) => [o, o])]),
+        },
+      },
+      {
+        name: "Name",
+        desc: "Shown to teammates as the author of your changes.",
+        control: { type: "text", key: "authorName", placeholder: login ?? "Your name" },
+      },
+      {
+        name: "Email",
+        control: {
+          type: "text",
+          key: "authorEmail",
+          placeholder: login ? `${login}@users.noreply.github.com` : "you@example.com",
+        },
+      },
+    ];
+
+    return { type: "group", heading: "GitHub", items };
+  }
+
+  /** Segmented control for the two mutually-exclusive sign-in methods. */
+  private renderAuthTabs(setting: Setting): void {
+    const s = this.plugin.settings;
+    const tabs = setting.controlEl.createDiv("covault-tabs");
     const tab = (label: string, method: typeof s.authMethod) => {
       const btn = tabs.createEl("button", {
         text: label,
@@ -57,297 +214,186 @@ export class CovaultSettingTab extends PluginSettingTab {
         if (s.authMethod === method) return;
         s.authMethod = method;
         void this.plugin.saveSettings();
-        this.display();
+        this.update();
       };
     };
     tab("GitHub App", "githubApp");
     tab("Personal Access Token", "pat");
-
-    if (s.authMethod === "pat") {
-      new Setting(card)
-        .setName("Personal access token")
-        .setDesc("Advanced: a GitHub PAT with repo access. Most users should sign in with the GitHub App instead.")
-        .addText((text) => {
-          text.inputEl.type = "password";
-          text
-            .setPlaceholder("ghp_… or github_pat_…")
-            .setValue(s.githubToken)
-            .onChange(async (value) => {
-              s.githubToken = value.trim();
-              await this.plugin.saveSettings();
-            });
-        });
-      this.renderIdentityRows(card);
-      return;
-    }
-
-    const connections = s.githubApp.connections;
-    if (connections.length === 0) {
-      new Setting(card)
-        .setName("Connect to GitHub")
-        .setDesc("Authorize Covault in your browser — one click, no tokens to copy.")
-        .addButton((btn) =>
-          btn
-            .setButtonText("Connect")
-            .setCta()
-            .onClick(() => void this.plugin.appAuth.beginConnect()),
-        );
-      return;
-    }
-
-    for (const conn of connections) {
-      const orgs = conn.installations.map((i) => i.accountLogin).join(", ");
-      new Setting(card)
-        .setName(`✓ @${conn.login}`)
-        .setDesc(orgs ? `Access to: ${orgs}` : "No installations yet — install the app on your org.")
-        .addExtraButton((btn) =>
-          btn
-            .setIcon("refresh-cw")
-            .setTooltip("Refresh organizations")
-            .onClick(async () => {
-              await this.plugin.appAuth.refreshInstallations(conn.login);
-              this.display();
-            }),
-        )
-        .addButton((btn) =>
-          btn
-            .setButtonText("Disconnect")
-            .setWarning()
-            .onClick(async () => {
-              await this.plugin.appAuth.disconnect(conn.login);
-              this.display();
-            }),
-        );
-    }
-
-    // Base org: the one organization every knowledge repo lives in —
-    // shared libraries and personal KBs are grouped under it.
-    const orgOptions = [...new Set(connections.flatMap((c) => c.installations.map((i) => i.accountLogin)))];
-    if (orgOptions.length > 0) {
-      if (!s.baseOrg && orgOptions.length === 1) {
-        s.baseOrg = orgOptions[0] ?? "";
-        void this.plugin.saveSettings();
-      }
-      new Setting(card)
-        .setName("Knowledge base organization")
-        .setDesc("Shared libraries and personal knowledge bases all live in this organization.")
-        .addDropdown((dd) => {
-          dd.addOption("", "— choose —");
-          for (const o of orgOptions) dd.addOption(o, o);
-          dd.setValue(s.baseOrg).onChange(async (v) => {
-            s.baseOrg = v;
-            await this.plugin.saveSettings();
-          });
-        });
-    }
-
-    this.renderIdentityRows(card);
-  }
-
-  /** Commit identity ("who saved this note"), shown under either tab. */
-  private renderIdentityRows(card: HTMLElement): void {
-    const s = this.plugin.settings;
-    const login = s.githubApp.connections[0]?.login;
-
-    new Setting(card).setName("Name").addText((t) =>
-      t
-        .setPlaceholder(login ?? "Your name")
-        .setValue(s.author.name)
-        .onChange(async (v) => {
-          s.author.name = v.trim();
-          await this.plugin.saveSettings();
-        }),
-    );
-
-    new Setting(card).setName("Email").addText((t) =>
-      t
-        .setPlaceholder(login ? `${login}@users.noreply.github.com` : "you@example.com")
-        .setValue(s.author.email)
-        .onChange(async (v) => {
-          s.author.email = v.trim();
-          await this.plugin.saveSettings();
-        }),
-    );
   }
 
   // ── Personal knowledge base ──────────────────────────────────────
-  private renderMainKbSection(el: HTMLElement): void {
-    new Setting(el).setName("Personal knowledge base").setHeading();
-
+  private personalKbGroup(): SettingDefinitionGroup {
     const s = this.plugin.settings;
+    const items: SettingGroupItem[] = [];
 
     if (s.mainRepo) {
-      new Setting(el)
-        .setName("Connected")
-        .setDesc(`${s.mainRepo.url.replace(/\.git$/, "")} (${s.mainRepo.branch})`)
-        .addButton((btn) =>
-          btn
-            .setButtonText("Disconnect")
-            .setWarning()
-            .onClick(async () => {
-              // Local notes and history stay; only the link is removed.
-              s.mainRepo = null;
-              await this.plugin.saveSettings();
-              this.display();
-            }),
-        );
-
+      const repo = s.mainRepo;
+      items.push({
+        name: "Connected",
+        desc: `${repo.url.replace(/\.git$/, "")} (${repo.branch})`,
+        render: (setting: Setting) => {
+          setting.addButton((btn) =>
+            btn
+              .setButtonText("Disconnect")
+              .setWarning()
+              .onClick(async () => {
+                // Local notes and history stay; only the link is removed.
+                this.plugin.settings.mainRepo = null;
+                await this.plugin.saveSettings();
+                this.update();
+              }),
+          );
+        },
+      });
       const shared = this.plugin.libraryManifest.load().include;
-      if (shared.length === 0) {
-        new Setting(el)
-          .setName("Nothing shared yet")
-          .setDesc(
-            "Your vault is private by default. Right-click a note or folder and choose " +
-              "“Share to my knowledge base” to start backing it up.",
+      items.push(
+        shared.length === 0
+          ? {
+              name: "Nothing shared yet",
+              desc:
+                "Your vault is private by default. Right-click a note or folder and choose " +
+                "“Share to my knowledge base” to start backing it up.",
+            }
+          : {
+              name: `${shared.length} item(s) shared`,
+              desc: "Only marked notes and folders sync to your personal repo.",
+              aliases: ["shared items", "stop sharing"],
+              render: (setting: Setting) => {
+                setting.addButton((btn) =>
+                  btn.setButtonText("Manage…").onClick(() => new SharedItemsModal(this.app, this.plugin).open()),
+                );
+              },
+            },
+      );
+    } else {
+      items.push({
+        name: "Back up this vault",
+        desc:
+          "Connect your own repo (personal-kb-<you>) in your team's organization. " +
+          "Nothing is shared until you mark it — right-click a note or folder → “Share to my knowledge base”.",
+        aliases: ["personal repo", "backup"],
+        render: (setting: Setting) => {
+          setting.addButton((btn) =>
+            btn
+              .setButtonText("Set up…")
+              .setCta()
+              .onClick(() => new MainKbModal(this.app, this.plugin).open()),
           );
-      } else {
-        new Setting(el)
-          .setName(`${shared.length} item(s) shared`)
-          .setDesc("Only marked notes and folders sync to your personal repo.")
-          .addButton((btn) =>
-            btn.setButtonText("Manage…").onClick(() => new SharedItemsModal(this.app, this.plugin).open()),
-          );
-      }
-      return;
+        },
+      });
     }
 
-    new Setting(el)
-      .setName("Back up this vault")
-      .setDesc(
-        "Connect your own repo (personal-kb-<you>) in your team's organization. " +
-          "Nothing is shared until you mark it — right-click a note or folder → “Share to my knowledge base”.",
-      )
-      .addButton((btn) =>
-        btn
-          .setButtonText("Set up…")
-          .setCta()
-          .onClick(() => new MainKbModal(this.app, this.plugin).open()),
-      );
+    return { type: "group", heading: "Personal knowledge base", items };
   }
 
   // ── Shared libraries ─────────────────────────────────────────────
-  private renderLibrariesSection(el: HTMLElement): void {
-    new Setting(el).setName("Shared libraries").setHeading();
-
-    for (const repo of this.plugin.libraryManifest.load().repos) {
-      new Setting(el)
-        .setName(repo.path)
-        .setDesc(`${repo.url} (${repo.branch})`)
-        .addButton((btn) =>
-          btn
-            .setButtonText("Remove")
-            .setWarning()
-            .onClick(() => {
-              // The folder stays on disk — removing only stops syncing it.
-              this.plugin.libraryManifest.remove(repo.path);
-              this.display();
-            }),
-        );
-    }
-
-    new Setting(el)
-      .setName("Add a library")
-      .setDesc("Pick one of your team's libraries, or create a new one.")
-      .addButton((btn) =>
-        btn
-          .setButtonText("Add…")
-          .setCta()
-          .onClick(() => new AddLibraryModal(this.app, this.plugin).open()),
-      );
+  private librariesList(): SettingDefinitionList {
+    const repos = this.plugin.libraryManifest.load().repos;
+    return {
+      type: "list",
+      heading: "Shared libraries",
+      emptyState: "No libraries yet — add one to pull your team's knowledge in.",
+      items: repos.map((repo) => ({
+        name: repo.path,
+        desc: `${repo.url} (${repo.branch})`,
+      })),
+      onDelete: (index: number) => {
+        const repo = repos[index];
+        if (!repo) return;
+        // The folder stays on disk — removing only stops syncing it.
+        this.plugin.libraryManifest.remove(repo.path);
+        this.plugin.sharedRepos(); // refresh .gitignore
+        this.update();
+      },
+      addItem: {
+        name: "Add a library…",
+        action: () => new AddLibraryModal(this.app, this.plugin).open(),
+      },
+    };
   }
 
   // ── AI engine ────────────────────────────────────────────────────
-  private renderAiSection(el: HTMLElement): void {
-    new Setting(el).setName("AI engine").setHeading();
-
+  private aiGroup(): SettingDefinitionGroup {
     const s = this.plugin.settings;
     const providers = this.plugin.models.getProviders();
-
-    new Setting(el)
-      .setName("Provider")
-      .setDesc("Who serves the model that powers syncing, summaries, and conflict handling.")
-      .addDropdown((dd) => {
-        for (const p of providers) dd.addOption(p.id, p.name);
-        if (!providers.some((p) => p.id === s.llm.provider) && providers[0]) {
-          s.llm.provider = providers[0].id;
-        }
-        dd.setValue(s.llm.provider).onChange(async (value) => {
-          s.llm.provider = value;
-          s.llm.model = "";
-          await this.plugin.saveSettings();
-          this.display();
-        });
-      });
-
-    new Setting(el)
-      .setName("API key")
-      .setDesc(`Stored on this device only — never inside your vault.`)
-      .addText((text) => {
-        text.inputEl.type = "password";
-        text
-          .setPlaceholder("sk-…")
-          .setValue(s.llmKeys[s.llm.provider] ?? "")
-          .onChange(async (value) => {
-            const key = value.trim();
-            if (key) s.llmKeys[s.llm.provider] = key;
-            else delete s.llmKeys[s.llm.provider];
-            await this.plugin.saveSettings();
-          });
-      });
-
-    new Setting(el)
-      .setName("Conflict merge instructions")
-      .setDesc(
-        "Optional extra rules for the AI when it merges conflicting edits — e.g. " +
-          "“when versions disagree about facts, never guess: mark it unresolvable and let me decide.”",
-      )
-      .addTextArea((ta) => {
-        ta.inputEl.rows = 3;
-        ta.setPlaceholder("Your team's rules…")
-          .setValue(s.llm.conflictInstructions)
-          .onChange(async (v) => {
-            s.llm.conflictInstructions = v;
-            await this.plugin.saveSettings();
-          });
-      });
-
+    if (!providers.some((p) => p.id === s.llm.provider) && providers[0]) {
+      s.llm.provider = providers[0].id;
+    }
     const models = this.plugin.models.getModels(s.llm.provider);
-    new Setting(el).setName("Model").addDropdown((dd) => {
-      for (const m of models) dd.addOption(m.id, m.name ?? m.id);
-      if (!models.some((m) => m.id === s.llm.model) && models[0]) {
-        s.llm.model = models[0].id;
-      }
-      dd.setValue(s.llm.model).onChange(async (value) => {
-        s.llm.model = value;
-        await this.plugin.saveSettings();
-      });
-    });
+    if (!models.some((m) => m.id === s.llm.model) && models[0]) {
+      s.llm.model = models[0].id;
+    }
+
+    return {
+      type: "group",
+      heading: "AI engine",
+      items: [
+        {
+          name: "Provider",
+          desc: "Who serves the model that powers syncing, summaries, and conflict handling.",
+          control: {
+            type: "dropdown",
+            key: "llmProvider",
+            options: Object.fromEntries(providers.map((p) => [p.id, p.name])),
+          },
+        },
+        {
+          name: "API key",
+          desc: "Stored on this device only — never inside your vault.",
+          render: (setting: Setting) => {
+            setting.addText((t) => {
+              t.inputEl.type = "password";
+              t.setPlaceholder("sk-…")
+                .setValue(this.plugin.settings.llmKeys[this.plugin.settings.llm.provider] ?? "")
+                .onChange(async (v) => {
+                  const key = v.trim();
+                  const current = this.plugin.settings.llm.provider;
+                  if (key) this.plugin.settings.llmKeys[current] = key;
+                  else delete this.plugin.settings.llmKeys[current];
+                  await this.plugin.saveSettings();
+                });
+            });
+          },
+        },
+        {
+          name: "Model",
+          control: {
+            type: "dropdown",
+            key: "llmModel",
+            options: Object.fromEntries(models.map((m) => [m.id, m.name ?? m.id])),
+          },
+        },
+        {
+          name: "Conflict merge instructions",
+          desc:
+            "Optional extra rules for the AI when it merges conflicting edits — e.g. " +
+            "“when versions disagree about facts, never guess: mark it unresolvable and let me decide.”",
+          control: { type: "textarea", key: "conflictInstructions", placeholder: "Your team's rules…" },
+        },
+      ],
+    };
   }
 
   // ── Sync ─────────────────────────────────────────────────────────
-  private renderSyncSection(el: HTMLElement): void {
-    new Setting(el).setName("Sync").setHeading();
-
-    const s = this.plugin.settings;
-
-    new Setting(el)
-      .setName("Keep shared knowledge up to date automatically")
-      .setDesc("Covault quietly checks for updates and shares your changes in the background.")
-      .addToggle((toggle) =>
-        toggle.setValue(s.sync.auto).onChange(async (value) => {
-          s.sync.auto = value;
-          await this.plugin.saveSettings();
-          this.plugin.applySyncSchedule();
-        }),
-      );
-
-    new Setting(el).setName("Check every").addDropdown((dd) => {
-      for (const min of [5, 10, 15, 30, 60]) dd.addOption(String(min), `${min} minutes`);
-      dd.setValue(String(s.sync.intervalMinutes)).onChange(async (value) => {
-        s.sync.intervalMinutes = Number(value);
-        await this.plugin.saveSettings();
-        this.plugin.applySyncSchedule();
-      });
-    });
+  private syncGroup(): SettingDefinitionGroup {
+    return {
+      type: "group",
+      heading: "Sync",
+      items: [
+        {
+          name: "Keep shared knowledge up to date automatically",
+          desc: "Covault quietly checks for updates and shares your changes in the background.",
+          control: { type: "toggle", key: "syncAuto" },
+        },
+        {
+          name: "Check every",
+          control: {
+            type: "dropdown",
+            key: "syncInterval",
+            options: Object.fromEntries([5, 10, 15, 30, 60].map((min) => [String(min), `${min} minutes`])),
+          },
+        },
+      ],
+    };
   }
 }

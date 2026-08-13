@@ -36,8 +36,8 @@ export interface GitEngineDeps {
   http: HttpClient;
   tokens: TokenProvider;
   author: () => Author;
-  /** Obsidian's config folder name — user-configurable, not always ".obsidian". */
-  configDir?: () => string;
+  /** Obsidian's config folder name (Vault#configDir — user-configurable). */
+  configDir: () => string;
 }
 
 export type ChangeKind = "added" | "modified" | "deleted";
@@ -188,7 +188,7 @@ export class GitEngine {
    * at all — the personal main repo shares nothing by default.
    */
   async localChanges(ref: RepoRef, opts: { exclude?: string[]; include?: string[] } = {}): Promise<LocalChange[]> {
-    const excluded = [...ALWAYS_EXCLUDED, this.deps.configDir?.() ?? ".obsidian", ...(opts.exclude ?? [])];
+    const excluded = [...ALWAYS_EXCLUDED, this.deps.configDir(), ...(opts.exclude ?? [])];
     const include = opts.include;
     const matrix = await git.statusMatrix({
       fs: this.deps.fs,

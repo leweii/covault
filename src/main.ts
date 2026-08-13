@@ -337,7 +337,7 @@ export default class CovaultPlugin extends Plugin {
   /** Re-render the settings page and side panel so completed setups and
    *  list changes show immediately. */
   refreshSettingsUI(): void {
-    this.settingsTab?.display();
+    this.settingsTab?.update();
     this.refreshPanels();
   }
 
