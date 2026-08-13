@@ -217,6 +217,8 @@ export default class CovaultPlugin extends Plugin {
     );
 
     this.applySyncSchedule();
+    // Warm the repo list so the pickers open without a spinner.
+    this.app.workspace.onLayoutReady(() => void this.fetchOrgRepos());
     // First pass shortly after startup, once the workspace has settled.
     if (this.settings.sync.auto) {
       window.setTimeout(() => void this.sync.syncAll("auto"), 5_000);
@@ -277,6 +279,45 @@ export default class CovaultPlugin extends Plugin {
       branch: item.branch,
       gitdir: item.gitdir,
     };
+  }
+
+  // Repo names in the base org, cached so pickers open instantly. Warmed
+  // on startup and whenever the connection changes; refreshed in the
+  // background each time a picker opens.
+  private repoCache: { org: string; repos: string[] } | null = null;
+  private repoCacheInFlight: Promise<string[]> | null = null;
+
+  /** Cached repo names for the base org, or null when never fetched. */
+  cachedOrgRepos(): string[] | null {
+    const org = this.settings.baseOrg;
+    return this.repoCache && this.repoCache.org === org ? this.repoCache.repos : null;
+  }
+
+  /** Fetch (and cache) the base org's repo names. Concurrent calls share
+   *  one request; failures leave any existing cache in place. */
+  async fetchOrgRepos(): Promise<string[]> {
+    const org = this.settings.baseOrg;
+    if (!org || this.settings.authMethod !== "githubApp") return [];
+    if (this.repoCacheInFlight) return this.repoCacheInFlight;
+    this.repoCacheInFlight = (async () => {
+      try {
+        const groups = await this.appAuth.listAccessibleRepos();
+        const names = (groups.find((g) => g.login === org)?.repos ?? []).map((r) => r.split("/")[1] ?? r).sort();
+        this.repoCache = { org, repos: names };
+        return names;
+      } catch (e) {
+        console.warn("[covault] couldn't list repos:", e);
+        return this.cachedOrgRepos() ?? [];
+      } finally {
+        this.repoCacheInFlight = null;
+      }
+    })();
+    return this.repoCacheInFlight;
+  }
+
+  /** Drop the cache after actions that change what exists (create/connect). */
+  invalidateRepoCache(): void {
+    this.repoCache = null;
   }
 
   /** Resolve a vault path to the repo tracking it, plus the path within

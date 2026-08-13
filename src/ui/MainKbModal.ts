@@ -9,15 +9,18 @@ type Mode = "existing" | "create";
  * merge conflicts entirely (setup often happens before an AI provider is
  * configured, so there'd be nothing to resolve them with):
  *
- *   existing → pick one of your org's repos; its content wins and is
- *              pulled in, local versions of overlapping notes are kept
- *              aside as "(local copy)".
- *   create   → name a repo that doesn't exist yet; your marked notes
- *              become its first commit, so there is nothing to conflict.
+ *   existing → pick one of the org's knowledge bases; its content wins
+ *              and is pulled in, local versions of overlapping notes are
+ *              kept aside as "(local copy <timestamp>)".
+ *   create   → name one that doesn't exist yet; your marked notes become
+ *              its first commit, so there is nothing to conflict.
+ *
+ * Both tabs render the same shape (control row + status line + button) so
+ * switching between them never resizes the dialog.
  */
 export class MainKbModal extends Modal {
-  private mode: Mode = "create";
-  private repos: string[] | null = null; // null = still loading
+  private mode: Mode = "existing";
+  private repos: string[] | null; // null = no list yet
   private selected = "";
   private name: string;
   private nameState: "idle" | "checking" | "free" | "taken" | "unknown" = "idle";
@@ -25,6 +28,7 @@ export class MainKbModal extends Modal {
   private busy = false;
   private debounceId: number | null = null;
   private bodyEl!: HTMLElement;
+  private ctaBtn: HTMLButtonElement | null = null;
 
   constructor(
     app: App,
@@ -33,20 +37,22 @@ export class MainKbModal extends Modal {
     super(app);
     const login = plugin.settings.githubApp.connections[0]?.login ?? "";
     this.name = `personal-kb-${login.toLowerCase()}`;
+    // Start from the warm cache so the dropdown is filled immediately.
+    this.repos = plugin.cachedOrgRepos();
+    if (this.repos) this.selected = pickDefault(this.repos);
   }
 
   onOpen(): void {
+    this.modalEl.addClass("covault-setup-modal");
     this.titleEl.setText("Set up your personal knowledge base");
     const { contentEl } = this;
     contentEl.empty();
-    const org = this.plugin.settings.baseOrg;
 
-    if (!org) {
+    if (!this.plugin.settings.baseOrg) {
       contentEl.createEl("p", { text: "Choose a base organization first (Settings → Covault → GitHub)." });
       return;
     }
 
-    // Mode tabs
     const tabs = contentEl.createDiv("covault-tabs");
     const tab = (label: string, mode: Mode) => {
       const btn = tabs.createEl("button", {
@@ -56,17 +62,26 @@ export class MainKbModal extends Modal {
       btn.onclick = () => {
         if (this.mode === mode) return;
         this.mode = mode;
-        this.onOpen(); // full re-render; mode/name/selection live in fields
+        tabs.querySelectorAll(".covault-tab").forEach((el, i) => {
+          el.toggleClass("is-active", (i === 0) === (this.mode === "existing"));
+        });
+        this.renderBody();
+        if (mode === "create" && this.nameState === "idle") void this.checkName();
       };
     };
     tab("Use an existing knowledge base", "existing");
     tab("Create a new one", "create");
 
-    this.bodyEl = contentEl.createDiv();
+    this.bodyEl = contentEl.createDiv("covault-setup-body");
     this.renderBody();
 
-    if (this.mode === "existing" && this.repos === null) void this.loadRepos();
-    if (this.mode === "create" && this.nameState === "idle") void this.checkName();
+    // Refresh in the background: the cache may predate something the user
+    // created elsewhere.
+    void this.plugin.fetchOrgRepos().then((repos) => {
+      this.repos = repos;
+      if (!this.selected) this.selected = pickDefault(repos);
+      this.renderBody();
+    });
   }
 
   onClose(): void {
@@ -74,71 +89,42 @@ export class MainKbModal extends Modal {
     this.contentEl.empty();
   }
 
-  private async loadRepos(): Promise<void> {
-    const org = this.plugin.settings.baseOrg;
-    const groups = await this.plugin.appAuth.listAccessibleRepos();
-    const all = (groups.find((g) => g.login === org)?.repos ?? []).map((r) => r.split("/")[1] ?? r);
-    // Personal KBs first — they're what this dialog is usually for.
-    this.repos = [...all.filter((r) => r.startsWith("personal-kb-")), ...all.filter((r) => !r.startsWith("personal-kb-"))];
-    if (!this.selected) this.selected = this.repos[0] ?? "";
-    this.renderBody();
-  }
-
-  private scheduleNameCheck(): void {
-    if (this.debounceId !== null) window.clearTimeout(this.debounceId);
-    this.nameState = "checking";
-    this.renderBody();
-    this.debounceId = window.setTimeout(() => void this.checkName(), 450);
-  }
-
-  private async checkName(): Promise<void> {
-    const org = this.plugin.settings.baseOrg;
-    if (!this.name) {
-      this.nameState = "idle";
-      this.renderBody();
-      return;
-    }
-    this.nameState = "checking";
-    this.renderBody();
-    try {
-      if (!this.token) this.token = await this.plugin.appAuth.getRepoCreationToken(org);
-      const taken = await repoExists(this.token, org, this.name);
-      this.nameState = taken ? "taken" : "free";
-    } catch {
-      this.nameState = "unknown"; // offline etc — submit re-validates
-    }
-    this.renderBody();
-  }
-
   private renderBody(): void {
     if (!this.bodyEl) return;
     this.bodyEl.empty();
-    const org = this.plugin.settings.baseOrg;
+    if (this.mode === "existing") this.renderExisting();
+    else this.renderCreate();
+  }
 
-    if (this.mode === "existing") {
-      const setting = new Setting(this.bodyEl).setName("Knowledge base");
-      if (this.repos === null) setting.setDesc("Loading…");
-      else if (this.repos.length === 0) setting.setDesc(`Nothing in ${org} yet — create one instead.`);
-      else {
-        setting.addDropdown((dd) => {
-          for (const r of this.repos ?? []) dd.addOption(r, r);
-          dd.setValue(this.selected).onChange((v) => (this.selected = v));
-        });
-      }
-      this.cta("Connect and pull", () => void this.submit("adopt"), this.repos !== null && this.repos.length > 0);
-      return;
+  private renderExisting(): void {
+    const org = this.plugin.settings.baseOrg;
+    const repos = this.repos;
+
+    const setting = new Setting(this.bodyEl).setName("Knowledge base");
+    if (repos !== null && repos.length > 0) {
+      setting.addDropdown((dd) => {
+        for (const r of repos) dd.addOption(r, r);
+        dd.setValue(this.selected).onChange((v) => (this.selected = v));
+      });
     }
 
-    // Create mode
-    new Setting(this.bodyEl)
-      .setName("Name")
-      .addText((t) =>
-        t.setValue(this.name).onChange((v) => {
-          this.name = v.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
-          this.scheduleNameCheck();
-        }),
-      );
-    const status = this.bodyEl.createDiv({ cls: "setting-item-description" });
+    const status = this.bodyEl.createDiv("covault-setup-status");
+    if (repos === null) status.setText("Loading…");
+    else if (repos.length === 0) status.setText(`Nothing in ${org} yet — create one instead.`);
+    else status.setText(`${repos.length} available in ${org}.`);
+
+    this.cta("Connect and pull", () => void this.submit("adopt"), repos !== null && repos.length > 0);
+  }
+
+  private renderCreate(): void {
+    new Setting(this.bodyEl).setName("Name").addText((t) =>
+      t.setValue(this.name).onChange((v) => {
+        this.name = v.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
+        this.scheduleNameCheck();
+      }),
+    );
+
+    const status = this.bodyEl.createDiv("covault-setup-status");
     switch (this.nameState) {
       case "checking":
         status.setText("Checking…");
@@ -155,18 +141,54 @@ export class MainKbModal extends Modal {
       default:
         status.setText("Enter a name.");
     }
+
     this.cta("Create and connect", () => void this.submit("create"), this.nameState !== "taken" && !!this.name);
   }
 
   private cta(label: string, onClick: () => void, enabled: boolean): void {
-    new Setting(this.bodyEl).addButton((btn) => {
+    new Setting(this.bodyEl).setClass("covault-setup-actions").addButton((btn) => {
       btn.setButtonText(label).setCta().onClick(onClick);
       btn.setDisabled(!enabled || this.busy);
       this.ctaBtn = btn.buttonEl;
     });
   }
 
-  private ctaBtn: HTMLButtonElement | null = null;
+  private scheduleNameCheck(): void {
+    if (this.debounceId !== null) window.clearTimeout(this.debounceId);
+    // The cached list answers instantly; the API is only needed when we
+    // have no list to consult.
+    if (this.repos) {
+      this.nameState = this.name ? (this.repos.includes(this.name) ? "taken" : "free") : "idle";
+      this.renderBody();
+      return;
+    }
+    this.nameState = "checking";
+    this.renderBody();
+    this.debounceId = window.setTimeout(() => void this.checkName(), 400);
+  }
+
+  private async checkName(): Promise<void> {
+    const org = this.plugin.settings.baseOrg;
+    if (!this.name) {
+      this.nameState = "idle";
+      this.renderBody();
+      return;
+    }
+    if (this.repos) {
+      this.nameState = this.repos.includes(this.name) ? "taken" : "free";
+      this.renderBody();
+      return;
+    }
+    this.nameState = "checking";
+    this.renderBody();
+    try {
+      if (!this.token) this.token = await this.plugin.appAuth.getRepoCreationToken(org);
+      this.nameState = (await repoExists(this.token, org, this.name)) ? "taken" : "free";
+    } catch {
+      this.nameState = "unknown"; // offline etc — submit re-validates
+    }
+    this.renderBody();
+  }
 
   private async submit(mode: "adopt" | "create"): Promise<void> {
     if (this.busy) return;
@@ -190,7 +212,7 @@ export class MainKbModal extends Modal {
           await createOrgRepo(token, org, repoName, true);
         } catch (e) {
           if (e instanceof RepoExistsError) {
-            throw new Error(`"${repoName}" already exists — pick another name or use the existing-repo tab.`);
+            throw new Error(`"${repoName}" already exists — pick another name or use the existing tab.`);
           }
           throw e;
         }
@@ -203,6 +225,7 @@ export class MainKbModal extends Modal {
             console.warn("[covault] couldn't add owner as collaborator:", e);
           }
         }
+        this.plugin.invalidateRepoCache();
       }
 
       await this.plugin.setupMainKb(`https://github.com/${org}/${repoName}.git`, "main", mode);
@@ -217,4 +240,9 @@ export class MainKbModal extends Modal {
       }
     }
   }
+}
+
+/** Personal KBs are what this dialog is usually for — prefer one. */
+function pickDefault(repos: string[]): string {
+  return repos.find((r) => r.startsWith("personal-kb-")) ?? repos[0] ?? "";
 }

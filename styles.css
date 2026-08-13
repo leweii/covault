@@ -1467,3 +1467,39 @@
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
+
+/* ─── Setup dialog (personal knowledge base) ───────────────────── */
+
+/* Both tabs render one control row + one status line + the action row,
+   and the body's fixed height keeps the dialog from resizing on switch. */
+.covault-setup-body {
+  height: 132px;
+  display: flex;
+  flex-direction: column;
+}
+
+.covault-setup-body .setting-item {
+  border-top: none;
+  padding: 10px 0;
+  align-items: center;
+}
+
+/* Same control width in both tabs so the dropdown and the name field
+   line up exactly across a switch. */
+.covault-setup-body select,
+.covault-setup-body input[type="text"] {
+  width: 240px;
+}
+
+.covault-setup-status {
+  font-size: 0.82em;
+  color: var(--text-muted);
+  min-height: 20px;
+  padding: 0 0 2px;
+}
+
+.covault-setup-body .setting-item.covault-setup-actions {
+  margin-top: auto;
+  padding-bottom: 0;
+  justify-content: flex-end;
+}
