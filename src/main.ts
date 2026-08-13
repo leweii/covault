@@ -57,10 +57,7 @@ export default class CovaultPlugin extends Plugin {
 
     // The plugin itself is the host: AppAuth reads settings through the
     // live reference, so a future loadSettings() swap stays visible.
-    // (Created before the settings tab, which subscribes to its events.)
     this.appAuth = new AppAuth(this);
-    this.settingsTab = new CovaultSettingTab(this.app, this);
-    this.addSettingTab(this.settingsTab);
     this.registerObsidianProtocolHandler(PROTOCOL_ACTION, (params) => {
       void this.appAuth.handleCallback(params);
     });
@@ -95,6 +92,12 @@ export default class CovaultPlugin extends Plugin {
       },
       this.resolver,
     );
+
+    // Registered last: addSettingTab() immediately asks the tab for its
+    // setting definitions (Obsidian 1.13 search indexing), and those read
+    // the manifest, models and sync state built above.
+    this.settingsTab = new CovaultSettingTab(this.app, this);
+    this.addSettingTab(this.settingsTab);
 
     this.registerView(COVAULT_VIEW_TYPE, (leaf) => new CovaultPanel(leaf, this));
     this.addRibbonIcon("library", "Open Covault panel", () => void this.activatePanel());

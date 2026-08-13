@@ -5,10 +5,11 @@
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
-    "build": "tsc -noEmit && node esbuild.config.mjs production",
+    "build": "tsc -noEmit && node esbuild.config.mjs production && node test/loadHarness.cjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "deploy": "npm run build && mkdir -p \"/Users/jakobhe/Library/Mobile Documents/iCloud~md~obsidian/Documents/Demo/.obsidian/plugins/covault\" && cp main.js manifest.json styles.css \"/Users/jakobhe/Library/Mobile Documents/iCloud~md~obsidian/Documents/Demo/.obsidian/plugins/covault/\""
+    "deploy": "npm run build && mkdir -p \"/Users/jakobhe/Library/Mobile Documents/iCloud~md~obsidian/Documents/Demo/.obsidian/plugins/covault\" && cp main.js manifest.json styles.css \"/Users/jakobhe/Library/Mobile Documents/iCloud~md~obsidian/Documents/Demo/.obsidian/plugins/covault/\"",
+    "smoke": "node test/loadHarness.cjs"
   },
   "author": "Jakob",
   "license": "MIT",
