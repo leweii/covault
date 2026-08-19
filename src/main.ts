@@ -11,6 +11,7 @@ import { PROTOCOL_ACTION } from "./auth/constants";
 import { ManifestStore, type MainKbScope, type ManifestRepo } from "./covault/manifest";
 import { ensureIgnored } from "./covault/gitignore";
 import { sameRemote } from "./git/urls";
+import { FolderLinkedError } from "./covault/errors";
 import { AddLibraryModal } from "./ui/AddLibraryModal";
 import { ShareFolderModal } from "./ui/ShareFolderModal";
 import { ConflictModal, type ConflictOps } from "./ui/ConflictModal";
@@ -441,11 +442,36 @@ export default class CovaultPlugin extends Plugin {
    *  onto a master-era repo would leave nothing to clone. */
   async addLibrary(repo: ManifestRepo): Promise<void> {
     const dir = path.join(this.vaultBasePath(), repo.path);
+    const origin = await this.engine.existingOrigin({ dir, url: repo.url, branch: repo.branch });
+    if (origin && !sameRemote(origin, repo.url)) throw new FolderLinkedError(repo.path, origin);
     const remoteBranch = await this.engine.remoteDefaultBranch({ dir, url: repo.url, branch: repo.branch });
     this.libraryManifest.add({ ...repo, branch: remoteBranch ?? repo.branch });
     this.sharedRepos(); // refresh .gitignore
     this.refreshSettingsUI();
     void this.sync.syncAll("manual");
+  }
+
+  /** Detach a library: drop it from the manifest AND delete the folder's
+   *  git state, so the folder is an ordinary folder again (re-sharing it
+   *  later must not trip over a stale link). The notes stay on disk; the
+   *  .git is only removed when it really is this library's. */
+  removeLibrary(repoPath: string): void {
+    const repo = this.libraryManifest.load().repos.find((r) => r.path === repoPath);
+    this.libraryManifest.remove(repoPath);
+    this.sharedRepos(); // refresh .gitignore
+    if (repo) {
+      void this.engine
+        .existingOrigin({ dir: path.join(this.vaultBasePath(), repoPath), url: repo.url, branch: repo.branch })
+        .then((origin) => {
+          if (origin && sameRemote(origin, repo.url)) this.unlinkFolder(repoPath);
+        });
+    }
+    this.refreshSettingsUI();
+  }
+
+  /** Delete a folder's git link (its .git directory). Notes are untouched. */
+  unlinkFolder(folderPath: string): void {
+    fs.rmSync(path.join(this.vaultBasePath(), folderPath, ".git"), { recursive: true, force: true });
   }
 
   /** Create a brand-new shared library repo in `org` backed by a fresh
@@ -469,9 +495,7 @@ export default class CovaultPlugin extends Plugin {
     // adoptRemote would repoint its origin and overwrite its content.
     // Retrying our own earlier attempt (same address) is fine.
     const origin = await this.engine.existingOrigin({ dir, url, branch });
-    if (origin && !sameRemote(origin, url)) {
-      throw new Error(`"${folderPath}" already belongs to ${origin} — pick a different folder.`);
-    }
+    if (origin && !sameRemote(origin, url)) throw new FolderLinkedError(folderPath, origin);
     const remoteBranch = await this.engine.remoteDefaultBranch({ dir, url, branch });
     if (!remoteBranch) {
       // No branches at all: nothing to pull — the folder seeds the repo.
@@ -545,9 +569,7 @@ export default class CovaultPlugin extends Plugin {
     // repoint its remote and push its content somewhere it never asked
     // to go. Retries of our own attempts (same address) are fine.
     const origin = await this.engine.existingOrigin(ref);
-    if (origin && !sameRemote(origin, url)) {
-      throw new Error(`"${folderPath}" already belongs to ${origin} — share a different folder.`);
-    }
+    if (origin && !sameRemote(origin, url)) throw new FolderLinkedError(folderPath, origin);
     await this.engine.initAndPush(ref, `Share ${folderPath} as a knowledge library`);
     this.libraryManifest.add({ path: folderPath, url, branch: ref.branch });
     this.sharedRepos(); // refresh .gitignore

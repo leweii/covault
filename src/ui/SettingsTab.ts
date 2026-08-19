@@ -354,9 +354,8 @@ export class CovaultSettingTab extends PluginSettingTab {
       onDelete: (index: number) => {
         const repo = repos[index];
         if (!repo) return;
-        // The folder stays on disk — removing only stops syncing it.
-        this.plugin.libraryManifest.remove(repo.path);
-        this.plugin.sharedRepos(); // refresh .gitignore
+        // The folder and its notes stay on disk — only the link goes.
+        this.plugin.removeLibrary(repo.path);
         this.update();
       },
       addItem: {

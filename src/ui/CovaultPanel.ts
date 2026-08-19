@@ -385,8 +385,7 @@ export class CovaultPanel extends ItemView {
           cta: "Remove",
         });
         if (!ok) return;
-        this.plugin.libraryManifest.remove(repo.path);
-        this.plugin.sharedRepos();
+        this.plugin.removeLibrary(repo.path);
         new Notice(`Covault: "${repo.path}" is no longer synced.`);
         this.render();
       };

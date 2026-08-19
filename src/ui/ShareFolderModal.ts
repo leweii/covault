@@ -1,6 +1,7 @@
 import { Modal, Notice, Setting, type App } from "obsidian";
 import type CovaultPlugin from "../main";
 import { createOrgRepo, RepoExistsError } from "../git/githubApi";
+import { FolderLinkedError } from "../covault/errors";
 import { ConfirmModal } from "./ConfirmModal";
 
 /**
@@ -69,9 +70,9 @@ export class ShareFolderModal extends Modal {
     this.busy = true;
     buttonEl.disabled = true;
     buttonEl.setText("Sharing…");
+    let url = "";
     try {
       const token = await this.plugin.appAuth.getRepoCreationToken(this.org);
-      let url: string;
       try {
         const repo = await createOrgRepo(token, this.org, this.repoName, this.isPrivate);
         url = repo.url;
@@ -96,8 +97,32 @@ export class ShareFolderModal extends Modal {
       new Notice(`Covault: "${this.folderPath}" is now shared as ${this.org}/${this.repoName}.`);
       this.close();
     } catch (e) {
-      console.error("[covault] share folder failed:", e);
-      new Notice(`Covault: couldn't share the folder — ${(e as Error).message}`);
+      // The folder still carries the link of a library it used to be —
+      // offer to unlink it (the notes are untouched) and share fresh.
+      if (e instanceof FolderLinkedError && url) {
+        const ok = await ConfirmModal.ask(this.app, {
+          title: "Folder is linked to a previous library",
+          message:
+            `"${this.folderPath}" is still linked to ${e.origin}. ` +
+            `Unlink it and share as a new library? Your notes stay untouched.`,
+          cta: "Unlink and share",
+        });
+        if (ok) {
+          try {
+            this.plugin.unlinkFolder(this.folderPath);
+            await this.plugin.attachExistingLibrary(this.folderPath, url, "main");
+            new Notice(`Covault: "${this.folderPath}" is now shared as ${this.org}/${this.repoName}.`);
+            this.close();
+            return;
+          } catch (e2) {
+            console.error("[covault] share after unlink failed:", e2);
+            new Notice(`Covault: couldn't share the folder — ${(e2 as Error).message}`);
+          }
+        }
+      } else {
+        console.error("[covault] share folder failed:", e);
+        new Notice(`Covault: couldn't share the folder — ${(e as Error).message}`);
+      }
       buttonEl.disabled = false;
       buttonEl.setText("Share");
       this.busy = false;

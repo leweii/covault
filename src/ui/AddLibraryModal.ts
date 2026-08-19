@@ -1,6 +1,7 @@
 import { Modal, Notice, Setting, type App } from "obsidian";
 import type CovaultPlugin from "../main";
 import { RepoExistsError } from "../git/githubApi";
+import { FolderLinkedError } from "../covault/errors";
 import { ConfirmModal } from "./ConfirmModal";
 
 const CREATE_NEW = "\u0000create-new";
@@ -198,8 +199,36 @@ export class AddLibraryModal extends Modal {
       }
       this.close();
     } catch (e) {
-      console.error("[covault] add library failed:", e);
-      new Notice(`Covault: couldn't add the library — ${(e as Error).message}`);
+      if (e instanceof FolderLinkedError) {
+        const url =
+          this.choice === CREATE_NEW
+            ? `https://github.com/${this.org}/${this.newName}.git`
+            : this.choice
+              ? `https://github.com/${this.choice}.git`
+              : this.manualUrl;
+        const ok = await ConfirmModal.ask(this.app, {
+          title: "Folder is linked to a previous library",
+          message:
+            `"${this.folder}" is still linked to ${e.origin}. ` +
+            `Unlink it and connect to this library instead? Your notes stay untouched.`,
+          cta: "Unlink and connect",
+        });
+        if (ok && url) {
+          try {
+            this.plugin.unlinkFolder(this.folder);
+            await this.plugin.attachExistingLibrary(this.folder, url, this.branch);
+            new Notice(`Covault: "${this.folder}" connected.`);
+            this.close();
+            return;
+          } catch (e2) {
+            console.error("[covault] add after unlink failed:", e2);
+            new Notice(`Covault: couldn't add the library — ${(e2 as Error).message}`);
+          }
+        }
+      } else {
+        console.error("[covault] add library failed:", e);
+        new Notice(`Covault: couldn't add the library — ${(e as Error).message}`);
+      }
       buttonEl.disabled = false;
       buttonEl.setText("Add");
       this.busy = false;
