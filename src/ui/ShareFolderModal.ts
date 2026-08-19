@@ -96,6 +96,7 @@ export class ShareFolderModal extends Modal {
       new Notice(`Covault: "${this.folderPath}" is now shared as ${this.org}/${this.repoName}.`);
       this.close();
     } catch (e) {
+      console.error("[covault] share folder failed:", e);
       new Notice(`Covault: couldn't share the folder — ${(e as Error).message}`);
       buttonEl.disabled = false;
       buttonEl.setText("Share");

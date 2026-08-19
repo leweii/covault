@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ownerFromUrl, repoNameFromUrl } from "../src/git/urls";
+import { ownerFromUrl, repoNameFromUrl, sameRemote } from "../src/git/urls";
 
 describe("ownerFromUrl", () => {
   it("extracts the org from a github https url", () => {
@@ -16,5 +16,14 @@ describe("ownerFromUrl", () => {
 describe("repoNameFromUrl", () => {
   it("strips the .git suffix", () => {
     expect(repoNameFromUrl("https://github.com/chancetop/platform-kb.git")).toBe("platform-kb");
+  });
+});
+
+describe("sameRemote", () => {
+  it("ignores the .git suffix, a trailing slash, and case", () => {
+    expect(sameRemote("https://github.com/ct-kb/handbook.git", "https://github.com/CT-KB/handbook/")).toBe(true);
+  });
+  it("tells different repositories apart", () => {
+    expect(sameRemote("https://github.com/ct-kb/handbook.git", "https://github.com/ct-kb/other.git")).toBe(false);
   });
 });

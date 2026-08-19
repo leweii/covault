@@ -10,6 +10,7 @@ import { AppAuth } from "./auth/AppAuth";
 import { PROTOCOL_ACTION } from "./auth/constants";
 import { ManifestStore, type MainKbScope, type ManifestRepo } from "./covault/manifest";
 import { ensureIgnored } from "./covault/gitignore";
+import { sameRemote } from "./git/urls";
 import { AddLibraryModal } from "./ui/AddLibraryModal";
 import { ShareFolderModal } from "./ui/ShareFolderModal";
 import { ConflictModal, type ConflictOps } from "./ui/ConflictModal";
@@ -522,6 +523,13 @@ export default class CovaultPlugin extends Plugin {
   /** Create-and-upload flow for ShareFolderModal (repo already created). */
   async shareFolder(folderPath: string, url: string, branch = "main"): Promise<void> {
     const ref = { dir: path.join(this.vaultBasePath(), folderPath), url, branch };
+    // Taking over a folder that already belongs to another repo would
+    // repoint its remote and push its content somewhere it never asked
+    // to go. Retries of our own attempts (same address) are fine.
+    const origin = await this.engine.existingOrigin(ref);
+    if (origin && !sameRemote(origin, url)) {
+      throw new Error(`"${folderPath}" already belongs to ${origin} — share a different folder.`);
+    }
     await this.engine.initAndPush(ref, `Share ${folderPath} as a knowledge library`);
     this.libraryManifest.add({ path: folderPath, url, branch: ref.branch });
     this.sharedRepos(); // refresh .gitignore

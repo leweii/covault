@@ -266,6 +266,7 @@ export class MainKbModal extends Modal {
       new Notice(`Covault: your personal knowledge base is connected to ${org}/${repoName}.`);
       this.close();
     } catch (e) {
+      console.error("[covault] personal KB setup failed:", e);
       new Notice(`Covault: setup failed — ${(e as Error).message}`, 10_000);
       this.busy = false;
       if (btn) {

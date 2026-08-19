@@ -255,6 +255,39 @@ describe("GitEngine against a real smart-HTTP remote", () => {
     expect(fs.readFileSync(path.join(check.dir, "intro.md"), "utf8")).toContain("intro");
   });
 
+  it("seeds a folder that already carries a .git on another branch", async () => {
+    // Sharing a folder that is already a git repo (a leftover attempt, or
+    // something cloned into the vault — often still on "master") used to
+    // commit onto that branch and then fail the push with
+    // 'Could not find main.'
+    const bare = path.join(root, "onmaster-kb.git");
+    execFileSync("git", ["init", "--bare", "-b", "main", bare]);
+    execFileSync("git", ["config", "http.receivepack", "true"], { cwd: bare });
+
+    const folder = path.join(root, "vault-onmaster", "handbook");
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, "intro.md"), "# intro\n");
+    execFileSync("git", ["init", "-b", "master"], { cwd: folder });
+    const ref: RepoRef = { dir: folder, url: `${server.url}/onmaster-kb.git`, branch: "main" };
+
+    await engineA.initAndPush(ref, "Share handbook as a knowledge library");
+
+    const check: RepoRef = { dir: path.join(root, "onmaster-check"), url: ref.url, branch: "main" };
+    await engineB.clone(check);
+    expect(fs.readFileSync(path.join(check.dir, "intro.md"), "utf8")).toContain("intro");
+  });
+
+  it("reports the origin of a folder that already belongs to another repo", async () => {
+    const folder = path.join(root, "vault-foreign", "clone");
+    fs.mkdirSync(folder, { recursive: true });
+    const ref: RepoRef = { dir: folder, url: `${server.url}/whatever.git`, branch: "main" };
+    expect(await engineA.existingOrigin(ref)).toBeNull(); // not a repo yet
+
+    execFileSync("git", ["init", "-b", "main"], { cwd: folder });
+    execFileSync("git", ["remote", "add", "origin", "https://github.com/someone/else.git"], { cwd: folder });
+    expect(await engineA.existingOrigin(ref)).toBe("https://github.com/someone/else.git");
+  });
+
   it("whole-vault scope: everything but the team libraries and vault machinery", async () => {
     const bare = path.join(root, "wholevault-kb.git");
     execFileSync("git", ["init", "--bare", "-b", "main", bare]);

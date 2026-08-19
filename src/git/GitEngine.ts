@@ -160,6 +160,19 @@ export class GitEngine {
     const { fs } = this.deps;
     await fs.promises.mkdir(ref.dir, { recursive: true }); // may be a folder-to-be
     await git.init({ fs, dir: ref.dir, gitdir: ref.gitdir, defaultBranch: ref.branch });
+    // init leaves an existing HEAD alone, and a folder can arrive with one
+    // (a leftover from a failed attempt, or a repo someone cloned into the
+    // vault, often still on "master"). Without this the commit lands on
+    // that branch and the push looks for one that was never written.
+    await git.writeRef({
+      fs,
+      dir: ref.dir,
+      gitdir: ref.gitdir,
+      ref: "HEAD",
+      value: `refs/heads/${ref.branch}`,
+      symbolic: true,
+      force: true,
+    });
     await git.addRemote({ fs, dir: ref.dir, gitdir: ref.gitdir, remote: "origin", url: ref.url, force: true });
     const changes = await this.localChanges(ref, opts);
     const hasHead = (await this.resolve(ref, "HEAD")) !== null;
@@ -222,6 +235,22 @@ export class GitEngine {
     });
     await git.checkout({ fs, dir: ref.dir, gitdir: ref.gitdir, ref: ref.branch, force: true });
     return backedUp;
+  }
+
+  /** The folder's current origin, if it is already a git repo — a folder
+   *  someone cloned into the vault must not have its remote hijacked. */
+  async existingOrigin(ref: RepoRef): Promise<string | null> {
+    try {
+      const url = await git.getConfig({
+        fs: this.deps.fs,
+        dir: ref.dir,
+        gitdir: ref.gitdir,
+        path: "remote.origin.url",
+      });
+      return typeof url === "string" && url ? url : null;
+    } catch {
+      return null; // not a repo yet
+    }
   }
 
   async isRepo(ref: RepoRef): Promise<boolean> {

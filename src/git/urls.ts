@@ -7,6 +7,18 @@ export function ownerFromUrl(url: string): string {
   return owner;
 }
 
+/** Same remote, spelled differently? Trailing ".git", a trailing slash
+ *  and case are all noise; anything else counts as a different remote. */
+export function sameRemote(a: string, b: string): boolean {
+  const norm = (u: string) =>
+    u
+      .trim()
+      .replace(/\/+$/, "")
+      .replace(/\.git$/i, "")
+      .toLowerCase();
+  return norm(a) === norm(b);
+}
+
 /** Repository name without the trailing ".git". */
 export function repoNameFromUrl(url: string): string {
   const segments = new URL(url).pathname.split("/").filter(Boolean);
