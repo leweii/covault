@@ -109,7 +109,13 @@ export class SyncController {
           this.setState(repo.path, { phase: "error", detail: "Needs set up again (repo state missing)" });
           return;
         }
-        await this.engine.clone(ref);
+        // An empty library (created on GitHub but never pushed to) has
+        // nothing to clone — seed it from the vault folder instead.
+        if (await this.engine.remoteHasBranch(ref)) {
+          await this.engine.clone(ref);
+        } else {
+          await this.engine.initAndPush(ref, `Share ${name} as a knowledge library`);
+        }
         this.setState(repo.path, { phase: "idle", lastSyncedAt: Date.now() });
         if (trigger === "manual") new Notice(`Covault: "${name}" is ready.`);
         return;

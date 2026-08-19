@@ -101,6 +101,16 @@ const ALWAYS_EXCLUDED = [".trash", ".covault/main.git"];
 export class GitEngine {
   constructor(private deps: GitEngineDeps) {}
 
+  private auth(ref: RepoRef) {
+    return {
+      onAuth: async () => ({
+        username: this.deps.tokens.gitUser(),
+        password: await this.deps.tokens.getTokenForOwner(ownerFromUrl(ref.url)),
+      }),
+      onAuthFailure: () => ({ cancel: true }),
+    };
+  }
+
   private common(ref: RepoRef) {
     const { fs, http } = this.deps;
     return {
@@ -108,12 +118,24 @@ export class GitEngine {
       http,
       dir: ref.dir,
       gitdir: ref.gitdir,
-      onAuth: async () => ({
-        username: this.deps.tokens.gitUser(),
-        password: await this.deps.tokens.getTokenForOwner(ownerFromUrl(ref.url)),
-      }),
-      onAuthFailure: () => ({ cancel: true }),
+      ...this.auth(ref),
     };
+  }
+
+  /**
+   * Does the remote have this branch yet? A repo that exists but was
+   * never pushed to — freshly created on GitHub, or left behind by a
+   * half-finished earlier attempt — has no branch at all: there is
+   * nothing to clone or adopt, and the local side has to seed it.
+   */
+  async remoteHasBranch(ref: RepoRef): Promise<boolean> {
+    const refs = await git.listServerRefs({
+      http: this.deps.http,
+      url: ref.url,
+      prefix: `refs/heads/${ref.branch}`,
+      ...this.auth(ref),
+    });
+    return refs.length > 0;
   }
 
   async clone(ref: RepoRef): Promise<void> {
@@ -136,6 +158,7 @@ export class GitEngine {
     opts: { exclude?: string[]; include?: string[] } = {},
   ): Promise<void> {
     const { fs } = this.deps;
+    await fs.promises.mkdir(ref.dir, { recursive: true }); // may be a folder-to-be
     await git.init({ fs, dir: ref.dir, gitdir: ref.gitdir, defaultBranch: ref.branch });
     await git.addRemote({ fs, dir: ref.dir, gitdir: ref.gitdir, remote: "origin", url: ref.url, force: true });
     const changes = await this.localChanges(ref, opts);

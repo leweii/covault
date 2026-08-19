@@ -229,6 +229,32 @@ describe("GitEngine against a real smart-HTTP remote", () => {
     ]);
   });
 
+  it("an existing but never-pushed-to remote has no branch to adopt — it gets seeded", async () => {
+    // A repo created on GitHub (or by a half-finished earlier attempt)
+    // and never pushed to: adopting it used to fail with
+    // 'The remote has no "main" branch yet.'
+    const bare = path.join(root, "empty-kb.git");
+    execFileSync("git", ["init", "--bare", "-b", "main", bare]);
+    execFileSync("git", ["config", "http.receivepack", "true"], { cwd: bare });
+
+    const folder = path.join(root, "vault-empty-remote", "handbook");
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, "intro.md"), "# intro\n");
+    const ref: RepoRef = { dir: folder, url: `${server.url}/empty-kb.git`, branch: "main" };
+
+    expect(await engineA.remoteHasBranch(ref)).toBe(false);
+    await expect(engineA.adoptRemote(ref)).rejects.toThrow(/no "main" branch/);
+
+    // The caller's fallback: seed the empty remote from the folder.
+    fs.rmSync(path.join(folder, ".git"), { recursive: true, force: true });
+    await engineA.initAndPush(ref, "Share handbook as a knowledge library");
+    expect(await engineA.remoteHasBranch(ref)).toBe(true);
+
+    const check: RepoRef = { dir: path.join(root, "empty-check"), url: ref.url, branch: "main" };
+    await engineB.clone(check);
+    expect(fs.readFileSync(path.join(check.dir, "intro.md"), "utf8")).toContain("intro");
+  });
+
   it("whole-vault scope: everything but the team libraries and vault machinery", async () => {
     const bare = path.join(root, "wholevault-kb.git");
     execFileSync("git", ["init", "--bare", "-b", "main", bare]);

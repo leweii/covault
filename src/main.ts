@@ -456,10 +456,16 @@ export default class CovaultPlugin extends Plugin {
 
   /** Bind a folder to an already-existing library repo: the library's
    *  content wins (local versions of overlapping notes are kept aside),
-   *  then keep it synced. */
+   *  then keep it synced. An existing but never-pushed-to repo has
+   *  nothing to pull, so the folder seeds it instead. */
   async attachExistingLibrary(folderPath: string, url: string, branch: string): Promise<void> {
     const dir = path.join(this.vaultBasePath(), folderPath);
     const hasContent = fs.existsSync(dir) && fs.readdirSync(dir).length > 0;
+    if (!(await this.engine.remoteHasBranch({ dir, url, branch }))) {
+      await this.shareFolder(folderPath, url, branch);
+      void this.sync.syncAll("manual");
+      return;
+    }
     if (!hasContent) {
       // Empty/missing folder: plain clone via the normal add path.
       await this.addLibrary({ path: folderPath, url, branch });
@@ -490,7 +496,11 @@ export default class CovaultPlugin extends Plugin {
     // nothing anyone depends on (mainRepo was never saved), so restart clean.
     fs.rmSync(ref.gitdir, { recursive: true, force: true });
 
-    if (mode === "create") {
+    // A knowledge base that exists but was never pushed to has no branch
+    // to adopt — this vault seeds it, same as a brand-new one.
+    const effective = mode === "adopt" && !(await this.engine.remoteHasBranch(ref)) ? "create" : mode;
+
+    if (effective === "create") {
       const exclude = this.sharedRepos().map((r) => r.path); // also refreshes .gitignore
       await this.engine.initAndPush(ref, "Set up personal knowledge base", {
         exclude,
@@ -510,8 +520,8 @@ export default class CovaultPlugin extends Plugin {
   }
 
   /** Create-and-upload flow for ShareFolderModal (repo already created). */
-  async shareFolder(folderPath: string, url: string): Promise<void> {
-    const ref = { dir: path.join(this.vaultBasePath(), folderPath), url, branch: "main" };
+  async shareFolder(folderPath: string, url: string, branch = "main"): Promise<void> {
+    const ref = { dir: path.join(this.vaultBasePath(), folderPath), url, branch };
     await this.engine.initAndPush(ref, `Share ${folderPath} as a knowledge library`);
     this.libraryManifest.add({ path: folderPath, url, branch: ref.branch });
     this.sharedRepos(); // refresh .gitignore
