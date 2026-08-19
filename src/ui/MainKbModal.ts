@@ -1,5 +1,6 @@
 import { Modal, Notice, Setting, type App } from "obsidian";
 import type CovaultPlugin from "../main";
+import type { MainKbScope } from "../covault/manifest";
 import { addCollaborator, createOrgRepo, repoExists, RepoExistsError } from "../git/githubApi";
 
 type Mode = "existing" | "create";
@@ -15,8 +16,9 @@ type Mode = "existing" | "create";
  *   create   → name one that doesn't exist yet; your marked notes become
  *              its first commit, so there is nothing to conflict.
  *
- * Both tabs render the same shape (control row + status line + button) so
- * switching between them never resizes the dialog.
+ * Both tabs render the same shape (control row + status line) so switching
+ * between them never resizes the dialog; the scope picker and the action
+ * button sit below in a shared footer.
  */
 export class MainKbModal extends Modal {
   private mode: Mode = "existing";
@@ -28,6 +30,8 @@ export class MainKbModal extends Modal {
   private busy = false;
   private debounceId: number | null = null;
   private bodyEl!: HTMLElement;
+  private footerEl!: HTMLElement;
+  private kbScope: MainKbScope; // not `scope`: Modal.scope is the keymap scope
   private ctaBtn: HTMLButtonElement | null = null;
 
   constructor(
@@ -37,6 +41,7 @@ export class MainKbModal extends Modal {
     super(app);
     const login = plugin.settings.githubApp.connections[0]?.login ?? "";
     this.name = `personal-kb-${login.toLowerCase()}`;
+    this.kbScope = plugin.mainKbScope();
     // Start from the warm cache so the dropdown is filled immediately.
     this.repos = plugin.cachedOrgRepos();
     if (this.repos) this.selected = pickDefault(this.repos);
@@ -73,6 +78,7 @@ export class MainKbModal extends Modal {
     tab("Create a new KB", "create");
 
     this.bodyEl = contentEl.createDiv("covault-setup-body");
+    this.footerEl = contentEl.createDiv("covault-setup-footer");
     this.renderBody();
 
     // Refresh in the background: the cache may predate something the user
@@ -92,11 +98,29 @@ export class MainKbModal extends Modal {
   private renderBody(): void {
     if (!this.bodyEl) return;
     this.bodyEl.empty();
-    if (this.mode === "existing") this.renderExisting();
-    else this.renderCreate();
+    this.footerEl.empty();
+    const cta = this.mode === "existing" ? this.renderExisting() : this.renderCreate();
+    this.renderScope();
+    this.cta(cta.label, cta.onClick, cta.enabled);
   }
 
-  private renderExisting(): void {
+  /** How much of the vault this knowledge base will hold. Team libraries
+   *  stay out of it either way — they sync to their own repos, and a note
+   *  living in both would be pushed twice. */
+  private renderScope(): void {
+    new Setting(this.footerEl)
+      .setName("Back up")
+      .setDesc("Team libraries always stay in their own libraries.")
+      .addDropdown((dd) =>
+        dd
+          .addOption("marked", "Only notes I mark")
+          .addOption("vault", "Everything in this vault")
+          .setValue(this.kbScope)
+          .onChange((v) => (this.kbScope = v === "vault" ? "vault" : "marked")),
+      );
+  }
+
+  private renderExisting(): Cta {
     const org = this.plugin.settings.baseOrg;
     const repos = this.repos;
 
@@ -113,10 +137,14 @@ export class MainKbModal extends Modal {
     else if (repos.length === 0) status.setText(`Nothing in ${org} yet — create one instead.`);
     else status.setText(`${repos.length} available in ${org}.`);
 
-    this.cta("Connect and pull", () => void this.submit("adopt"), repos !== null && repos.length > 0);
+    return {
+      label: "Connect and pull",
+      onClick: () => void this.submit("adopt"),
+      enabled: repos !== null && repos.length > 0,
+    };
   }
 
-  private renderCreate(): void {
+  private renderCreate(): Cta {
     new Setting(this.bodyEl).setName("Knowledge base").addText((t) =>
       t.setValue(this.name).onChange((v) => {
         this.name = v.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
@@ -142,11 +170,15 @@ export class MainKbModal extends Modal {
         status.setText("Enter a name.");
     }
 
-    this.cta("Create and connect", () => void this.submit("create"), this.nameState !== "taken" && !!this.name);
+    return {
+      label: "Create and connect",
+      onClick: () => void this.submit("create"),
+      enabled: this.nameState !== "taken" && !!this.name,
+    };
   }
 
   private cta(label: string, onClick: () => void, enabled: boolean): void {
-    new Setting(this.bodyEl).setClass("covault-setup-actions").addButton((btn) => {
+    new Setting(this.footerEl).setClass("covault-setup-actions").addButton((btn) => {
       btn.setButtonText(label).setCta().onClick(onClick);
       btn.setDisabled(!enabled || this.busy);
       this.ctaBtn = btn.buttonEl;
@@ -228,6 +260,8 @@ export class MainKbModal extends Modal {
         this.plugin.invalidateRepoCache();
       }
 
+      // Scope first: "create" builds the very first commit from it.
+      this.plugin.libraryManifest.setScope(this.kbScope);
       await this.plugin.setupMainKb(`https://github.com/${org}/${repoName}.git`, "main", mode);
       new Notice(`Covault: your personal knowledge base is connected to ${org}/${repoName}.`);
       this.close();
@@ -240,6 +274,12 @@ export class MainKbModal extends Modal {
       }
     }
   }
+}
+
+interface Cta {
+  label: string;
+  onClick: () => void;
+  enabled: boolean;
 }
 
 /** Personal KBs are what this dialog is usually for — prefer one. */

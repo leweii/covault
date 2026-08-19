@@ -16,18 +16,27 @@ export interface ManifestRepo {
   branch: string;
 }
 
+/**
+ * How much of the vault the personal knowledge base holds:
+ *   "marked" — opt-in (the default): only the `include` paths.
+ *   "vault"  — everything, minus the team libraries and vault machinery.
+ * Team library folders stay out in both modes: a note belongs to exactly
+ * one knowledge base, never to two at once.
+ */
+export type MainKbScope = "marked" | "vault";
+
 export interface CovaultManifest {
   version: 1;
   repos: ManifestRepo[];
   /**
-   * Vault paths marked "share to my knowledge base". The main repo is
-   * opt-in: everything is private by default, only these paths (plus
-   * .covault itself) are synced to the personal repo.
+   * Vault paths marked "share to my knowledge base". Consulted only in
+   * "marked" scope — everything else is private by default.
    */
   include: string[];
+  scope: MainKbScope;
 }
 
-const EMPTY: CovaultManifest = { version: 1, repos: [], include: [] };
+const EMPTY: CovaultManifest = { version: 1, repos: [], include: [], scope: "marked" };
 
 export class ManifestStore {
   constructor(private vaultBase: string) {}
@@ -46,7 +55,10 @@ export class ManifestStore {
           )
         : [];
       const include = Array.isArray(raw.include) ? raw.include.filter((p): p is string => typeof p === "string") : [];
-      return { version: 1, repos, include };
+      // Anything unrecognized — including manifests written before scopes
+      // existed — means the private-by-default mode.
+      const scope: MainKbScope = raw.scope === "vault" ? "vault" : "marked";
+      return { version: 1, repos, include, scope };
     } catch {
       return structuredClone(EMPTY);
     }
@@ -82,6 +94,16 @@ export class ManifestStore {
       manifest.include = manifest.include.filter((p) => !(p === vaultPath || p.startsWith(`${vaultPath}/`)));
       manifest.include.push(vaultPath);
       manifest.include.sort();
+      this.save(manifest);
+    }
+    return manifest;
+  }
+
+  /** Switch the personal knowledge base between opt-in and whole-vault. */
+  setScope(scope: MainKbScope): CovaultManifest {
+    const manifest = this.load();
+    if (manifest.scope !== scope) {
+      manifest.scope = scope;
       this.save(manifest);
     }
     return manifest;

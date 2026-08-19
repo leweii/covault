@@ -229,6 +229,69 @@ describe("GitEngine against a real smart-HTTP remote", () => {
     ]);
   });
 
+  it("whole-vault scope: everything but the team libraries and vault machinery", async () => {
+    const bare = path.join(root, "wholevault-kb.git");
+    execFileSync("git", ["init", "--bare", "-b", "main", bare]);
+    execFileSync("git", ["config", "http.receivepack", "true"], { cwd: bare });
+
+    const vaultRoot = path.join(root, "vault-whole");
+    fs.mkdirSync(path.join(vaultRoot, "private"), { recursive: true });
+    fs.mkdirSync(path.join(vaultRoot, ".obsidian"), { recursive: true });
+    fs.mkdirSync(path.join(vaultRoot, ".trash"), { recursive: true });
+    fs.mkdirSync(path.join(vaultRoot, "team-kb"), { recursive: true });
+    fs.writeFileSync(path.join(vaultRoot, "private", "diary.md"), "# no longer secret\n");
+    fs.writeFileSync(path.join(vaultRoot, "loose-note.md"), "# loose\n");
+    fs.writeFileSync(path.join(vaultRoot, ".obsidian", "workspace.json"), "{}\n");
+    fs.writeFileSync(path.join(vaultRoot, ".trash", "deleted.md"), "# gone\n");
+    fs.writeFileSync(path.join(vaultRoot, "team-kb", "handbook.md"), "# team\n");
+
+    const gitdir = path.join(vaultRoot, ".covault", "main.git");
+    const ref: RepoRef = { dir: vaultRoot, url: `${server.url}/wholevault-kb.git`, branch: "main", gitdir };
+    // No `include` — whole-vault scope. "team-kb" is a library folder.
+    await engineA.initAndPush(ref, "Set up personal knowledge base", { exclude: ["team-kb"] });
+
+    const check: RepoRef = { dir: path.join(root, "wholevault-check"), url: ref.url, branch: "main" };
+    await engineB.clone(check);
+    expect(fs.existsSync(path.join(check.dir, "private", "diary.md"))).toBe(true);
+    expect(fs.existsSync(path.join(check.dir, "loose-note.md"))).toBe(true);
+    expect(fs.existsSync(path.join(check.dir, "team-kb"))).toBe(false); // the library owns it
+    expect(fs.existsSync(path.join(check.dir, ".obsidian"))).toBe(false);
+    expect(fs.existsSync(path.join(check.dir, ".trash"))).toBe(false);
+  });
+
+  it("whole-vault scope: a folder that becomes a library leaves the personal repo", async () => {
+    const bare = path.join(root, "handover-kb.git");
+    execFileSync("git", ["init", "--bare", "-b", "main", bare]);
+    execFileSync("git", ["config", "http.receivepack", "true"], { cwd: bare });
+
+    // A vault backed up whole, before any library exists.
+    const vaultRoot = path.join(root, "vault-handover");
+    fs.mkdirSync(path.join(vaultRoot, "handbook"), { recursive: true });
+    fs.writeFileSync(path.join(vaultRoot, "note.md"), "# mine\n");
+    fs.writeFileSync(path.join(vaultRoot, "handbook", "onboarding.md"), "# onboarding\n");
+
+    const gitdir = path.join(vaultRoot, ".covault", "main.git");
+    const ref: RepoRef = { dir: vaultRoot, url: `${server.url}/handover-kb.git`, branch: "main", gitdir };
+    await engineA.initAndPush(ref, "Set up personal knowledge base", {});
+
+    // Now "handbook" is shared as a team library: the personal repo must
+    // hand it over instead of syncing the same notes twice.
+    const changes = await engineA.localChanges(ref, { exclude: ["handbook"] });
+    expect(changes).toEqual([{ filepath: "handbook/onboarding.md", kind: "deleted" }]);
+
+    const result = await engineA.syncToRemote(ref, { commitMessage: msg, exclude: ["handbook"] });
+    expect(result.committed).toHaveLength(1);
+
+    const check: RepoRef = { dir: path.join(root, "handover-check"), url: ref.url, branch: "main" };
+    await engineB.clone(check);
+    expect(fs.existsSync(path.join(check.dir, "note.md"))).toBe(true);
+    expect(fs.existsSync(path.join(check.dir, "handbook"))).toBe(false);
+    // The notes themselves are untouched on disk — the library repo has them now.
+    expect(fs.existsSync(path.join(vaultRoot, "handbook", "onboarding.md"))).toBe(true);
+    // Idempotent: nothing left to hand over on the next round.
+    expect(await engineA.localChanges(ref, { exclude: ["handbook"] })).toEqual([]);
+  });
+
   it("separate gitdir: a fully-tracked vault .git can't leak into the personal repo", async () => {
     const bare = path.join(root, "gitdir-kb.git");
     execFileSync("git", ["init", "--bare", "-b", "main", bare]);

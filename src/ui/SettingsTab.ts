@@ -45,6 +45,8 @@ export class CovaultSettingTab extends PluginSettingTab {
   getControlValue(key: string): unknown {
     const s = this.plugin.settings;
     switch (key) {
+      case "mainKbScope":
+        return this.plugin.mainKbScope();
       case "baseOrg":
         return s.baseOrg;
       case "authorName":
@@ -69,6 +71,11 @@ export class CovaultSettingTab extends PluginSettingTab {
   async setControlValue(key: string, value: unknown): Promise<void> {
     const s = this.plugin.settings;
     switch (key) {
+      // Scope lives in the manifest (it travels with the vault), not in
+      // settings — it persists and re-renders on its own.
+      case "mainKbScope":
+        await this.plugin.setMainKbScope(value === "vault" ? "vault" : "marked");
+        return;
       case "baseOrg":
         s.baseOrg = String(value);
         break;
@@ -266,26 +273,30 @@ export class CovaultSettingTab extends PluginSettingTab {
           );
         },
       });
+      items.push(this.scopeItem());
+
       const shared = this.plugin.libraryManifest.load().include;
-      items.push(
-        shared.length === 0
-          ? {
-              name: "Nothing shared yet",
-              desc:
-                "Your vault is private by default. Right-click a note or folder and choose " +
-                "“Share to my knowledge base” to start backing it up.",
-            }
-          : {
-              name: `${shared.length} item(s) shared`,
-              desc: "Only marked notes and folders sync to your personal repo.",
-              aliases: ["shared items", "stop sharing"],
-              render: (setting: Setting) => {
-                setting.addButton((btn) =>
-                  btn.setButtonText("Manage…").onClick(() => new SharedItemsModal(this.app, this.plugin).open()),
-                );
+      if (this.plugin.mainKbScope() === "marked") {
+        items.push(
+          shared.length === 0
+            ? {
+                name: "Nothing shared yet",
+                desc:
+                  "Your vault is private by default. Right-click a note or folder and choose " +
+                  "“Share to my knowledge base” to start backing it up.",
+              }
+            : {
+                name: `${shared.length} item(s) shared`,
+                desc: "Only marked notes and folders sync to your personal repo.",
+                aliases: ["shared items", "stop sharing"],
+                render: (setting: Setting) => {
+                  setting.addButton((btn) =>
+                    btn.setButtonText("Manage…").onClick(() => new SharedItemsModal(this.app, this.plugin).open()),
+                  );
+                },
               },
-            },
-      );
+        );
+      }
     } else {
       items.push({
         name: "Back up this vault",
@@ -305,6 +316,28 @@ export class CovaultSettingTab extends PluginSettingTab {
     }
 
     return { type: "group", heading: "Personal knowledge base", items };
+  }
+
+  /** Opt-in vs whole-vault. Team libraries are left out either way — they
+   *  are knowledge bases in their own right, and a note living in two of
+   *  them would be pushed twice and end up conflicting with itself. */
+  private scopeItem(): SettingGroupItem {
+    const libs = this.plugin.libraryManifest.load().repos.length;
+    const vaultDesc =
+      libs === 0
+        ? "Every note in this vault is backed up. Team libraries you add later stay out of it automatically."
+        : `Every note in this vault is backed up, except your ${libs} team ` +
+          `${libs === 1 ? "library" : "libraries"} — those sync to their own repos.`;
+    return {
+      name: "What to back up",
+      desc: this.plugin.mainKbScope() === "vault" ? vaultDesc : "Nothing leaves this device until you mark it.",
+      aliases: ["scope", "everything", "whole vault", "opt-in", "privacy"],
+      control: {
+        type: "dropdown",
+        key: "mainKbScope",
+        options: { marked: "Only notes I mark", vault: "Everything in this vault" },
+      },
+    };
   }
 
   // ── Shared libraries ─────────────────────────────────────────────

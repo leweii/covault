@@ -1477,12 +1477,23 @@
   margin: 0 0 8px;
 }
 
-/* Both tabs render one control row + one status line + the action row,
-   and the body's fixed height keeps the dialog from resizing on switch. */
+/* Both tabs render one control row + one status line, and the body's
+   fixed height keeps the dialog from resizing on switch. The scope row
+   and the action button live in the footer, identical in both tabs. */
 .covault-setup-body {
-  height: 132px;
+  height: 72px;
   display: flex;
   flex-direction: column;
+}
+
+.covault-setup-footer .setting-item {
+  border-top: none;
+  padding: 10px 4px;
+  align-items: center;
+}
+
+.covault-setup-footer select {
+  width: 240px;
 }
 
 .covault-setup-body .setting-item {
@@ -1505,8 +1516,7 @@
   padding: 0 4px 2px;
 }
 
-.covault-setup-body .setting-item.covault-setup-actions {
-  margin-top: auto;
+.covault-setup-footer .setting-item.covault-setup-actions {
   padding-bottom: 0;
   justify-content: flex-end;
 }

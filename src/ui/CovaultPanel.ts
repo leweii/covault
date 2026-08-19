@@ -291,6 +291,22 @@ export class CovaultPanel extends ItemView {
       return;
     }
 
+    // Whole-vault scope: nothing to pick — everything outside the team
+    // libraries is backed up already.
+    if (this.plugin.mainKbScope() === "vault") {
+      addBtn.disabled = true;
+      addBtn.setAttribute("aria-label", "Everything is backed up already");
+      const libs = this.plugin.libraryManifest.load().repos.length;
+      section.createDiv({
+        cls: "covault-panel-empty",
+        text:
+          libs === 0
+            ? "Everything in this vault is backed up."
+            : "Everything in this vault is backed up, except the team libraries below.",
+      });
+      return;
+    }
+
     addBtn.onclick = () => new SharePickerModal(this.app, this.plugin, () => this.render()).open();
 
     const shared = this.plugin.libraryManifest.load().include;

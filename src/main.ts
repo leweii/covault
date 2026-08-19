@@ -8,7 +8,7 @@ import { obsidianHttp } from "./git/http";
 import { SyncController, type RepoState, type SyncItem } from "./sync/SyncController";
 import { AppAuth } from "./auth/AppAuth";
 import { PROTOCOL_ACTION } from "./auth/constants";
-import { ManifestStore, type ManifestRepo } from "./covault/manifest";
+import { ManifestStore, type MainKbScope, type ManifestRepo } from "./covault/manifest";
 import { ensureIgnored } from "./covault/gitignore";
 import { AddLibraryModal } from "./ui/AddLibraryModal";
 import { ShareFolderModal } from "./ui/ShareFolderModal";
@@ -178,8 +178,9 @@ export default class CovaultPlugin extends Plugin {
             );
           }
 
-          // Personal KB is opt-in: mark/unmark what gets backed up there.
-          if (this.settings.mainRepo && !isRoot) {
+          // Marking only means something in opt-in scope — in whole-vault
+          // scope everything outside the libraries is already backed up.
+          if (this.settings.mainRepo && !isRoot && this.mainKbScope() === "marked") {
             if (this.isSharedToMainKb(file.path)) {
               menu.addItem((item) =>
                 item
@@ -257,9 +258,9 @@ export default class CovaultPlugin extends Plugin {
         branch: this.settings.mainRepo.branch,
         label: "Personal knowledge base",
         exclude: libs.map((r) => r.path),
-        // Opt-in: the vault is private by default; only marked paths
-        // (plus the manifest) reach the personal repo.
-        include: this.libraryManifest.load().include,
+        // Scope decides how much of the vault this repo holds; the
+        // libraries above stay out of it either way.
+        include: this.mainKbInclude(),
         gitdir: this.mainGitDir(),
         noAutoClone: true,
       });
@@ -371,6 +372,26 @@ export default class CovaultPlugin extends Plugin {
     ).open();
   }
 
+  /** How much of the vault the personal knowledge base holds. */
+  mainKbScope(): MainKbScope {
+    return this.libraryManifest.load().scope;
+  }
+
+  /** The engine's opt-in whitelist for the personal repo — undefined in
+   *  whole-vault scope, where everything outside the libraries goes. */
+  private mainKbInclude(): string[] | undefined {
+    const manifest = this.libraryManifest.load();
+    return manifest.scope === "vault" ? undefined : manifest.include;
+  }
+
+  /** Switch between "only what I mark" and "the whole vault". */
+  async setMainKbScope(scope: MainKbScope): Promise<void> {
+    if (this.mainKbScope() === scope) return;
+    this.libraryManifest.setScope(scope);
+    this.refreshSettingsUI();
+    void this.sync.syncAll("manual");
+  }
+
   /** Is this vault path marked "share to my knowledge base"? */
   isSharedToMainKb(vaultPath: string): boolean {
     return this.libraryManifest.load().include.some((p) => vaultPath === p || vaultPath.startsWith(`${p}/`));
@@ -473,7 +494,7 @@ export default class CovaultPlugin extends Plugin {
       const exclude = this.sharedRepos().map((r) => r.path); // also refreshes .gitignore
       await this.engine.initAndPush(ref, "Set up personal knowledge base", {
         exclude,
-        include: this.libraryManifest.load().include,
+        include: this.mainKbInclude(),
       });
     } else {
       const backedUp = await this.engine.adoptRemote(ref);

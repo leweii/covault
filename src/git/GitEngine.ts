@@ -217,7 +217,13 @@ export class GitEngine {
    * would otherwise report a nested repo's files as new — isomorphic-git
    * #761). `include`, when given, flips the repo to opt-in: only paths
    * under the list (plus .covault, so the manifest propagates) are seen
-   * at all — the personal main repo shares nothing by default.
+   * at all. Omitting it means the whole work tree minus the exclusions —
+   * what the personal repo uses in whole-vault scope.
+   *
+   * Files already tracked under an `exclude` path come back as deletions:
+   * a folder that became a team library belongs to that library now, and
+   * the same note must not live in two repos. The deletion is index-only
+   * (see commitAll) — the file itself stays on disk.
    */
   async localChanges(ref: RepoRef, opts: { exclude?: string[]; include?: string[] } = {}): Promise<LocalChange[]> {
     const excluded = [...ALWAYS_EXCLUDED, this.deps.configDir(), ...(opts.exclude ?? [])];
@@ -245,7 +251,17 @@ export class GitEngine {
         kind: head === 0 ? "added" : workdir === 0 ? "deleted" : "modified",
       });
     }
-    return changes;
+    return [...changes, ...(await this.trackedUnder(ref, opts.exclude ?? []))];
+  }
+
+  /** Tracked files sitting under a now-excluded prefix, as deletions. */
+  private async trackedUnder(ref: RepoRef, prefixes: string[]): Promise<LocalChange[]> {
+    if (prefixes.length === 0) return [];
+    if (!(await this.isRepo(ref))) return []; // nothing tracked yet
+    const tracked = await git.listFiles({ fs: this.deps.fs, dir: ref.dir, gitdir: ref.gitdir });
+    return tracked
+      .filter((f) => prefixes.some((p) => f === p || f.startsWith(`${p}/`)))
+      .map((filepath) => ({ filepath, kind: "deleted" as const }));
   }
 
   /** Commit history touching one file, newest first. */

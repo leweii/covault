@@ -16,7 +16,25 @@ afterEach(() => {
 
 describe("ManifestStore", () => {
   it("returns an empty manifest when the file is missing", () => {
-    expect(new ManifestStore(vault).load()).toEqual({ version: 1, repos: [], include: [] });
+    expect(new ManifestStore(vault).load()).toEqual({ version: 1, repos: [], include: [], scope: "marked" });
+  });
+
+  it("defaults to opt-in scope and round-trips the whole-vault switch", () => {
+    const store = new ManifestStore(vault);
+    store.addInclude("notes"); // a manifest written before scopes existed
+    const raw = JSON.parse(fs.readFileSync(path.join(vault, ".covault", "covault.json"), "utf8")) as {
+      scope?: string;
+    };
+    delete raw.scope;
+    fs.writeFileSync(path.join(vault, ".covault", "covault.json"), JSON.stringify(raw));
+    expect(store.load().scope).toBe("marked");
+
+    store.setScope("vault");
+    expect(new ManifestStore(vault).load().scope).toBe("vault");
+    // The marks survive the switch, so going back restores the old setup.
+    expect(store.load().include).toEqual(["notes"]);
+    store.setScope("marked");
+    expect(new ManifestStore(vault).load().scope).toBe("marked");
   });
 
   it("marks and unmarks include paths, collapsing children into parents", () => {
@@ -65,7 +83,7 @@ describe("ManifestStore", () => {
   it("survives a corrupt file", () => {
     fs.mkdirSync(path.join(vault, ".covault"));
     fs.writeFileSync(path.join(vault, ".covault", "covault.json"), "{not json");
-    expect(new ManifestStore(vault).load()).toEqual({ version: 1, repos: [], include: [] });
+    expect(new ManifestStore(vault).load()).toEqual({ version: 1, repos: [], include: [], scope: "marked" });
   });
 
 });
