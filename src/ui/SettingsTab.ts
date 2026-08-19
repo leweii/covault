@@ -7,6 +7,7 @@ import {
   type SettingDefinitionList,
   type SettingGroupItem,
 } from "obsidian";
+import { installUrl } from "../auth/constants";
 import type CovaultPlugin from "../main";
 import { AddLibraryModal } from "./AddLibraryModal";
 import { MainKbModal } from "./MainKbModal";
@@ -111,12 +112,32 @@ export class CovaultSettingTab extends PluginSettingTab {
       void this.plugin.saveSettings();
     }
     const login = connections[0]?.login;
+    const hasInstallations = orgOptions.length > 0;
 
     const items: SettingGroupItem[] = [
       {
         name: "Sign in with",
         aliases: ["github app", "personal access token", "pat", "connect"],
         render: (setting: Setting) => this.renderAuthTabs(setting),
+      },
+      {
+        name: "Covault GitHub App",
+        desc: hasInstallations
+          ? "Add Covault to another organization, or change which repositories it can reach."
+          : "Covault reaches your team's knowledge through a GitHub App. Install it on your " +
+            "organization first — an owner may have to approve it — then connect below.",
+        aliases: ["install", "github app", "organization", "permissions", "approve"],
+        visible: () => this.plugin.settings.authMethod === "githubApp",
+        render: (setting: Setting) => {
+          setting.addButton((btn) =>
+            btn
+              .setButtonText(hasInstallations ? "Configure on GitHub" : "Install on GitHub")
+              .setTooltip(installUrl())
+              .onClick(() => {
+                window.open(installUrl(), "_blank");
+              }),
+          );
+        },
       },
       {
         name: "Personal access token",
