@@ -436,9 +436,13 @@ export default class CovaultPlugin extends Plugin {
     if (reveal) await this.app.workspace.revealLeaf(leaf);
   }
 
-  /** Register an existing shared library and start syncing it. */
+  /** Register an existing shared library and start syncing it. The
+   *  branch recorded is the remote's actual default — pinning "main"
+   *  onto a master-era repo would leave nothing to clone. */
   async addLibrary(repo: ManifestRepo): Promise<void> {
-    this.libraryManifest.add(repo);
+    const dir = path.join(this.vaultBasePath(), repo.path);
+    const remoteBranch = await this.engine.remoteDefaultBranch({ dir, url: repo.url, branch: repo.branch });
+    this.libraryManifest.add({ ...repo, branch: remoteBranch ?? repo.branch });
     this.sharedRepos(); // refresh .gitignore
     this.refreshSettingsUI();
     void this.sync.syncAll("manual");
@@ -457,23 +461,32 @@ export default class CovaultPlugin extends Plugin {
 
   /** Bind a folder to an already-existing library repo: the library's
    *  content wins (local versions of overlapping notes are kept aside),
-   *  then keep it synced. An existing but never-pushed-to repo has
-   *  nothing to pull, so the folder seeds it instead. */
+   *  then keep it synced. The remote's own default branch is followed;
+   *  a repo with no branches at all gets seeded from the folder. */
   async attachExistingLibrary(folderPath: string, url: string, branch: string): Promise<void> {
     const dir = path.join(this.vaultBasePath(), folderPath);
-    const hasContent = fs.existsSync(dir) && fs.readdirSync(dir).length > 0;
-    if (!(await this.engine.remoteHasBranch({ dir, url, branch }))) {
+    // Never take over a folder that already belongs to somewhere else —
+    // adoptRemote would repoint its origin and overwrite its content.
+    // Retrying our own earlier attempt (same address) is fine.
+    const origin = await this.engine.existingOrigin({ dir, url, branch });
+    if (origin && !sameRemote(origin, url)) {
+      throw new Error(`"${folderPath}" already belongs to ${origin} — pick a different folder.`);
+    }
+    const remoteBranch = await this.engine.remoteDefaultBranch({ dir, url, branch });
+    if (!remoteBranch) {
+      // No branches at all: nothing to pull — the folder seeds the repo.
       await this.shareFolder(folderPath, url, branch);
       void this.sync.syncAll("manual");
       return;
     }
+    const hasContent = fs.existsSync(dir) && fs.readdirSync(dir).length > 0;
     if (!hasContent) {
       // Empty/missing folder: plain clone via the normal add path.
-      await this.addLibrary({ path: folderPath, url, branch });
+      await this.addLibrary({ path: folderPath, url, branch: remoteBranch });
       return;
     }
-    const backedUp = await this.engine.adoptRemote({ dir, url, branch });
-    this.libraryManifest.add({ path: folderPath, url, branch });
+    const backedUp = await this.engine.adoptRemote({ dir, url, branch: remoteBranch });
+    this.libraryManifest.add({ path: folderPath, url, branch: remoteBranch });
     this.sharedRepos(); // refresh .gitignore
     this.refreshSettingsUI();
     if (backedUp.length > 0) {
@@ -492,14 +505,19 @@ export default class CovaultPlugin extends Plugin {
    * happens before an AI provider is configured.
    */
   async setupMainKb(url: string, branch: string, mode: "create" | "adopt"): Promise<void> {
-    const ref = { dir: this.vaultBasePath(), url, branch, gitdir: this.mainGitDir() };
+    const gitdir = this.mainGitDir();
     // A previous failed attempt may have left a half-built repo; it holds
     // nothing anyone depends on (mainRepo was never saved), so restart clean.
-    fs.rmSync(ref.gitdir, { recursive: true, force: true });
+    fs.rmSync(gitdir, { recursive: true, force: true });
 
-    // A knowledge base that exists but was never pushed to has no branch
-    // to adopt — this vault seeds it, same as a brand-new one.
-    const effective = mode === "adopt" && !(await this.engine.remoteHasBranch(ref)) ? "create" : mode;
+    // Adopt whatever branch the remote actually calls default; a repo
+    // with no branches at all has nothing to adopt — this vault seeds it,
+    // same as a brand-new one.
+    const remoteBranch =
+      mode === "adopt" ? await this.engine.remoteDefaultBranch({ dir: this.vaultBasePath(), url, branch, gitdir }) : null;
+    const effective = mode === "adopt" && !remoteBranch ? "create" : mode;
+    if (remoteBranch) branch = remoteBranch;
+    const ref = { dir: this.vaultBasePath(), url, branch, gitdir };
 
     if (effective === "create") {
       const exclude = this.sharedRepos().map((r) => r.path); // also refreshes .gitignore

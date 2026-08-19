@@ -255,6 +255,37 @@ describe("GitEngine against a real smart-HTTP remote", () => {
     expect(fs.readFileSync(path.join(check.dir, "intro.md"), "utf8")).toContain("intro");
   });
 
+  it("remoteDefaultBranch: reports the server's HEAD, or null for a branchless repo", async () => {
+    // A knowledge base from before the main rename: content on master.
+    const bare = path.join(root, "master-era-kb.git");
+    execFileSync("git", ["init", "--bare", "-b", "master", bare]);
+    execFileSync("git", ["config", "http.receivepack", "true"], { cwd: bare });
+    const seed = path.join(root, "master-era-seed");
+    execFileSync("git", ["clone", bare, seed]);
+    fs.writeFileSync(path.join(seed, "old.md"), "# old wisdom\n");
+    execFileSync("git", ["add", "."], { cwd: seed });
+    execFileSync("git", ["-c", "user.name=s", "-c", "user.email=s@t", "commit", "-m", "seed"], { cwd: seed });
+    execFileSync("git", ["push", "origin", "master"], { cwd: seed });
+
+    const dir = path.join(root, "master-era-dir");
+    const probe: RepoRef = { dir, url: `${server.url}/master-era-kb.git`, branch: "main" };
+    // Asking for "main" would find nothing — the server knows better.
+    expect(await engineA.remoteHasBranch(probe)).toBe(false);
+    expect(await engineA.remoteDefaultBranch(probe)).toBe("master");
+
+    // And the branch it names is adoptable: content lands, single lineage.
+    fs.mkdirSync(dir, { recursive: true });
+    await engineA.adoptRemote({ ...probe, branch: "master" });
+    expect(fs.readFileSync(path.join(dir, "old.md"), "utf8")).toContain("old wisdom");
+
+    // A repo with no branches at all: nothing to adopt, seed instead.
+    const empty = path.join(root, "branchless-kb.git");
+    execFileSync("git", ["init", "--bare", "-b", "main", empty]);
+    expect(
+      await engineA.remoteDefaultBranch({ dir, url: `${server.url}/branchless-kb.git`, branch: "main" }),
+    ).toBeNull();
+  });
+
   it("seeds a folder that already carries a .git on another branch", async () => {
     // Sharing a folder that is already a git repo (a leftover attempt, or
     // something cloned into the vault — often still on "master") used to

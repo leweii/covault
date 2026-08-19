@@ -138,6 +138,24 @@ export class GitEngine {
     return refs.length > 0;
   }
 
+  /**
+   * The remote's default branch ("main", "master", …), or null when the
+   * repo has no branches at all. Asking the server beats assuming "main":
+   * a knowledge base that predates the rename would otherwise grow a
+   * parallel empty main while its real content sits on master.
+   */
+  async remoteDefaultBranch(ref: RepoRef): Promise<string | null> {
+    const refs = await git.listServerRefs({
+      http: this.deps.http,
+      url: ref.url,
+      prefix: "HEAD",
+      symrefs: true,
+      ...this.auth(ref),
+    });
+    const target = refs.find((r) => r.ref === "HEAD")?.target;
+    return target?.startsWith("refs/heads/") ? target.slice("refs/heads/".length) : null;
+  }
+
   async clone(ref: RepoRef): Promise<void> {
     await git.clone({
       ...this.common(ref),
