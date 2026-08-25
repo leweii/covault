@@ -18,6 +18,7 @@ import { createEditTool, createWriteTool, type ExecutionToolContext } from "@ear
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { contentText } from "@earendil-works/pi-ai";
 import type { ManifestRepo } from "../covault/manifest";
+import { agentPathAllowed } from "../covault/librarySearch";
 import type { ApprovalRequest, AskTool } from "./agentTools";
 
 export interface EditToolDeps {
@@ -27,16 +28,8 @@ export interface EditToolDeps {
   onMutation: () => void;
 }
 
-/** Vault-relative path that resolves inside one of the libraries, or null. */
-function insideLibrary(deps: EditToolDeps, p: string): string | null {
-  const base = deps.vaultBase();
-  const resolved = path.resolve(base, p);
-  const ok = deps.repos().some((r) => {
-    const root = path.resolve(base, r.path);
-    return resolved === root || resolved.startsWith(root + path.sep);
-  });
-  return ok ? resolved : null;
-}
+// (Path admissibility lives in librarySearch.agentPathAllowed — one rule
+// for reading and writing alike: inside the vault, never machinery.)
 
 function readIfExists(file: string): string | null {
   try {
@@ -72,8 +65,8 @@ export function makeEditTools(deps: EditToolDeps): AskTool[] {
 
   const guard = (args: Record<string, unknown>): { rel: string; abs: string } | ApprovalRequest => {
     const rel = String(args.path ?? "");
-    const abs = insideLibrary(deps, rel);
-    if (!abs) throw new Error(`"${rel}" is outside the knowledge libraries — notes there cannot be changed.`);
+    const abs = agentPathAllowed(deps.vaultBase(), rel);
+    if (!abs) throw new Error(`"${rel}" is outside the vault (or inside its machinery) — it cannot be changed.`);
     return { rel, abs };
   };
 

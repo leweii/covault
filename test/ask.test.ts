@@ -33,11 +33,16 @@ afterEach(() => {
 });
 
 describe("searchLibraries", () => {
-  it("finds notes by content and filename, never outside the libraries", () => {
+  it("searches the whole vault: libraries and personal notes alike", () => {
     const hits = searchLibraries(vault, repos(), "refund zendesk");
     expect(hits[0]?.path).toBe("teams/ccp-kb/02_domain/refunds.md");
     expect(hits[0]?.lines.join(" ")).toContain("Zendesk");
-    expect(hits.some((h) => h.path.includes("private"))).toBe(false);
+    // Personal notes are in scope now — the user's vault, the user's call.
+    expect(hits.some((h) => h.path === "private/diary.md")).toBe(true);
+    // Machinery never is.
+    fs.mkdirSync(path.join(vault, ".obsidian"), { recursive: true });
+    fs.writeFileSync(path.join(vault, ".obsidian", "workspace.md"), "refund refund\n");
+    expect(searchLibraries(vault, repos(), "refund").some((h) => h.path.includes(".obsidian"))).toBe(false);
   });
 
   it("restricts to one library by name or path", () => {
@@ -47,10 +52,12 @@ describe("searchLibraries", () => {
 });
 
 describe("readLibraryNote", () => {
-  it("reads library notes and refuses everything else", () => {
+  it("reads any vault note, refusing machinery and escapes", () => {
     expect(readLibraryNote(vault, repos(), "teams/ccp-kb/02_domain/refunds.md")).toContain("Zendesk");
-    expect(readLibraryNote(vault, repos(), "private/diary.md")).toBeNull();
-    expect(readLibraryNote(vault, repos(), "teams/ccp-kb/../../private/diary.md")).toBeNull();
+    expect(readLibraryNote(vault, repos(), "private/diary.md")).toContain("secret");
+    expect(readLibraryNote(vault, repos(), "../outside.md")).toBeNull();
+    expect(readLibraryNote(vault, repos(), ".obsidian/workspace.json")).toBeNull();
+    expect(readLibraryNote(vault, repos(), "teams/ccp-kb/../../../etc/hosts")).toBeNull();
   });
 });
 
@@ -225,13 +232,15 @@ describe("edit tools through the agent", () => {
     expect(mutations).toBe(1);
   });
 
-  it("refuses paths outside the libraries at the gate", async () => {
+  it("edits personal notes too, but never machinery or escapes", async () => {
     const { makeEditTools } = await import("../src/llm/editTools");
     const tools = makeEditTools({ vaultBase: () => vault, repos, onMutation: () => {} });
     const edit = tools.find((t) => t.name === "edit_note")!;
-    expect(() => edit.needsApproval!({ path: "private/diary.md", edits: [] })).toThrow(/outside the knowledge libraries/);
+    const req = edit.needsApproval!({ path: "private/diary.md", edits: [{ oldText: "secret", newText: "open" }] })!;
+    expect(req.action).toBe("Edit private/diary.md");
     const write = tools.find((t) => t.name === "write_note")!;
     expect(() => write.needsApproval!({ path: "../evil.md", content: "x" })).toThrow(/outside/);
+    expect(() => write.needsApproval!({ path: ".covault/covault.json", content: "x" })).toThrow(/outside/);
   });
 
   it("write_note distinguishes create from replace in the approval", async () => {

@@ -1,12 +1,13 @@
 /**
- * Local search across the knowledge libraries — the tool half of Ask.
+ * Local search across the whole vault — the tool half of Ask.
  * Plain filesystem walks and case-insensitive term matching; no index to
- * build or invalidate, which at knowledge-base scale (hundreds of notes,
- * not millions) is fast enough and can never go stale.
+ * build or invalidate, which at vault scale (hundreds to a few thousand
+ * notes, not millions) is fast enough and can never go stale.
  *
- * Both entry points refuse to leave the library folders: Ask answers
- * from team knowledge, and nothing else in the vault should end up in a
- * model prompt uninvited.
+ * Scope: everything in the vault — team libraries AND the user's own
+ * notes (their call, their vault, their model key). Machinery is always
+ * out: dot-directories (.obsidian, .trash, .covault, nested .git) never
+ * reach a prompt, and paths can never resolve outside the vault.
  */
 import * as fs from "fs";
 import * as path from "path";
@@ -53,9 +54,9 @@ function termsOf(query: string): string[] {
 }
 
 /**
- * Search the libraries (optionally just one, by vault path or repo name)
- * for notes matching the query terms. Returns the best-scoring notes with
- * a few matching lines each.
+ * Search the vault (optionally restricted to one library, by vault path
+ * or repo name) for notes matching the query terms. Returns the
+ * best-scoring notes with a few matching lines each.
  */
 export function searchLibraries(
   vaultBase: string,
@@ -66,13 +67,15 @@ export function searchLibraries(
   const terms = termsOf(query);
   if (terms.length === 0) return [];
 
-  const scope = library
-    ? repos.filter((r) => r.path === library || r.path.endsWith(`/${library}`) || r.url.includes(`/${library}`))
-    : repos;
+  const roots = library
+    ? repos
+        .filter((r) => r.path === library || r.path.endsWith(`/${library}`) || r.url.includes(`/${library}`))
+        .map((r) => path.join(vaultBase, r.path))
+    : [vaultBase]; // whole vault: libraries and personal notes alike
 
   const files: string[] = [];
   const budget = { left: MAX_FILES_SCANNED };
-  for (const repo of scope) walkMd(path.join(vaultBase, repo.path), budget, files);
+  for (const root of roots) walkMd(root, budget, files);
 
   const hits: SearchHit[] = [];
   for (const file of files) {
@@ -111,16 +114,25 @@ export function searchLibraries(
 }
 
 /**
- * Read one note, capped, refusing paths that resolve outside a library.
- * Returns null when the path isn't inside any library or doesn't exist.
+ * Is this vault-relative path fair game for the agent? Inside the vault,
+ * and with no dot-component anywhere (blocks .obsidian, .trash, .covault,
+ * nested .git — and ../ escapes, since those resolve outside the base).
  */
-export function readLibraryNote(vaultBase: string, repos: ManifestRepo[], notePath: string): string | null {
+export function agentPathAllowed(vaultBase: string, notePath: string): string | null {
   const resolved = path.resolve(vaultBase, notePath);
-  const inLibrary = repos.some((r) => {
-    const libRoot = path.resolve(vaultBase, r.path);
-    return resolved === libRoot || resolved.startsWith(libRoot + path.sep);
-  });
-  if (!inLibrary) return null;
+  if (resolved !== vaultBase && !resolved.startsWith(vaultBase + path.sep)) return null;
+  const rel = path.relative(vaultBase, resolved);
+  if (rel.split(path.sep).some((part) => part.startsWith("."))) return null;
+  return resolved;
+}
+
+/**
+ * Read one note, capped. Returns null when the path leaves the vault,
+ * touches machinery, or doesn't exist.
+ */
+export function readLibraryNote(vaultBase: string, _repos: ManifestRepo[], notePath: string): string | null {
+  const resolved = agentPathAllowed(vaultBase, notePath);
+  if (!resolved) return null;
   try {
     const content = fs.readFileSync(resolved, "utf8");
     return content.length > MAX_READ_CHARS ? `${content.slice(0, MAX_READ_CHARS)}\n…(truncated)` : content;

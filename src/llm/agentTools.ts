@@ -48,7 +48,7 @@ export function makeSearchTool(deps: LibraryToolDeps): AskTool {
   return {
     name: "search_notes",
     description:
-      "Search the knowledge libraries for notes matching a query. Returns the best-matching note paths with a few matching lines each. Optionally restrict to one library (its folder path or name from the map).",
+      "Search every note in the vault — team knowledge libraries and the user's personal notes — for a query. Returns the best-matching note paths with a few matching lines each. Optionally restrict to one library (its folder path or name from the map).",
     parameters: Type.Object({
       query: Type.String({ description: "Free-text search terms (any language)." }),
       library: Type.Optional(Type.String({ description: "Library folder path or name to search in. Omit to search all." })),
