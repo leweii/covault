@@ -61,6 +61,10 @@ export class CovaultSettingTab extends PluginSettingTab {
         return s.llm.conflictInstructions;
       case "announceAgents":
         return s.announceToAgents;
+      case "askCommands":
+        return s.ask.allowCommands;
+      case "askMcp":
+        return s.ask.mcpServers;
       case "syncAuto":
         return s.sync.auto;
       case "syncInterval":
@@ -101,6 +105,12 @@ export class CovaultSettingTab extends PluginSettingTab {
         // Owns its own persistence: writes/removes the adapter files too.
         await this.plugin.setAnnounceToAgents(Boolean(value));
         return;
+      case "askCommands":
+        s.ask.allowCommands = Boolean(value);
+        break;
+      case "askMcp":
+        s.ask.mcpServers = String(value);
+        break;
       case "syncAuto":
         s.sync.auto = Boolean(value);
         break;
@@ -421,6 +431,22 @@ export class CovaultSettingTab extends PluginSettingTab {
             key: "llmModel",
             options: Object.fromEntries(models.map((m) => [m.id, m.name ?? m.id])),
           },
+        },
+        {
+          name: "Let Ask run terminal commands",
+          desc:
+            "Gives the Ask agent a shell in the vault folder. Every command is shown to you " +
+            "and runs only after you allow it.",
+          aliases: ["shell", "cli", "run commands", "agent"],
+          control: { type: "toggle", key: "askCommands" },
+        },
+        {
+          name: "Connected services (MCP)",
+          desc:
+            'Servers whose tools the Ask agent may use, as JSON — the same shape as Claude Desktop\'s config: ' +
+            '{"mcpServers": {"name": {"command": "npx", "args": […]}}} or {"name": {"url": "https://…"}}.',
+          aliases: ["mcp", "model context protocol", "servers", "tools"],
+          control: { type: "textarea", key: "askMcp", placeholder: '{"mcpServers": {}}' },
         },
         {
           name: "Let AI assistants discover your libraries",

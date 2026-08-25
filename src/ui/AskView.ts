@@ -7,12 +7,16 @@
 import { ItemView, MarkdownRenderer, setIcon, type WorkspaceLeaf } from "obsidian";
 import type CovaultPlugin from "../main";
 import type { AskEngine } from "../llm/ask";
+import { ConfirmModal } from "./ConfirmModal";
 
 export const COVAULT_ASK_VIEW_TYPE = "covault-ask";
 
 interface Turn {
   question: string;
   answer?: string;
+  /** Streaming text while the answer is being written. */
+  partial?: string;
+  activity: string[];
   error?: string;
 }
 
@@ -20,6 +24,8 @@ export class AskView extends ItemView {
   private engine: AskEngine;
   private turns: Turn[] = [];
   private running: AbortController | null = null;
+  /** Actions the user already allowed in this conversation — don't re-ask. */
+  private approved = new Set<string>();
 
   private listEl!: HTMLElement;
   private statusEl!: HTMLElement;
@@ -57,6 +63,7 @@ export class AskView extends ItemView {
       this.running?.abort();
       this.engine.reset();
       this.turns = [];
+      this.approved.clear();
       this.renderTurns();
     };
 
@@ -110,27 +117,51 @@ export class AskView extends ItemView {
       return;
     }
 
-    const turn: Turn = { question };
+    const turn: Turn = { question, activity: [] };
     this.turns.push(turn);
     this.inputEl.value = "";
     this.renderTurns();
 
     this.running = new AbortController();
     this.sendBtn.setText("Stop");
+    this.statusEl.setText("Thinking…");
     try {
       const answer = await this.engine.ask(question, {
         signal: this.running.signal,
-        onProgress: (p) => this.statusEl.setText(p.text),
+        onDelta: (text) => {
+          turn.partial = text;
+          this.statusEl.setText("Writing…");
+          this.renderTurns();
+        },
+        onActivity: (line) => {
+          turn.activity.push(line);
+          this.statusEl.setText(line);
+          this.renderTurns();
+        },
+        approve: (action) => this.approveAction(action),
       });
       turn.answer = answer.text;
     } catch (e) {
       turn.error = (e as Error).message;
     } finally {
+      turn.partial = undefined;
       this.running = null;
       this.sendBtn.setText("Ask");
       this.statusEl.setText("");
       this.renderTurns();
     }
+  }
+
+  /** Approval gate: each distinct action is confirmed once per conversation. */
+  private async approveAction(action: string): Promise<boolean> {
+    if (this.approved.has(action)) return true;
+    const ok = await ConfirmModal.ask(this.app, {
+      title: "Allow this action?",
+      message: action,
+      cta: "Allow",
+    });
+    if (ok) this.approved.add(action);
+    return ok;
   }
 
   private renderTurns(): void {
@@ -144,11 +175,17 @@ export class AskView extends ItemView {
     }
     for (const turn of this.turns) {
       this.listEl.createDiv({ cls: "covault-ask-q", text: turn.question });
+      for (const line of turn.activity) {
+        this.listEl.createDiv({ cls: "covault-ask-activity", text: line });
+      }
       if (turn.answer !== undefined) {
         const a = this.listEl.createDiv("covault-ask-a");
         void MarkdownRenderer.render(this.app, turn.answer, a, "", this);
       } else if (turn.error !== undefined) {
         this.listEl.createDiv({ cls: "covault-ask-err", text: turn.error });
+      } else if (turn.partial) {
+        // Streaming: plain text while it grows, real Markdown once done.
+        this.listEl.createDiv({ cls: "covault-ask-a covault-ask-pending", text: turn.partial });
       } else {
         this.listEl.createDiv({ cls: "covault-ask-a covault-ask-pending", text: "…" });
       }

@@ -23,6 +23,8 @@ import { FileHistoryModal } from "./ui/FileHistoryModal";
 import { CovaultPanel, COVAULT_VIEW_TYPE } from "./ui/CovaultPanel";
 import { AskView, COVAULT_ASK_VIEW_TYPE } from "./ui/AskView";
 import { AskEngine } from "./llm/ask";
+import { makeReadTool, makeRunCommandTool, makeSearchTool, type AskTool } from "./llm/agentTools";
+import { McpManager } from "./llm/mcp";
 import { ConflictResolver } from "./llm/resolver";
 import { createOrgRepo } from "./git/githubApi";
 import type { RepoRef } from "./git/GitEngine";
@@ -47,6 +49,7 @@ export default class CovaultPlugin extends Plugin {
   libraryManifest!: ManifestStore;
   resolver!: ConflictResolver;
   describer!: LibraryDescriber;
+  mcp!: McpManager;
   private settingsTab: CovaultSettingTab | null = null;
   private statusBarEl!: HTMLElement;
   private syncIntervalId: number | null = null;
@@ -89,6 +92,7 @@ export default class CovaultPlugin extends Plugin {
       getExtraInstructions: () => this.settings.llm.conflictInstructions,
     });
 
+    this.mcp = new McpManager(() => this.settings.ask.mcpServers);
     this.describer = new LibraryDescriber({
       models: this.models,
       getSelection: () => this.settings.llm,
@@ -506,12 +510,21 @@ export default class CovaultPlugin extends Plugin {
 
   /** Each Ask view gets its own engine — its own conversation. */
   newAskEngine(): AskEngine {
+    const libraryDeps = {
+      vaultBase: () => this.vaultBasePath(),
+      repos: () => this.libraryManifest.load().repos,
+    };
     return new AskEngine({
       models: this.models,
       getSelection: () => this.settings.llm,
       hasKey: (provider) => !!this.settings.llmKeys[provider],
-      vaultBase: () => this.vaultBasePath(),
-      repos: () => this.libraryManifest.load().repos,
+      // Assembled fresh per question: the toggles and MCP config are live.
+      tools: async () => {
+        const tools: AskTool[] = [makeSearchTool(libraryDeps), makeReadTool(libraryDeps)];
+        if (this.settings.ask.allowCommands) tools.push(makeRunCommandTool(() => this.vaultBasePath()));
+        tools.push(...(await this.mcp.tools()));
+        return tools;
+      },
       libraryMap: () => {
         try {
           return fs.readFileSync(path.join(this.vaultBasePath(), SKILL_RELPATH), "utf8");
@@ -716,6 +729,11 @@ export default class CovaultPlugin extends Plugin {
   }
 
   /** (Re)arm the background sync timer from current settings. */
+  onunload(): void {
+    // MCP stdio servers are child processes — they must not outlive us.
+    void this.mcp.dispose();
+  }
+
   applySyncSchedule(): void {
     if (this.syncIntervalId !== null) {
       window.clearInterval(this.syncIntervalId);

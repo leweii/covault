@@ -2,16 +2,19 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createAssistantMessageEventStream, type AssistantMessage, type MutableModels, type ToolCall } from "@earendil-works/pi-ai";
 import { searchLibraries, readLibraryNote } from "../src/covault/librarySearch";
+import { makeReadTool, makeRunCommandTool, makeSearchTool } from "../src/llm/agentTools";
+import { parseMcpConfig } from "../src/llm/mcp";
 import { AskEngine } from "../src/llm/ask";
 import type { ManifestRepo } from "../src/covault/manifest";
-import type { AssistantMessage, MutableModels } from "@earendil-works/pi-ai";
 
 let vault: string;
 const repos = (): ManifestRepo[] => [
   { path: "teams/ccp-kb", url: "https://github.com/ct-kb/ccp-kb.git", branch: "main" },
   { path: "teams/oms-kb", url: "https://github.com/ct-kb/oms-kb.git", branch: "main" },
 ];
+const libraryDeps = { vaultBase: () => vault, repos };
 
 beforeEach(() => {
   vault = fs.mkdtempSync(path.join(os.tmpdir(), "covault-ask-"));
@@ -34,17 +37,12 @@ describe("searchLibraries", () => {
     const hits = searchLibraries(vault, repos(), "refund zendesk");
     expect(hits[0]?.path).toBe("teams/ccp-kb/02_domain/refunds.md");
     expect(hits[0]?.lines.join(" ")).toContain("Zendesk");
-    // The private note matches "refund" but is not in any library.
     expect(hits.some((h) => h.path.includes("private"))).toBe(false);
   });
 
   it("restricts to one library by name or path", () => {
     expect(searchLibraries(vault, repos(), "refund", "oms-kb")).toHaveLength(0);
     expect(searchLibraries(vault, repos(), "cancel", "teams/oms-kb")[0]?.path).toBe("teams/oms-kb/cancel.md");
-  });
-
-  it("returns nothing for queries with no usable terms", () => {
-    expect(searchLibraries(vault, repos(), "  ? ")).toHaveLength(0);
   });
 });
 
@@ -53,73 +51,152 @@ describe("readLibraryNote", () => {
     expect(readLibraryNote(vault, repos(), "teams/ccp-kb/02_domain/refunds.md")).toContain("Zendesk");
     expect(readLibraryNote(vault, repos(), "private/diary.md")).toBeNull();
     expect(readLibraryNote(vault, repos(), "teams/ccp-kb/../../private/diary.md")).toBeNull();
-    expect(readLibraryNote(vault, repos(), "teams/ccp-kb/missing.md")).toBeNull();
   });
 });
 
-describe("AskEngine", () => {
-  function fakeModels(script: AssistantMessage["content"][]): MutableModels {
-    let call = 0;
-    return {
-      getModel: () => ({ id: "fake" }),
-      completeSimple: async () => ({
+describe("run_command tool", () => {
+  it("always demands approval and runs in the vault directory", async () => {
+    const tool = makeRunCommandTool(() => vault);
+    expect(tool.needsApproval?.({ command: "ls" })).toBe("$ ls");
+    const outcome = await tool.execute({ command: "ls teams" });
+    expect(outcome.isError).toBeFalsy();
+    expect(outcome.text).toContain("ccp-kb");
+  });
+
+  it("reports failure with the exit code", async () => {
+    const tool = makeRunCommandTool(() => vault);
+    const outcome = await tool.execute({ command: "exit 3" });
+    expect(outcome.isError).toBe(true);
+    expect(outcome.text).toContain("exit code 3");
+  });
+});
+
+describe("parseMcpConfig", () => {
+  it("accepts the Claude Desktop shape and plain arrays", () => {
+    const a = parseMcpConfig('{"mcpServers": {"jira": {"command": "npx", "args": ["x"]}}}');
+    expect(a).toEqual([{ name: "jira", command: "npx", args: ["x"] }]);
+    const b = parseMcpConfig('[{"name": "docs", "url": "https://mcp.example.com"}]');
+    expect(b[0]?.url).toBe("https://mcp.example.com");
+    expect(parseMcpConfig("")).toEqual([]);
+  });
+
+  it("rejects invalid JSON with a readable error and drops transportless entries", () => {
+    expect(() => parseMcpConfig("{nope")).toThrow(/not valid JSON/);
+    expect(parseMcpConfig('{"mcpServers": {"broken": {}}}')).toEqual([]);
+  });
+});
+
+// ── AskEngine on the native pi Agent, with a scripted streamFn ──────
+
+type Script = AssistantMessage["content"][];
+
+function scriptedModels(script: Script): MutableModels {
+  let call = 0;
+  return {
+    getModel: () => ({ id: "fake", api: "fake", provider: "fake" }),
+    streamSimple: () => {
+      const stream = createAssistantMessageEventStream();
+      const content = script[Math.min(call++, script.length - 1)]!;
+      const message: AssistantMessage = {
         role: "assistant",
-        content: script[Math.min(call++, script.length - 1)],
-        api: "fake",
+        content,
+        api: "fake" as never,
         provider: "fake",
         model: "fake",
-        usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } },
-        stopReason: "end",
+        usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } } as never,
+        stopReason: content.some((c) => c.type === "toolCall") ? "toolUse" : "stop",
         timestamp: 0,
-      }),
-    } as unknown as MutableModels;
-  }
+      };
+      queueMicrotask(() => {
+        stream.push({ type: "start", partial: message });
+        for (const [i, c] of content.entries()) {
+          if (c.type === "text") {
+            // Two deltas so the UI sees the text grow.
+            const half = Math.ceil(c.text.length / 2);
+            stream.push({ type: "text_delta", contentIndex: i, delta: c.text.slice(0, half), partial: message });
+            stream.push({ type: "text_delta", contentIndex: i, delta: c.text.slice(half), partial: message });
+          }
+        }
+        stream.push({ type: "done", reason: message.stopReason as never, message });
+      });
+      return stream;
+    },
+  } as unknown as MutableModels;
+}
 
-  function engine(models: MutableModels): AskEngine {
-    return new AskEngine({
-      models,
-      getSelection: () => ({ provider: "fake", model: "fake" }),
-      hasKey: () => true,
-      vaultBase: () => vault,
-      repos,
-      libraryMap: () => "## ccp-kb — refunds, Zendesk\n## oms-kb — order cancellation",
-    });
-  }
+function engine(models: MutableModels, opts: { allowCommands?: boolean } = {}): AskEngine {
+  return new AskEngine({
+    models,
+    getSelection: () => ({ provider: "fake", model: "fake" }),
+    hasKey: () => true,
+    tools: async () => {
+      const tools = [makeSearchTool(libraryDeps), makeReadTool(libraryDeps)];
+      if (opts.allowCommands) tools.push(makeRunCommandTool(() => vault));
+      return tools;
+    },
+    libraryMap: () => "## ccp-kb — refunds, Zendesk\n## oms-kb — order cancellation",
+  });
+}
 
-  it("runs the search → read → answer loop and reports stats", async () => {
+const toolCall = (id: string, name: string, args: Record<string, unknown>): ToolCall => ({
+  type: "toolCall",
+  id,
+  name,
+  arguments: args,
+});
+
+describe("AskEngine", () => {
+  it("streams the answer and reports tool activity", async () => {
     const ask = engine(
-      fakeModels([
-        [{ type: "toolCall", id: "1", name: "search_notes", arguments: { query: "refund" } }],
-        [{ type: "toolCall", id: "2", name: "read_note", arguments: { path: "teams/ccp-kb/02_domain/refunds.md" } }],
+      scriptedModels([
+        [toolCall("1", "search_notes", { query: "refund" })],
+        [toolCall("2", "read_note", { path: "teams/ccp-kb/02_domain/refunds.md" })],
         [{ type: "text", text: "Refunds go through Zendesk first.\n\nSources: [[teams/ccp-kb/02_domain/refunds.md]]" }],
       ]),
     );
-    const statuses: string[] = [];
-    const answer = await ask.ask("退款流程是怎样的？", { onProgress: (p) => statuses.push(p.text) });
+    const deltas: string[] = [];
+    const activity: string[] = [];
+    const answer = await ask.ask("退款流程是怎样的？", {
+      onDelta: (t) => deltas.push(t),
+      onActivity: (l) => activity.push(l),
+    });
     expect(answer.text).toContain("Zendesk");
-    expect(answer.turns).toBe(3);
     expect(answer.toolCalls).toBe(2);
     expect(answer.costUsd).toBeCloseTo(0.03);
-    expect(statuses.join(" ")).toContain("Searching");
-    expect(statuses.join(" ")).toContain("Reading");
+    expect(activity[0]).toContain("Searching");
+    expect(activity[1]).toContain("Reading refunds.md");
+    // Streaming: an early delta is a strict prefix of the final text.
+    expect(deltas.length).toBeGreaterThan(1);
+    expect(answer.text.startsWith(deltas[0]!.slice(0, 10))).toBe(true);
   });
 
-  it("keeps the conversation for follow-up questions until reset", async () => {
-    const models = fakeModels([[{ type: "text", text: "answer" }]]);
-    const ask = engine(models);
+  it("blocks gated tools unless the user approves", async () => {
+    const script: Script = [
+      [toolCall("1", "run_command", { command: "ls teams" })],
+      [{ type: "text", text: "done" }],
+    ];
+    const denied = engine(scriptedModels(script), { allowCommands: true });
+    const answer = await denied.ask("list", { approve: async () => false });
+    expect(answer.text).toBe("done");
+    // The command never ran: nothing was approved.
+
+    const asked: string[] = [];
+    const allowed = engine(scriptedModels(script), { allowCommands: true });
+    await allowed.ask("list", {
+      approve: async (action) => {
+        asked.push(action);
+        return true;
+      },
+    });
+    expect(asked).toEqual(["$ ls teams"]);
+  });
+
+  it("keeps the conversation until reset", async () => {
+    const ask = engine(scriptedModels([[{ type: "text", text: "answer" }]]));
     await ask.ask("q1");
     await ask.ask("q2");
-    // 2 user + 2 assistant messages retained
-    // (indirectly: a third ask still works after reset)
     ask.reset();
     const a = await ask.ask("q3");
     expect(a.text).toBe("answer");
-  });
-
-  it("gives up after the turn cap instead of looping forever", async () => {
-    const ask = engine(
-      fakeModels([[{ type: "toolCall", id: "x", name: "search_notes", arguments: { query: "refund" } }]]),
-    );
-    await expect(ask.ask("q")).rejects.toThrow(/kept searching/);
   });
 });

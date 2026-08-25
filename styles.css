@@ -1584,6 +1584,15 @@
 
 .covault-ask-pending {
   color: var(--text-muted);
+  white-space: pre-wrap;
+  padding: 6px 12px;
+}
+
+.covault-ask-activity {
+  align-self: flex-start;
+  color: var(--text-faint);
+  font-size: 0.78em;
+  padding: 0 4px;
 }
 
 .covault-ask-err {
