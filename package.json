@@ -22,8 +22,8 @@
     "vitest": "^4.1.6"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "^0.84.1",
-    "@earendil-works/pi-ai": "^0.84.1",
+    "@earendil-works/pi-agent-core": "^0.84.3",
+    "@earendil-works/pi-ai": "^0.84.3",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "diff": "^9.0.0",
     "isomorphic-git": "^1.41.3"
