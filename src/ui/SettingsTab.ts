@@ -67,6 +67,8 @@ export class CovaultSettingTab extends PluginSettingTab {
         return s.sync.auto;
       case "syncInterval":
         return String(s.sync.intervalMinutes);
+      case "debugMode":
+        return s.debugMode;
       default:
         return undefined;
     }
@@ -111,6 +113,12 @@ export class CovaultSettingTab extends PluginSettingTab {
         break;
       case "syncInterval":
         s.sync.intervalMinutes = Number(value);
+        break;
+      case "debugMode":
+        s.debugMode = Boolean(value);
+        // Stamp the header first, so the log opens with the environment
+        // it was collected on rather than a bare first event.
+        if (s.debugMode) this.plugin.logDebugHeader();
         break;
       default:
         return;
@@ -486,6 +494,14 @@ export class CovaultSettingTab extends PluginSettingTab {
             key: "syncInterval",
             options: Object.fromEntries([5, 10, 15, 30, 60].map((min) => [String(min), `${min} minutes`])),
           },
+        },
+        {
+          name: "Collect a diagnostic log",
+          desc:
+            "For troubleshooting only. Records what happens during each sync — how long each step takes and " +
+            "how much data moves — to .covault/logs/, which is never shared with your team. " +
+            "Reproduce the problem, then run “Covault: Copy the diagnostic log” and send it along.",
+          control: { type: "toggle", key: "debugMode" },
         },
       ],
     };

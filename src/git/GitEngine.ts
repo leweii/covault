@@ -9,6 +9,7 @@
 import * as git from "isomorphic-git";
 import type { HttpClient } from "isomorphic-git";
 import type { TokenProvider } from "../auth/TokenProvider";
+import type { DebugLog } from "../debug/logger";
 import { ownerFromUrl } from "./urls";
 
 export interface RepoRef {
@@ -38,6 +39,8 @@ export interface GitEngineDeps {
   author: () => Author;
   /** Obsidian's config folder name (Vault#configDir — user-configurable). */
   configDir: () => string;
+  /** Diagnostics, when the user turned debug mode on. */
+  log?: DebugLog;
 }
 
 export type ChangeKind = "added" | "modified" | "deleted";
@@ -94,9 +97,10 @@ function hasConflictMarkers(content: string): boolean {
 /** Vault paths that must never be committed into a knowledge repo.
  *  (.covault/covault.json is NOT excluded: it must ride along in the
  *  main repo — that's how libraries/marks propagate across machines.
- *  .covault/main.git IS: it's the main repo's own git directory. The
+ *  .covault/main.git IS: it's the main repo's own git directory, and so
+ *  are the debug logs — local diagnostics, and they can be large. The
  *  Obsidian config folder is appended per-engine via deps.configDir.) */
-const ALWAYS_EXCLUDED = [".trash", ".covault/main.git", ".covault/skills"];
+const ALWAYS_EXCLUDED = [".trash", ".covault/main.git", ".covault/skills", ".covault/logs"];
 
 export class GitEngine {
   constructor(private deps: GitEngineDeps) {}
@@ -165,6 +169,10 @@ export class GitEngine {
   private static readonly CLONE_DEPTH = 50;
 
   async clone(ref: RepoRef): Promise<void> {
+    const done = this.deps.log?.time("clone", ref.dir, {
+      branch: ref.branch,
+      depth: GitEngine.CLONE_DEPTH,
+    });
     await git.clone({
       ...this.common(ref),
       url: ref.url,
@@ -172,6 +180,7 @@ export class GitEngine {
       singleBranch: true,
       depth: GitEngine.CLONE_DEPTH,
     });
+    done?.();
   }
 
   /**
@@ -435,11 +444,13 @@ export class GitEngine {
   }
 
   async push(ref: RepoRef): Promise<void> {
+    const done = this.deps.log?.time("push", ref.dir, { branch: ref.branch });
     const result = await git.push({
       ...this.common(ref),
       remote: "origin",
       ref: ref.branch,
     });
+    done?.({ ok: result.ok, error: result.error });
     if (!result.ok) throw new Error(`Push to ${ref.url} failed: ${result.error ?? "unknown error"}`);
   }
 
@@ -458,7 +469,9 @@ export class GitEngine {
     const result: SyncResult = { committed: [], pulled: false, pushed: false, conflictFilepaths: [] };
     const { fs } = this.deps;
 
+    const log = this.deps.log;
     const changes = await this.localChanges(ref, { exclude: opts.exclude, include: opts.include });
+    log?.log("sync", `${ref.dir} — local scan`, { branch: ref.branch, changes: changes.length });
 
     // Never commit conflict markers. Files left over from an unresolved
     // merge (or found after a restart wiped the in-memory conflict list)
@@ -477,7 +490,9 @@ export class GitEngine {
       result.committed = changes;
     }
 
+    const fetched = log?.time("fetch", ref.dir, { branch: ref.branch });
     await git.fetch({ ...this.common(ref), remote: "origin", ref: ref.branch, singleBranch: true });
+    fetched?.();
 
     const local = await this.resolve(ref, `refs/heads/${ref.branch}`);
     const remote = await this.resolve(ref, `refs/remotes/origin/${ref.branch}`);

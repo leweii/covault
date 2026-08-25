@@ -27,6 +27,8 @@ export function ensureIgnored(vaultBase: string, repoPaths: string[]): void {
     "/.covault/main.git/",
     // Derived data, regenerated per device — synced nowhere, by anything.
     "/.covault/skills/",
+    // Local diagnostics: this machine's problem, and potentially large.
+    "/.covault/logs/",
   ].sort();
   const block = [START, ...entries, END].join("\n");
 

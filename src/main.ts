@@ -1,10 +1,11 @@
-import { FileSystemAdapter, Notice, Plugin, TFile, TFolder } from "obsidian";
+import { apiVersion, FileSystemAdapter, Notice, Plugin, TFile, TFolder } from "obsidian";
 import * as fs from "fs";
 import * as path from "path";
 import type { MutableModels } from "@earendil-works/pi-ai";
 import { DEFAULT_SETTINGS, type CovaultSettings } from "./settings";
 import { GitEngine } from "./git/GitEngine";
-import { obsidianHttp } from "./git/http";
+import { createObsidianHttp } from "./git/http";
+import { DebugLog } from "./debug/logger";
 import { SyncController, type RepoState, type SyncItem } from "./sync/SyncController";
 import { AppAuth } from "./auth/AppAuth";
 import { PROTOCOL_ACTION } from "./auth/constants";
@@ -52,6 +53,7 @@ export default class CovaultPlugin extends Plugin {
   resolver!: ConflictResolver;
   describer!: LibraryDescriber;
   mcp!: McpManager;
+  debugLog!: DebugLog;
   private settingsTab: CovaultSettingTab | null = null;
   private statusBarEl!: HTMLElement;
   private syncIntervalId: number | null = null;
@@ -76,16 +78,27 @@ export default class CovaultPlugin extends Plugin {
       void this.appAuth.handleCallback(params);
     });
 
+    // Built before the engine: it wraps the http client, and reads the
+    // setting live so toggling debug mode takes effect without a reload.
+    this.debugLog = new DebugLog({
+      fs,
+      enabled: () => this.settings.debugMode,
+      logDir: () => path.join(this.vaultBasePath(), ".covault", "logs"),
+    });
+
     // AppAuth delegates per-call: GitHub App when connected, PAT otherwise.
     this.engine = new GitEngine({
       fs,
-      http: obsidianHttp,
+      http: createObsidianHttp(this.debugLog),
       tokens: this.appAuth,
       author: () => this.gitAuthor(),
       configDir: () => this.app.vault.configDir,
+      log: this.debugLog,
     });
     this.libraryManifest = new ManifestStore(this.vaultBasePath());
     await this.migrateReposToManifest();
+    // After the manifest: the header reports how many libraries are set up.
+    if (this.settings.debugMode) this.logDebugHeader();
 
     this.resolver = new ConflictResolver({
       models: this.models,
@@ -114,6 +127,7 @@ export default class CovaultPlugin extends Plugin {
         onSyncPass: () => this.refreshKnowledgeSkill(),
       },
       this.resolver,
+      this.debugLog,
     );
 
     // Registered last: addSettingTab() immediately asks the tab for its
@@ -182,6 +196,19 @@ export default class CovaultPlugin extends Plugin {
       callback: () => {
         this.refreshKnowledgeSkill();
         new Notice(`Covault: knowledge skill updated (${SKILL_RELPATH}).`);
+      },
+    });
+    this.addCommand({
+      id: "copy-debug-log",
+      name: "Copy the diagnostic log",
+      callback: () => void this.copyDebugLog(),
+    });
+    this.addCommand({
+      id: "clear-debug-log",
+      name: "Clear the diagnostic log",
+      callback: () => {
+        this.debugLog.clear();
+        new Notice("Covault: diagnostic log cleared.");
       },
     });
 
@@ -765,6 +792,38 @@ export default class CovaultPlugin extends Plugin {
       this.settings.sync.intervalMinutes * 60_000,
     );
     this.registerInterval(this.syncIntervalId);
+  }
+
+  /**
+   * Opening line of a debug session: without it a log pasted into a bug
+   * report says what happened but not on what. Called when debug mode is
+   * switched on, and on load when it is already on.
+   */
+  logDebugHeader(): void {
+    this.debugLog.log("session", "debug mode on", {
+      plugin: this.manifest.version,
+      obsidian: apiVersion,
+      platform: process.platform,
+      libraries: this.libraryManifest.load().repos.length,
+      mainRepo: this.settings.mainRepo !== null,
+      autoSync: this.settings.sync.auto,
+      intervalMinutes: this.settings.sync.intervalMinutes,
+    });
+  }
+
+  /** Hand the collected log to the user — the point of collecting it. */
+  private async copyDebugLog(): Promise<void> {
+    if (!this.settings.debugMode && this.debugLog.snapshot().length === 0) {
+      new Notice("Covault: turn on debug mode in settings first, then reproduce the problem.", 8_000);
+      return;
+    }
+    const text = this.debugLog.format();
+    if (!text) {
+      new Notice("Covault: nothing logged yet — reproduce the problem, then copy again.", 8_000);
+      return;
+    }
+    await navigator.clipboard.writeText(text);
+    new Notice(`Covault: diagnostic log copied (${this.debugLog.snapshot().length} entries).`);
   }
 
   /** Commit email of the current user — history views mark their own rows. */

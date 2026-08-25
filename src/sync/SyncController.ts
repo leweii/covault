@@ -9,6 +9,7 @@ import * as path from "path";
 import type { GitEngine, RepoRef, SyncResult } from "../git/GitEngine";
 import type { ManifestRepo } from "../covault/manifest";
 import type { ConflictResolver } from "../llm/resolver";
+import type { DebugLog } from "../debug/logger";
 import { applyResolutions, extractHunks, getContextLines, parseConflict, type HunkResolution } from "./ConflictParser";
 
 /** Below this AI confidence (0–5) a hunk is never auto-applied. */
@@ -59,6 +60,7 @@ export class SyncController {
     private engine: GitEngine,
     private host: SyncHost,
     private resolver: ConflictResolver | null = null,
+    private log: DebugLog | null = null,
   ) {}
 
   pendingConflicts(): PendingConflict[] {
@@ -90,13 +92,21 @@ export class SyncController {
   /** Sync every configured library. Serialized; a second call while one
    *  is running is a no-op (the running pass already covers it). */
   async syncAll(trigger: "manual" | "auto"): Promise<void> {
-    if (this.running) return;
+    if (this.running) {
+      // Worth logging: a pass that overruns the auto interval silently
+      // swallows later triggers, which reads to the user as "stuck".
+      this.log?.log("pass", "skipped — a sync is already running", { trigger });
+      return;
+    }
     this.running = true;
+    const repos = this.host.repos();
+    const done = this.log?.time("pass", "sync pass", { trigger, repos: repos.length });
     try {
-      for (const repo of this.host.repos()) {
+      for (const repo of repos) {
         await this.syncOne(repo, trigger);
       }
     } finally {
+      done?.();
       this.running = false;
       this.host.onSyncPass?.();
     }
@@ -106,6 +116,7 @@ export class SyncController {
     const ref = this.toRef(repo);
     const name = repo.label ?? repo.path;
     this.setState(repo.path, { phase: "syncing" });
+    const done = this.log?.time("repo", name, { branch: ref.branch, trigger });
     try {
       if (!(await this.engine.isRepo(ref))) {
         if (repo.noAutoClone) {
@@ -158,6 +169,11 @@ export class SyncController {
 
       this.pending.delete(repo.path);
       this.setState(repo.path, { phase: "idle", lastSyncedAt: Date.now() });
+      this.log?.log("repo", `${name} — ${summarize(result)}`, {
+        committed: result.committed.length,
+        pulled: result.pulled,
+        pushed: result.pushed,
+      });
       if (trigger === "manual") {
         new Notice(`Covault: "${name}" ${summarize(result)}.`);
       }
@@ -165,7 +181,11 @@ export class SyncController {
       const message = e instanceof Error ? e.message : String(e);
       this.setState(repo.path, { phase: "error", detail: message });
       console.error(`[covault] sync failed for ${name}:`, e);
+      // The stack is the part a bug report needs and the Notice can't carry.
+      this.log?.log("repo", `${name} — failed`, { error: e, stack: e instanceof Error ? e.stack : undefined });
       if (trigger === "manual") new Notice(`Covault: couldn't sync "${name}" — ${message}`);
+    } finally {
+      done?.();
     }
   }
 
