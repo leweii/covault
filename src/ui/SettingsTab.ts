@@ -463,6 +463,18 @@ export class CovaultSettingTab extends PluginSettingTab {
       heading: "Sync",
       items: [
         {
+          name: "Export configuration",
+          desc:
+            "Copies all settings — libraries, organization, AI and sync preferences — as JSON. " +
+            "Keys, tokens and sessions are never included.",
+          aliases: ["backup", "export", "share settings"],
+          render: (setting: Setting) => {
+            setting.addButton((btn) =>
+              btn.setButtonText("Copy to clipboard").onClick(() => void this.plugin.exportConfiguration()),
+            );
+          },
+        },
+        {
           name: "Keep shared knowledge up to date automatically",
           desc: "Covault quietly checks for updates and shares your changes in the background.",
           control: { type: "toggle", key: "syncAuto" },

@@ -15,6 +15,7 @@ import { FolderLinkedError } from "./covault/errors";
 import { writeKnowledgeSkill, SKILL_RELPATH } from "./covault/skill";
 import { removeAdapters, writeAdapters } from "./covault/adapters";
 import { gatherFacts } from "./covault/skill";
+import { buildConfigExport } from "./covault/exportConfig";
 import { LibraryDescriber } from "./llm/describe";
 import { AddLibraryModal } from "./ui/AddLibraryModal";
 import { ShareFolderModal } from "./ui/ShareFolderModal";
@@ -159,6 +160,11 @@ export default class CovaultPlugin extends Plugin {
       id: "resolve-conflicts",
       name: "Resolve conflicts",
       callback: () => this.openConflictModal(),
+    });
+    this.addCommand({
+      id: "export-config",
+      name: "Export configuration (copy to clipboard)",
+      callback: () => void this.exportConfiguration(),
     });
     this.addCommand({
       id: "ask",
@@ -506,6 +512,13 @@ export default class CovaultPlugin extends Plugin {
     } catch (e) {
       console.warn("[covault] couldn't update the knowledge skill:", e);
     }
+  }
+
+  /** Copy the secret-free configuration snapshot to the clipboard. */
+  async exportConfiguration(): Promise<void> {
+    const data = buildConfigExport(this.settings, this.libraryManifest.load());
+    await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
+    new Notice("Covault: configuration copied to the clipboard (no keys or tokens included).");
   }
 
   /** Each Ask view gets its own engine — its own conversation. */
