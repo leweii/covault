@@ -1,4 +1,5 @@
 import {
+  Notice,
   PluginSettingTab,
   type App,
   type Setting,
@@ -36,6 +37,10 @@ export class CovaultSettingTab extends PluginSettingTab {
   }
 
   getSettingDefinitions(): SettingDefinitionItem[] {
+    // Scoping hook for this tab's CSS. A declarative tab never gets
+    // display() called, and this runs on every render — so it is the one
+    // reliable place to mark the container.
+    this.containerEl.addClass("covault-settings");
     return [this.githubGroup(), this.personalKbGroup(), this.librariesList(), this.aiGroup(), this.syncGroup()];
   }
 
@@ -110,6 +115,8 @@ export class CovaultSettingTab extends PluginSettingTab {
         break;
       case "askMcp":
         s.ask.mcpServers = String(value);
+        // Drop cached connections: the entry just edited may be the broken one.
+        this.plugin.mcp.reset();
         break;
       case "askClis":
         s.ask.cliHints = String(value);
@@ -261,6 +268,65 @@ export class CovaultSettingTab extends PluginSettingTab {
   }
 
   /** Segmented control for the two mutually-exclusive sign-in methods. */
+  /**
+   * Live status per configured MCP server. "Test" connects for real —
+   * which is also what starts the browser sign-in for an OAuth server, so
+   * the user has a way to authorize without first asking a question.
+   */
+  private renderMcpStatus(setting: Setting): void {
+    const box = setting.controlEl.createDiv("covault-mcp-status");
+    const paint = () => {
+      box.empty();
+      const rows = this.plugin.mcp.status();
+      if (rows.length === 0) {
+        box.createSpan({ cls: "covault-mcp-none", text: "No services configured." });
+        return;
+      }
+      for (const row of rows) {
+        const line = box.createDiv("covault-mcp-row");
+        const state = row.ok ? "is-ok" : row.needsAuth ? "is-auth" : "is-bad";
+        line.createSpan({ cls: `covault-mcp-dot ${state}` });
+        line.createSpan({ cls: "covault-mcp-name", text: row.name });
+        line.createSpan({
+          cls: "covault-mcp-detail",
+          text: row.ok ? `${row.toolCount} tool${row.toolCount === 1 ? "" : "s"}` : (row.error ?? "unavailable"),
+        });
+        // Sign-in is per server and only ever on an explicit click.
+        if (row.needsAuth) {
+          const btn = line.createEl("button", { cls: "covault-mcp-signin", text: "Sign in" });
+          btn.onclick = async () => {
+            btn.setAttribute("disabled", "true");
+            btn.setText("Signing in…");
+            try {
+              await this.plugin.mcp.signIn(row.name);
+              new Notice(`Covault: connected to "${row.name}".`);
+            } catch (e) {
+              new Notice(`Covault: couldn't connect to "${row.name}" — ${(e as Error).message}`, 10_000);
+            } finally {
+              paint();
+            }
+          };
+        }
+      }
+    };
+    paint();
+    setting.addButton((btn) =>
+      btn
+        .setButtonText("Check")
+        .setTooltip("Connect to each service without signing in")
+        .onClick(async () => {
+          btn.setDisabled(true).setButtonText("Checking…");
+          this.plugin.mcp.reset();
+          try {
+            await this.plugin.mcp.tools();
+          } finally {
+            paint();
+            btn.setDisabled(false).setButtonText("Check");
+          }
+        }),
+    );
+  }
+
   private renderAuthTabs(setting: Setting): void {
     const s = this.plugin.settings;
     const tabs = setting.controlEl.createDiv("covault-tabs");
@@ -449,39 +515,32 @@ export class CovaultSettingTab extends PluginSettingTab {
         },
         {
           name: "Ask before the agent acts",
-          desc:
-            "Terminal commands, connected services and note edits are shown for your approval " +
-            "before they run. Turn this off and the agent acts without asking — the same risk " +
-            "as handing it an unattended terminal.",
           aliases: ["approve", "permissions", "skip permissions", "dangerous", "shell", "cli"],
           control: { type: "toggle", key: "askApprove" },
         },
         {
           name: "Connected services (MCP)",
-          desc:
-            'Servers whose tools the Ask agent may use, as JSON — the same shape as Claude Desktop\'s config: ' +
-            '{"mcpServers": {"name": {"command": "npx", "args": […]}}} or {"name": {"url": "https://…"}}.',
           aliases: ["mcp", "model context protocol", "servers", "tools"],
-          control: { type: "textarea", key: "askMcp", placeholder: '{"mcpServers": {}}' },
-        },
-        {
-          name: "Extra command-line tools",
-          desc:
-            "Covault already tells the agent which common CLIs are installed here (bq, gcloud, psql, git, jq, …). " +
-            "Add anything else it should know about, one per line — an in-house CLI, or how to use one in your setup: " +
-            "\"bq — always query with --use_legacy_sql=false, project analytics-prod\".",
-          aliases: ["cli", "shell", "commands", "bq", "bigquery", "tools", "terminal"],
+          // The shape hint lives in the placeholder now rather than in a
+          // paragraph of description — visible exactly when it's needed.
           control: {
             type: "textarea",
-            key: "askClis",
-            placeholder: "mycli — internal deploy tool, `mycli status` shows current release",
+            key: "askMcp",
+            placeholder: '{"mcpServers": {"name": {"url": "https://…"}}}',
           },
         },
         {
+          name: "Service status",
+          aliases: ["mcp status", "check connection", "sign in", "authorize", "oauth"],
+          render: (setting: Setting) => this.renderMcpStatus(setting),
+        },
+        {
+          name: "Extra command-line tools",
+          aliases: ["cli", "shell", "commands", "bq", "bigquery", "tools", "terminal"],
+          control: { type: "textarea", key: "askClis" },
+        },
+        {
           name: "Let AI assistants discover your libraries",
-          desc:
-            "Keeps a note for AI coding tools (Claude Code, Codex, Cursor, …) in this vault " +
-            "describing your knowledge libraries, so they consult them before answering.",
           aliases: ["agents.md", "claude.md", "skill", "announce"],
           control: { type: "toggle", key: "announceAgents" },
         },
@@ -497,9 +556,6 @@ export class CovaultSettingTab extends PluginSettingTab {
       items: [
         {
           name: "Export / import configuration",
-          desc:
-            "Copies all settings — libraries, organization, AI and sync preferences — as JSON. " +
-            "Keys, tokens and sessions are never included.",
           aliases: ["backup", "export", "share settings"],
           render: (setting: Setting) => {
             setting.addButton((btn) =>
@@ -512,7 +568,6 @@ export class CovaultSettingTab extends PluginSettingTab {
         },
         {
           name: "Keep shared knowledge up to date automatically",
-          desc: "Covault quietly checks for updates and shares your changes in the background.",
           control: { type: "toggle", key: "syncAuto" },
         },
         {
@@ -525,10 +580,6 @@ export class CovaultSettingTab extends PluginSettingTab {
         },
         {
           name: "Verbose diagnostics",
-          desc:
-            "Covault always keeps a log of every sync and git operation in .covault/logs/ (never shared " +
-            "with your team). This adds network-level detail — request sizes and timings — for " +
-            "troubleshooting; reproduce the problem, then run “Copy the diagnostic log”.",
           control: { type: "toggle", key: "debugMode" },
         },
       ],

@@ -1550,6 +1550,28 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+  /* Obsidian disables selection app-wide and content areas opt back in;
+     a sidebar view has to do it itself. Answers quote real facts from the
+     notes, so they have to be copyable. */
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+/* The history list is a set of click targets, not prose — selecting there
+   fights with opening a chat. */
+.covault-ask-session {
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+/* The text cursor above shouldn't bleed onto things you click. */
+.covault-ask-list button,
+.covault-ask-list a,
+.covault-ask-list summary,
+.covault-ask-list img {
+  cursor: pointer;
 }
 
 .covault-ask-empty {
@@ -1830,4 +1852,167 @@
 .covault-import-note {
   font-size: 0.8em;
   color: var(--text-faint);
+}
+
+/* ── Connected services (MCP) status ──────────────────────── */
+
+.covault-mcp-status {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.85em;
+}
+
+.covault-mcp-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.covault-mcp-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+.covault-mcp-dot.is-ok {
+  background: var(--color-green);
+}
+
+.covault-mcp-dot.is-bad {
+  background: var(--color-red);
+}
+
+/* Needs sign-in: an action to take, not a failure. */
+.covault-mcp-dot.is-auth {
+  background: var(--color-yellow);
+}
+
+.covault-mcp-signin {
+  margin-left: auto;
+  padding: 2px 8px;
+  font-size: 0.85em;
+  cursor: pointer;
+}
+
+.covault-mcp-name {
+  font-weight: var(--font-medium);
+}
+
+.covault-mcp-detail,
+.covault-mcp-none {
+  color: var(--text-muted);
+}
+
+/* ── Connected-service chips in the chat ──────────────────── */
+
+.covault-ask-mcp {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 12px 0;
+}
+
+.covault-ask-mcp.is-empty {
+  display: none;
+}
+
+.covault-ask-mcp-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 12px;
+  font-size: 0.78em;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  color: var(--text-muted);
+}
+
+button.covault-ask-mcp-chip {
+  cursor: pointer;
+  box-shadow: none;
+  height: auto;
+}
+
+button.covault-ask-mcp-chip:hover {
+  color: var(--text-normal);
+  border-color: var(--interactive-accent);
+}
+
+.covault-ask-mcp-chip.is-broken {
+  color: var(--text-error);
+}
+
+.covault-ask-mcp-icon {
+  display: inline-flex;
+}
+
+.covault-ask-mcp-icon .svg-icon {
+  width: 13px;
+  height: 13px;
+}
+
+/* ── Settings tab layout ──────────────────────────────────────
+   Scoped to Covault's tab (class added in getSettingDefinitions).
+   With the explanatory paragraphs gone, the page is a list of short
+   labels, so the vertical rhythm tightens and the multi-line inputs —
+   which Obsidian would otherwise squeeze into the narrow control
+   column — get the room they actually need. */
+
+.covault-settings .setting-item {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+/* A textarea in the right-hand control column ends up ~3 lines tall and
+   half the width; JSON and one-per-line notes are unreadable like that.
+   Stack the label above a full-width box instead. */
+.covault-settings .setting-item:has(textarea) {
+  display: block;
+}
+
+.covault-settings .setting-item:has(textarea) .setting-item-info {
+  margin-right: 0;
+}
+
+.covault-settings .setting-item:has(textarea) .setting-item-control {
+  width: 100%;
+  padding-top: 6px;
+  justify-content: stretch;
+}
+
+.covault-settings .setting-item textarea {
+  width: 100%;
+  min-height: 88px;
+  font-family: var(--font-monospace);
+  font-size: 0.85em;
+  line-height: 1.45;
+  resize: vertical;
+}
+
+/* Status list sits in the control column but reads as rows, so let it
+   use the full width and keep the sign-in button on the right edge. */
+.covault-settings .setting-item:has(.covault-mcp-status) {
+  display: block;
+}
+
+.covault-settings .setting-item:has(.covault-mcp-status) .setting-item-control {
+  width: 100%;
+  padding-top: 6px;
+  justify-content: stretch;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+/* The Check button shares the control column with the status rows; keep
+   it button-sized rather than stretched across the panel. */
+.covault-settings .setting-item:has(.covault-mcp-status) .setting-item-control > button {
+  align-self: flex-start;
+}
+
+.covault-mcp-row {
+  min-height: 22px;
 }
