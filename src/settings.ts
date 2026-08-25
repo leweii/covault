@@ -94,3 +94,17 @@ export const DEFAULT_SETTINGS: CovaultSettings = {
   baseOrg: "",
   mainRepo: null,
 };
+
+/**
+ * Is GitHub access configured at all? Nothing that touches a repo —
+ * cloning a library, importing a configuration — can work before this is
+ * true, so callers check it before starting rather than failing per repo.
+ *
+ * A PAT sitting in settings while the GitHub App is the selected method
+ * does not count: that token is not what the engine would reach for.
+ */
+export function isSignedIn(settings: CovaultSettings): boolean {
+  return settings.authMethod === "pat"
+    ? settings.githubToken.trim().length > 0
+    : settings.githubApp.connections.length > 0;
+}

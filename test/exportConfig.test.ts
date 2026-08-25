@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildConfigExport, parseConfigImport, planConfigImport, redactMcpConfig } from "../src/covault/exportConfig";
-import { DEFAULT_SETTINGS, type CovaultSettings } from "../src/settings";
+import { DEFAULT_SETTINGS, isSignedIn, type CovaultSettings } from "../src/settings";
 import type { CovaultManifest } from "../src/covault/manifest";
 
 function settings(): CovaultSettings {
@@ -171,5 +171,30 @@ describe("planConfigImport", () => {
     });
     expect(plan.changes.find((c) => c.key === "baseOrg")).toBeUndefined();
     expect(plan.newLibraries).toEqual([{ path: "p", url: "u", branch: "main" }]);
+  });
+});
+
+describe("importing needs GitHub access", () => {
+  /** applyConfigImport refuses before touching anything, because every
+   *  library in the plan has to be fetched from GitHub. */
+  function plugin(over: Partial<CovaultSettings>): CovaultSettings {
+    return { ...structuredClone(DEFAULT_SETTINGS), ...over };
+  }
+
+  it("counts a GitHub App connection as signed in", () => {
+    expect(isSignedIn(plugin({ githubApp: { connections: [{ sessionId: "s", login: "me", installations: [] }] } }))).toBe(
+      true,
+    );
+  });
+
+  it("counts a non-blank PAT as signed in", () => {
+    expect(isSignedIn(plugin({ authMethod: "pat", githubToken: "ghp_x" }))).toBe(true);
+    expect(isSignedIn(plugin({ authMethod: "pat", githubToken: "   " }))).toBe(false);
+  });
+
+  it("is not signed in with neither", () => {
+    expect(isSignedIn(plugin({}))).toBe(false);
+    // A PAT is irrelevant while the App is the selected method.
+    expect(isSignedIn(plugin({ authMethod: "githubApp", githubToken: "ghp_x" }))).toBe(false);
   });
 });

@@ -2016,3 +2016,8 @@ button.covault-ask-mcp-chip:hover {
 .covault-mcp-row {
   min-height: 22px;
 }
+
+.covault-import-blocked {
+  color: var(--text-error);
+  font-size: 0.88em;
+}

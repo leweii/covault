@@ -2,7 +2,7 @@ import { apiVersion, FileSystemAdapter, Notice, Plugin, TFile, TFolder } from "o
 import * as fs from "fs";
 import * as path from "path";
 import type { MutableModels } from "@earendil-works/pi-ai";
-import { DEFAULT_SETTINGS, type CovaultSettings } from "./settings";
+import { DEFAULT_SETTINGS, isSignedIn, type CovaultSettings } from "./settings";
 import { GitEngine } from "./git/GitEngine";
 import { createObsidianHttp } from "./git/http";
 import { DebugLog } from "./debug/logger";
@@ -533,6 +533,65 @@ export default class CovaultPlugin extends Plugin {
   /** Register an existing shared library and start syncing it. The
    *  branch recorded is the remote's actual default — pinning "main"
    *  onto a master-era repo would leave nothing to clone. */
+  /** Whether GitHub access is set up at all — see isSignedIn(settings). */
+  isSignedIn(): boolean {
+    return isSignedIn(this.settings);
+  }
+
+  /**
+   * Set up several libraries at once.
+   *
+   * The slow part is one network round-trip per library to resolve its
+   * default branch, so those run concurrently — bounded, because a hundred
+   * libraries should not open a hundred sockets. The manifest and
+   * .gitignore writes are read-modify-write, so they happen once,
+   * afterwards, on the main thread's turn: doing them per-library in
+   * parallel would lose entries.
+   *
+   * Cloning is not awaited here. It is the sync pass's job, already
+   * serialized, and the caller should not sit on a modal until it ends.
+   */
+  async addLibraries(repos: ManifestRepo[]): Promise<{ added: ManifestRepo[]; failures: string[] }> {
+    const lanes = Math.min(4, Math.max(1, repos.length));
+    const queue = [...repos];
+    const added: ManifestRepo[] = [];
+    const failures: string[] = [];
+
+    const resolve = async (repo: ManifestRepo): Promise<void> => {
+      const dir = path.join(this.vaultBasePath(), repo.path);
+      const origin = await this.engine.existingOrigin({ dir, url: repo.url, branch: repo.branch });
+      if (origin && !sameRemote(origin, repo.url)) throw new FolderLinkedError(repo.path, origin);
+      const remoteBranch = await this.engine.remoteDefaultBranch({ dir, url: repo.url, branch: repo.branch });
+      added.push({ ...repo, branch: remoteBranch ?? repo.branch });
+    };
+
+    await Promise.all(
+      Array.from({ length: lanes }, async () => {
+        for (let repo = queue.shift(); repo; repo = queue.shift()) {
+          try {
+            await resolve(repo);
+          } catch (e) {
+            failures.push(`${repo.path}: ${(e as Error).message}`);
+            this.debugLog.op("import", `couldn't set up ${repo.path}`, { error: e });
+          }
+        }
+      }),
+    );
+
+    if (added.length > 0) {
+      // Sorted for a stable manifest regardless of which lane finished first.
+      for (const repo of added.sort((a, b) => a.path.localeCompare(b.path))) {
+        this.libraryManifest.add(repo);
+      }
+      this.sharedRepos(); // one .gitignore refresh for the batch
+      this.refreshSettingsUI();
+      void this.sync
+        .syncAll("manual")
+        .then(() => Promise.all(added.map((r) => this.generateLibraryDescription(r.path))));
+    }
+    return { added, failures };
+  }
+
   async addLibrary(repo: ManifestRepo): Promise<void> {
     const dir = path.join(this.vaultBasePath(), repo.path);
     const origin = await this.engine.existingOrigin({ dir, url: repo.url, branch: repo.branch });
@@ -565,6 +624,9 @@ export default class CovaultPlugin extends Plugin {
    * the sync pass this kicks off).
    */
   async applyConfigImport(plan: ImportPlan): Promise<void> {
+    if (plan.newLibraries.length > 0 && !this.isSignedIn()) {
+      throw new Error("Sign in to GitHub first (Settings → Covault → GitHub) — the libraries can't be fetched without it.");
+    }
     for (const change of plan.changes) {
       switch (change.key) {
         case "baseOrg":
@@ -608,14 +670,22 @@ export default class CovaultPlugin extends Plugin {
       changes: plan.changes.length,
       libraries: plan.newLibraries.length,
     });
-    for (const repo of plan.newLibraries) {
-      try {
-        await this.addLibrary(repo);
-      } catch (e) {
-        new Notice(`Covault: couldn't add "${repo.path}" — ${(e as Error).message}`, 8_000);
-      }
-    }
     this.refreshSettingsUI();
+    if (plan.newLibraries.length === 0) return;
+
+    // Deliberately not awaited by the caller's dialog: setting up
+    // libraries is network work whose length depends on how many there
+    // are, and the user should be back in their vault while it happens.
+    new Notice(
+      `Covault: setting up ${plan.newLibraries.length} librar${plan.newLibraries.length === 1 ? "y" : "ies"} in the background…`,
+    );
+    const { added, failures } = await this.addLibraries(plan.newLibraries);
+    if (added.length > 0) {
+      new Notice(`Covault: ${added.length} librar${added.length === 1 ? "y is" : "ies are"} being downloaded.`);
+    }
+    if (failures.length > 0) {
+      new Notice(`Covault: ${failures.length} couldn't be set up —\n${failures.join("\n")}`, 15_000);
+    }
   }
 
   /** Copy the secret-free configuration snapshot to the clipboard. */

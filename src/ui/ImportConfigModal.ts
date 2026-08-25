@@ -91,28 +91,36 @@ export class ImportConfigModal extends Modal {
 
     if (plan.skipped.length > 0) this.renderSkipped(plan.skipped);
 
+    // Libraries are fetched from GitHub, so without access the import
+    // would apply the settings and then fail on every one of them.
+    const blocked = plan.newLibraries.length > 0 && !this.plugin.isSignedIn();
+    if (blocked) {
+      contentEl.createEl("p", {
+        cls: "covault-import-blocked",
+        text:
+          "Sign in to GitHub before importing — these libraries can't be fetched without it. " +
+          "Settings → Covault → GitHub, then come back.",
+      });
+    }
+
     new Setting(contentEl)
       .addButton((btn) => btn.setButtonText("Back").onClick(() => this.renderPaste()))
       .addButton((btn) =>
         btn
           .setButtonText("Import")
           .setCta()
-          .onClick(async () => {
-            if (this.busy) return;
+          .setDisabled(blocked)
+          .onClick(() => {
+            if (this.busy || blocked) return;
             this.busy = true;
-            btn.setDisabled(true).setButtonText("Importing…");
-            try {
-              await this.plugin.applyConfigImport(plan);
-              new Notice(
-                `Covault: imported ${plan.changes.length} setting(s)` +
-                  (plan.newLibraries.length > 0 ? ` and ${plan.newLibraries.length} librar${plan.newLibraries.length === 1 ? "y" : "ies"} (filling on next sync).` : "."),
-              );
-              this.close();
-            } catch (e) {
-              new Notice(`Covault: import failed — ${(e as Error).message}`, 10_000);
-              this.busy = false;
-              btn.setDisabled(false).setButtonText("Import");
-            }
+            // Closed first, on purpose: setting up libraries is network
+            // work that scales with how many there are, and the user
+            // should not be held in a dialog while it runs. Progress and
+            // failures arrive as notices.
+            this.close();
+            void this.plugin.applyConfigImport(plan).catch((e: Error) => {
+              new Notice(`Covault: import failed — ${e.message}`, 10_000);
+            });
           }),
       );
   }
