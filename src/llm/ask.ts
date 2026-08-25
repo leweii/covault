@@ -50,6 +50,9 @@ export interface AskDeps {
   models: MutableModels;
   getSelection: () => { provider: string; model: string };
   hasKey: (provider: string) => boolean;
+  /** false = dangerously-skip-permissions: gated tools run without asking.
+   *  Boundary rejections (paths outside the vault) still apply. */
+  requireApproval: () => boolean;
   /** Full tool surface for a new question (settings may change between asks). */
   tools: () => Promise<AskTool[]>;
   /** The kernel index content (library map), or null before first sync. */
@@ -103,6 +106,7 @@ export class AskEngine {
           return { block: true, reason: (e as Error).message };
         }
         if (!request) return undefined;
+        if (!this.deps.requireApproval()) return undefined; // user opted out of prompts
         const allowed = (await this.cb.approve?.(request)) ?? false;
         return allowed ? undefined : { block: true, reason: "The user declined this action. Continue without it." };
       },

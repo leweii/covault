@@ -61,8 +61,8 @@ export class CovaultSettingTab extends PluginSettingTab {
         return s.llm.conflictInstructions;
       case "announceAgents":
         return s.announceToAgents;
-      case "askCommands":
-        return s.ask.allowCommands;
+      case "askApprove":
+        return s.ask.requireApproval;
       case "askMcp":
         return s.ask.mcpServers;
       case "syncAuto":
@@ -105,8 +105,8 @@ export class CovaultSettingTab extends PluginSettingTab {
         // Owns its own persistence: writes/removes the adapter files too.
         await this.plugin.setAnnounceToAgents(Boolean(value));
         return;
-      case "askCommands":
-        s.ask.allowCommands = Boolean(value);
+      case "askApprove":
+        s.ask.requireApproval = Boolean(value);
         break;
       case "askMcp":
         s.ask.mcpServers = String(value);
@@ -433,12 +433,13 @@ export class CovaultSettingTab extends PluginSettingTab {
           },
         },
         {
-          name: "Let Ask run terminal commands",
+          name: "Ask before the agent acts",
           desc:
-            "Gives the Ask agent a shell in the vault folder. Every command is shown to you " +
-            "and runs only after you allow it.",
-          aliases: ["shell", "cli", "run commands", "agent"],
-          control: { type: "toggle", key: "askCommands" },
+            "Terminal commands, connected services and note edits are shown for your approval " +
+            "before they run. Turn this off and the agent acts without asking — the same risk " +
+            "as handing it an unattended terminal.",
+          aliases: ["approve", "permissions", "skip permissions", "dangerous", "shell", "cli"],
+          control: { type: "toggle", key: "askApprove" },
         },
         {
           name: "Connected services (MCP)",

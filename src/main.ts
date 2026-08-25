@@ -520,6 +520,7 @@ export default class CovaultPlugin extends Plugin {
       getSelection: () => this.settings.llm,
       hasKey: (provider) => !!this.settings.llmKeys[provider],
       // Assembled fresh per question: the toggles and MCP config are live.
+      requireApproval: () => this.settings.ask.requireApproval,
       tools: async () => {
         const tools: AskTool[] = [
           makeSearchTool(libraryDeps),
@@ -527,8 +528,8 @@ export default class CovaultPlugin extends Plugin {
           // Edits ride the normal sync loop — committed and shared like
           // hand-made changes, undoable through File History.
           ...makeEditTools({ ...libraryDeps, onMutation: () => void this.sync.syncAll("auto") }),
+          makeRunCommandTool(() => this.vaultBasePath()),
         ];
-        if (this.settings.ask.allowCommands) tools.push(makeRunCommandTool(() => this.vaultBasePath()));
         tools.push(...(await this.mcp.tools()));
         return tools;
       },
@@ -796,6 +797,7 @@ export default class CovaultPlugin extends Plugin {
       llm: { ...DEFAULT_SETTINGS.llm, ...raw?.llm },
       llmKeys: { ...raw?.llmKeys },
       sync: { ...DEFAULT_SETTINGS.sync, ...raw?.sync },
+      ask: { ...DEFAULT_SETTINGS.ask, ...raw?.ask },
       repos: raw?.repos ?? [],
       author: { ...DEFAULT_SETTINGS.author, ...raw?.author },
     };

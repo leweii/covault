@@ -131,16 +131,13 @@ function scriptedModels(script: Script): MutableModels {
   } as unknown as MutableModels;
 }
 
-function engine(models: MutableModels, opts: { allowCommands?: boolean } = {}): AskEngine {
+function engine(models: MutableModels, opts: { requireApproval?: boolean } = {}): AskEngine {
   return new AskEngine({
     models,
     getSelection: () => ({ provider: "fake", model: "fake" }),
     hasKey: () => true,
-    tools: async () => {
-      const tools = [makeSearchTool(libraryDeps), makeReadTool(libraryDeps)];
-      if (opts.allowCommands) tools.push(makeRunCommandTool(() => vault));
-      return tools;
-    },
+    requireApproval: () => opts.requireApproval ?? true,
+    tools: async () => [makeSearchTool(libraryDeps), makeReadTool(libraryDeps), makeRunCommandTool(() => vault)],
     libraryMap: () => "## ccp-kb — refunds, Zendesk\n## oms-kb — order cancellation",
   });
 }
@@ -182,13 +179,13 @@ describe("AskEngine", () => {
       [toolCall("1", "run_command", { command: "ls teams" })],
       [{ type: "text", text: "done" }],
     ];
-    const denied = engine(scriptedModels(script), { allowCommands: true });
+    const denied = engine(scriptedModels(script));
     const answer = await denied.ask("list", { approve: async () => false });
     expect(answer.text).toBe("done");
     // The command never ran: nothing was approved.
 
     const asked: string[] = [];
-    const allowed = engine(scriptedModels(script), { allowCommands: true });
+    const allowed = engine(scriptedModels(script));
     await allowed.ask("list", {
       approve: async (request) => {
         asked.push(request.action);
@@ -196,6 +193,40 @@ describe("AskEngine", () => {
       },
     });
     expect(asked).toEqual(["$ ls teams"]);
+  });
+
+  it("skip-permissions mode runs gated tools without asking, but boundaries hold", async () => {
+    const script: Script = [
+      [toolCall("1", "run_command", { command: "ls teams" })],
+      [{ type: "text", text: "done" }],
+    ];
+    let askedCount = 0;
+    const yolo = engine(scriptedModels(script), { requireApproval: false });
+    const answer = await yolo.ask("list", {
+      approve: async () => {
+        askedCount += 1;
+        return false;
+      },
+    });
+    expect(answer.text).toBe("done");
+    expect(askedCount).toBe(0); // ran without asking
+
+    // The vault boundary is not a permission — it still rejects.
+    const { makeEditTools } = await import("../src/llm/editTools");
+    const escape = new AskEngine({
+      models: scriptedModels([
+        [toolCall("1", "edit_note", { path: "../evil.md", edits: [{ oldText: "a", newText: "b" }] })],
+        [{ type: "text", text: "blocked, done" }],
+      ]),
+      getSelection: () => ({ provider: "fake", model: "fake" }),
+      hasKey: () => true,
+      requireApproval: () => false,
+      tools: async () => makeEditTools({ vaultBase: () => vault, repos, onMutation: () => {} }),
+      libraryMap: () => null,
+    });
+    const a2 = await escape.ask("edit outside");
+    expect(a2.text).toBe("blocked, done");
+    expect(fs.existsSync(path.join(vault, "..", "evil.md"))).toBe(false);
   });
 
   it("keeps the conversation until reset", async () => {
@@ -263,6 +294,7 @@ describe("edit tools through the agent", () => {
       ]),
       getSelection: () => ({ provider: "fake", model: "fake" }),
       hasKey: () => true,
+      requireApproval: () => true,
       tools: async () => makeEditTools({ vaultBase: () => vault, repos, onMutation: () => {} }),
       libraryMap: () => null,
     });

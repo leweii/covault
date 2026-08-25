@@ -56,9 +56,10 @@ export interface CovaultSettings {
   /** Commit identity ("who saved this"). Empty → derived from the login. */
   author: { name: string; email: string };
 
-  /** Ask's agent powers. Commands are off by default and each one is
-   *  individually approved; MCP servers are opt-in by configuration. */
-  ask: { allowCommands: boolean; mcpServers: string };
+  /** Ask's agent behavior. requireApproval=false is the
+   *  dangerously-skip-permissions mode: commands, connected services and
+   *  note edits run without asking. MCP servers are opt-in by config. */
+  ask: { requireApproval: boolean; mcpServers: string };
 
   /** Maintain AGENTS.md/CLAUDE.md blocks + an Agent Skill so AI coding
    *  assistants working in this vault discover the libraries on their own. */
@@ -80,7 +81,7 @@ export const DEFAULT_SETTINGS: CovaultSettings = {
   sync: { auto: true, intervalMinutes: 10 },
   repos: [],
   author: { name: "", email: "" },
-  ask: { allowCommands: false, mcpServers: "" },
+  ask: { requireApproval: true, mcpServers: "" },
   announceToAgents: true,
   baseOrg: "",
   mainRepo: null,
