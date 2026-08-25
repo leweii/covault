@@ -22,7 +22,12 @@ export function ensureIgnored(vaultBase: string, repoPaths: string[]): void {
 
   // The main repo's git directory must never be swallowed by a vault-root
   // .git managed by another tool — it rides in the managed block always.
-  const entries = [...repoPaths.map((p) => `/${p.replace(/\/+$/, "")}/`), "/.covault/main.git/"].sort();
+  const entries = [
+    ...repoPaths.map((p) => `/${p.replace(/\/+$/, "")}/`),
+    "/.covault/main.git/",
+    // Derived data, regenerated per device — synced nowhere, by anything.
+    "/.covault/skills/",
+  ].sort();
   const block = [START, ...entries, END].join("\n");
 
   const startIdx = existing.indexOf(START);

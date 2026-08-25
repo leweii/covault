@@ -41,6 +41,8 @@ export interface SyncHost {
   vaultBasePath(): string;
   repos(): SyncItem[];
   onStateChange(states: ReadonlyMap<string, RepoState>): void;
+  /** Called once after every full sync pass (regardless of outcome). */
+  onSyncPass?(): void;
 }
 
 export interface PendingConflict {
@@ -96,6 +98,7 @@ export class SyncController {
       }
     } finally {
       this.running = false;
+      this.host.onSyncPass?.();
     }
   }
 

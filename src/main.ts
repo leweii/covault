@@ -12,6 +12,7 @@ import { ManifestStore, type MainKbScope, type ManifestRepo } from "./covault/ma
 import { ensureIgnored } from "./covault/gitignore";
 import { sameRemote } from "./git/urls";
 import { FolderLinkedError } from "./covault/errors";
+import { writeKnowledgeSkill, SKILL_RELPATH } from "./covault/skill";
 import { AddLibraryModal } from "./ui/AddLibraryModal";
 import { ShareFolderModal } from "./ui/ShareFolderModal";
 import { ConflictModal, type ConflictOps } from "./ui/ConflictModal";
@@ -91,6 +92,9 @@ export default class CovaultPlugin extends Plugin {
           this.renderStatusBar(states);
           this.refreshPanels();
         },
+        // Libraries may have pulled new content — keep the routing skill
+        // describing what is actually on disk.
+        onSyncPass: () => this.refreshKnowledgeSkill(),
       },
       this.resolver,
     );
@@ -138,6 +142,14 @@ export default class CovaultPlugin extends Plugin {
       id: "resolve-conflicts",
       name: "Resolve conflicts",
       callback: () => this.openConflictModal(),
+    });
+    this.addCommand({
+      id: "update-knowledge-skill",
+      name: "Update the AI knowledge skill",
+      callback: () => {
+        this.refreshKnowledgeSkill();
+        new Notice(`Covault: knowledge skill updated (${SKILL_RELPATH}).`);
+      },
     });
 
     this.registerEvent(
@@ -221,7 +233,10 @@ export default class CovaultPlugin extends Plugin {
 
     this.applySyncSchedule();
     // Warm the repo list so the pickers open without a spinner.
-    this.app.workspace.onLayoutReady(() => void this.fetchOrgRepos());
+    this.app.workspace.onLayoutReady(() => {
+      void this.fetchOrgRepos();
+      this.refreshKnowledgeSkill();
+    });
     // First pass shortly after startup, once the workspace has settled.
     if (this.settings.sync.auto) {
       window.setTimeout(() => void this.sync.syncAll("auto"), 5_000);
@@ -449,6 +464,16 @@ export default class CovaultPlugin extends Plugin {
     this.sharedRepos(); // refresh .gitignore
     this.refreshSettingsUI();
     void this.sync.syncAll("manual");
+  }
+
+  /** Rebuild the knowledge-routing skill from what's on disk right now.
+   *  Cheap (directory walks only), so it runs after every sync pass. */
+  refreshKnowledgeSkill(): void {
+    try {
+      writeKnowledgeSkill(this.vaultBasePath(), this.libraryManifest.load().repos);
+    } catch (e) {
+      console.warn("[covault] couldn't update the knowledge skill:", e);
+    }
   }
 
   /** Detach a library: drop it from the manifest AND delete the folder's

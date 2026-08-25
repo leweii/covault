@@ -94,6 +94,7 @@ describe("ensureIgnored", () => {
     const content = fs.readFileSync(path.join(vault, ".gitignore"), "utf8");
     expect(content).toContain("/teams/a-kb/");
     expect(content).toContain("/teams/b-kb/");
+    expect(content).toContain("/.covault/skills/");
   });
 
   it("preserves user content and updates only its own block, idempotently", () => {

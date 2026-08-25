@@ -96,7 +96,7 @@ function hasConflictMarkers(content: string): boolean {
  *  main repo — that's how libraries/marks propagate across machines.
  *  .covault/main.git IS: it's the main repo's own git directory. The
  *  Obsidian config folder is appended per-engine via deps.configDir.) */
-const ALWAYS_EXCLUDED = [".trash", ".covault/main.git"];
+const ALWAYS_EXCLUDED = [".trash", ".covault/main.git", ".covault/skills"];
 
 export class GitEngine {
   constructor(private deps: GitEngineDeps) {}
