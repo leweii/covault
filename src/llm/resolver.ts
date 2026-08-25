@@ -57,12 +57,6 @@ When to give up (IMPORTANT):
 - Any merge you are not sure preserves BOTH sides' intent → lower the confidence. Suggestions with confidence 3 or higher are applied automatically without human review, so only use 3+ when the merge is safe beyond doubt.
 `;
 
-/** Compose the system prompt with the user's own team rules appended. */
-export function systemPromptWith(extra: string): string {
-  const trimmed = extra.trim();
-  return trimmed ? `${SYSTEM_PROMPT}\nAdditional team rules (override the heuristics above when they clash):\n${trimmed}\n` : SYSTEM_PROMPT;
-}
-
 export function buildPrompt(req: AISuggestionRequest): string {
   const parts: string[] = [];
   if (req.filePath) parts.push(`File: ${req.filePath}`);
@@ -134,8 +128,6 @@ export interface ResolverDeps {
   models: MutableModels;
   getSelection: () => { provider: string; model: string };
   hasKey: (provider: string) => boolean;
-  /** User-authored extra rules from settings, appended to the system prompt. */
-  getExtraInstructions?: () => string;
 }
 
 export class ConflictResolver {
@@ -152,7 +144,7 @@ export class ConflictResolver {
     if (!model) throw new Error(`Model ${provider}/${modelId} is not available — pick one in Settings.`);
 
     const reply = await this.deps.models.completeSimple(model, {
-      systemPrompt: systemPromptWith(this.deps.getExtraInstructions?.() ?? ""),
+      systemPrompt: SYSTEM_PROMPT,
       messages: [{ role: "user", content: buildPrompt(req), timestamp: Date.now() }],
     });
 

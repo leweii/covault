@@ -90,7 +90,6 @@ export default class CovaultPlugin extends Plugin {
       models: this.models,
       getSelection: () => this.settings.llm,
       hasKey: (provider) => !!this.settings.llmKeys[provider],
-      getExtraInstructions: () => this.settings.llm.conflictInstructions,
     });
 
     this.mcp = new McpManager(() => this.settings.ask.mcpServers);

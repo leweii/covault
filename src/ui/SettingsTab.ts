@@ -57,8 +57,6 @@ export class CovaultSettingTab extends PluginSettingTab {
         return s.llm.provider;
       case "llmModel":
         return s.llm.model;
-      case "conflictInstructions":
-        return s.llm.conflictInstructions;
       case "announceAgents":
         return s.announceToAgents;
       case "askApprove":
@@ -97,9 +95,6 @@ export class CovaultSettingTab extends PluginSettingTab {
         break;
       case "llmModel":
         s.llm.model = String(value);
-        break;
-      case "conflictInstructions":
-        s.llm.conflictInstructions = String(value);
         break;
       case "announceAgents":
         // Owns its own persistence: writes/removes the adapter files too.
@@ -456,13 +451,6 @@ export class CovaultSettingTab extends PluginSettingTab {
             "describing your knowledge libraries, so they consult them before answering.",
           aliases: ["agents.md", "claude.md", "skill", "announce"],
           control: { type: "toggle", key: "announceAgents" },
-        },
-        {
-          name: "Conflict merge instructions",
-          desc:
-            "Optional extra rules for the AI when it merges conflicting edits — e.g. " +
-            "“when versions disagree about facts, never guess: mark it unresolvable and let me decide.”",
-          control: { type: "textarea", key: "conflictInstructions", placeholder: "Your team's rules…" },
         },
       ],
     };

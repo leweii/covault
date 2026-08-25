@@ -42,7 +42,7 @@ export interface CovaultSettings {
 
   /** Selected LLM provider/model (pi-ai provider id + model id), plus
    *  user-authored rules appended to the conflict-merge system prompt. */
-  llm: { provider: string; model: string; conflictInstructions: string };
+  llm: { provider: string; model: string };
   /** API keys keyed by pi-ai provider id (secret). */
   llmKeys: Record<string, string>;
 
@@ -76,7 +76,7 @@ export const DEFAULT_SETTINGS: CovaultSettings = {
   githubToken: "",
   deviceId: "",
   githubApp: { connections: [] },
-  llm: { provider: "anthropic", model: "", conflictInstructions: "" },
+  llm: { provider: "anthropic", model: "" },
   llmKeys: {},
   sync: { auto: true, intervalMinutes: 10 },
   repos: [],
