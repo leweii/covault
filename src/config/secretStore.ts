@@ -31,7 +31,7 @@ function env(key: string): string | undefined {
 }
 
 /** OS-appropriate per-user config directory, outside any vault. */
-function appConfigDir(): string {
+export function appConfigDir(): string {
   const home = os.homedir();
   switch (os.platform()) {
     case "win32":

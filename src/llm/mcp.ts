@@ -11,8 +11,10 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { TSchema } from "typebox";
 import type { AskTool } from "./agentTools";
+import { LoopbackAuthReceiver, McpAuthStore, McpOAuthProvider, serverForState } from "./mcpOAuth";
 
 export interface McpServerConfig {
   name: string;
@@ -22,6 +24,43 @@ export interface McpServerConfig {
   env?: Record<string, string>;
   /** …or HTTP transport: a URL to connect to. */
   url?: string;
+}
+
+/** Last known outcome per configured server, for the settings page and
+ *  for telling the user why Ask has no tools from it. */
+export interface McpServerStatus {
+  name: string;
+  transport: "stdio" | "http";
+  ok: boolean;
+  toolCount: number;
+  /** User-facing reason when ok is false. */
+  error?: string;
+  /** Waiting for the user to sign in — an action, not a fault. Asking a
+   *  question never triggers it; only an explicit click does. */
+  needsAuth?: boolean;
+}
+
+/** Thrown instead of opening a browser when a connect must stay silent. */
+export class SignInRequired extends Error {
+  constructor(public serverName: string) {
+    super(`${serverName} needs you to sign in.`);
+  }
+}
+
+/**
+ * Turn a connection failure into something a user can act on. The raw
+ * errors here are unhelpful ("fetch failed", "spawn npx ENOENT") and
+ * their two overwhelmingly common causes both have a concrete fix.
+ */
+export function explainMcpError(error: unknown, server: McpServerConfig): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  if (/\b401\b|unauthorized|invalid_token/i.test(raw)) {
+    return "needs sign-in — a browser window should have opened; finish there, then ask again.";
+  }
+  if (/ENOENT|not found/i.test(raw) && server.command) {
+    return `couldn't start "${server.command}" — it isn't on the PATH Obsidian sees. Use an absolute path (\`which ${server.command}\`).`;
+  }
+  return raw;
 }
 
 /**
@@ -63,10 +102,163 @@ interface McpText {
 
 export class McpManager {
   private clients = new Map<string, Client>();
+  private statuses = new Map<string, McpServerStatus>();
+  /** Transports mid-OAuth: finishAuth must run on the same instance,
+   *  which holds the discovered resource metadata and scope. */
+  private awaitingAuth = new Map<string, StreamableHTTPClientTransport>();
+  private receiver = new LoopbackAuthReceiver();
+  readonly auth = new McpAuthStore();
 
-  constructor(private getConfigJson: () => string) {}
+  /** `env` supplies the user's real login-shell environment (see
+   *  cliInventory): a GUI-launched Obsidian has a bare PATH, so without it
+   *  a plain `"command": "npx"` fails with ENOENT. `openBrowser` is how an
+   *  OAuth server gets in front of the user. */
+  constructor(
+    private getConfigJson: () => string,
+    private env?: () => Record<string, string | undefined>,
+    private openBrowser: (url: string) => void = (url) => window.open(url, "_blank"),
+  ) {}
 
-  private async connect(server: McpServerConfig): Promise<Client> {
+  /** Stop waiting on a sign-in nobody is going to finish. */
+  cancelAuth(): void {
+    this.receiver.close();
+  }
+
+  /**
+   * Sign in to one server, browser and all. The only path that may open a
+   * browser — everywhere else connects silently, so a question is never
+   * interrupted by an authorization page.
+   */
+  async signIn(serverName: string): Promise<void> {
+    const server = parseMcpConfig(this.getConfigJson()).find((s) => s.name === serverName);
+    if (!server) throw new Error(`"${serverName}" isn't in the connected-services config.`);
+    // A half-connected client from an earlier silent attempt would be
+    // returned as-is and skip the sign-in entirely.
+    await this.close(serverName);
+    const transport = server.command ? "stdio" : "http";
+    try {
+      const client = await this.connect(server, true);
+      const listed = await client.listTools();
+      this.statuses.set(server.name, { name: server.name, transport, ok: true, toolCount: listed.tools.length });
+    } catch (e) {
+      const needsAuth = e instanceof SignInRequired;
+      this.statuses.set(server.name, {
+        name: server.name,
+        transport,
+        ok: false,
+        toolCount: 0,
+        error: needsAuth ? "not signed in" : explainMcpError(e, server),
+        needsAuth,
+      });
+      throw e;
+    }
+  }
+
+  /** Forget one server's connection (not its tokens). */
+  private async close(serverName: string): Promise<void> {
+    const client = this.clients.get(serverName);
+    this.clients.delete(serverName);
+    this.statuses.delete(serverName);
+    try {
+      await client?.close();
+    } catch {
+      /* already gone */
+    }
+  }
+
+  /** What happened the last time each configured server was contacted. */
+  status(): McpServerStatus[] {
+    return parseMcpConfig(this.getConfigJson()).map(
+      (s) =>
+        this.statuses.get(s.name) ?? {
+          name: s.name,
+          transport: s.command ? "stdio" : "http",
+          ok: false,
+          toolCount: 0,
+          error: "not contacted yet",
+        },
+    );
+  }
+
+  /** Servers the user could sign in to right now. */
+  needingSignIn(): McpServerStatus[] {
+    return this.status().filter((s) => s.needsAuth);
+  }
+
+  /** Servers that are broken for some other reason than sign-in. */
+  broken(): McpServerStatus[] {
+    return this.status().filter((s) => !s.ok && !s.needsAuth && s.error !== "not contacted yet");
+  }
+
+  /** Drop cached connections so the next tools() reconnects (config changed). */
+  reset(): void {
+    void this.dispose();
+    this.statuses.clear();
+  }
+
+  /**
+   * Connect a remote server, running the OAuth dance if it asks for one.
+   *
+   * The SDK does the protocol work; the sequencing is ours. On 401 it
+   * calls the provider's redirectToAuthorization and then rejects the
+   * connect with UnauthorizedError — so the browser has to be started
+   * without waiting (we only capture the promise), and the code can only
+   * be exchanged afterwards, once the rejection has handed us the
+   * transport that finishAuth needs. Tokens saved, a fresh transport picks
+   * them up: the SDK does not retry a connect it already failed.
+   */
+  private async connectHttp(server: McpServerConfig, client: Client, interactive: boolean): Promise<Client> {
+    let pending: Promise<Record<string, string>> | null = null;
+    const provider = new McpOAuthProvider(server.name, this.auth, async (url) => {
+      // Asking a question must never hijack the screen with a browser, so
+      // a non-interactive connect refuses here instead. Saved tokens (and
+      // their refresh) still work — this only blocks the first sign-in.
+      if (!interactive) throw new SignInRequired(server.name);
+      // Bind before opening the browser: the redirect can come back fast,
+      // and a port that isn't listening yet loses the code.
+      await this.receiver.start();
+      pending = this.receiver.result;
+      this.openBrowser(url);
+    });
+
+    const url = new URL(server.url as string);
+    const transport = new StreamableHTTPClientTransport(url, { authProvider: provider });
+    try {
+      await client.connect(transport);
+      return client;
+    } catch (e) {
+      if (e instanceof SignInRequired) throw e;
+      if (!(e instanceof UnauthorizedError) || !pending) throw e;
+      this.awaitingAuth.set(server.name, transport);
+      try {
+        await this.finishBrowserAuth(server.name, transport, pending);
+      } finally {
+        this.awaitingAuth.delete(server.name);
+        this.receiver.close();
+      }
+      const authed = new Client({ name: "covault", version: "1.0.0" });
+      await authed.connect(new StreamableHTTPClientTransport(url, { authProvider: provider }));
+      return authed;
+    }
+  }
+
+  /** Verify the redirect and trade the code for tokens. */
+  private async finishBrowserAuth(
+    serverName: string,
+    transport: StreamableHTTPClientTransport,
+    pending: Promise<Record<string, string>>,
+  ): Promise<void> {
+    const params = await pending;
+    if (params.error) throw new Error(`${serverName} refused the sign-in: ${params.error}`);
+    // The SDK never checks `state`; an unverified code is a CSRF hole.
+    if (serverForState(this.auth, params.state) !== serverName) {
+      throw new Error("That sign-in didn't match the request that started it — start it again.");
+    }
+    if (!params.code) throw new Error(`${serverName} sent no authorization code.`);
+    await transport.finishAuth(params.code);
+  }
+
+  private async connect(server: McpServerConfig, interactive: boolean): Promise<Client> {
     const existing = this.clients.get(server.name);
     if (existing) return existing;
     const client = new Client({ name: "covault", version: "1.0.0" });
@@ -75,12 +267,12 @@ export class McpManager {
         new StdioClientTransport({
           command: server.command,
           args: server.args ?? [],
-          env: { ...(process.env as Record<string, string>), ...(server.env ?? {}) },
+          env: { ...(this.env?.() ?? process.env), ...(server.env ?? {}) } as Record<string, string>,
           stderr: "ignore",
         }),
       );
     } else if (server.url) {
-      await client.connect(new StreamableHTTPClientTransport(new URL(server.url)));
+      return this.connectHttp(server, client, interactive);
     } else {
       throw new Error(`MCP server "${server.name}" has neither a command nor a url.`);
     }
@@ -88,16 +280,23 @@ export class McpManager {
     return client;
   }
 
-  /** Connect every configured server and collect its tools. A server
-   *  that fails to connect is skipped with a warning — one broken entry
-   *  must not take Ask down. */
-  async tools(): Promise<AskTool[]> {
+  /** Connect every configured server and collect its tools. A server that
+   *  fails is recorded in status() and skipped — one broken entry must not
+   *  take Ask down, but it must not vanish silently either. */
+  async tools(opts: { interactive?: boolean } = {}): Promise<AskTool[]> {
     const servers = parseMcpConfig(this.getConfigJson());
     const out: AskTool[] = [];
     for (const server of servers) {
+      const transport = server.command ? "stdio" : "http";
       try {
-        const client = await this.connect(server);
+        const client = await this.connect(server, opts.interactive === true);
         const listed = await client.listTools();
+        this.statuses.set(server.name, {
+          name: server.name,
+          transport,
+          ok: true,
+          toolCount: listed.tools.length,
+        });
         for (const tool of listed.tools) {
           const fullName = `${sanitize(server.name)}__${sanitize(tool.name)}`;
           out.push({
@@ -118,13 +317,20 @@ export class McpManager {
           });
         }
       } catch (e) {
-        console.warn(`[covault] MCP server "${server.name}" unavailable:`, e);
+        const needsAuth = e instanceof SignInRequired;
+        const error = needsAuth ? "not signed in" : explainMcpError(e, server);
+        this.statuses.set(server.name, { name: server.name, transport, ok: false, toolCount: 0, error, needsAuth });
+        // A failed connect leaves no reusable client behind.
+        this.clients.delete(server.name);
+        console.warn(`[covault] MCP server "${server.name}" unavailable: ${error}`, e);
       }
     }
     return out;
   }
 
   async dispose(): Promise<void> {
+    // A listener left bound would hold the port past plugin unload.
+    this.receiver.close();
     for (const [, client] of this.clients) {
       try {
         await client.close();

@@ -40,6 +40,7 @@ export class AskView extends ItemView {
   /** Images pasted for the question being composed, not yet sent. */
   private attached: PastedImage[] = [];
 
+  private mcpEl!: HTMLElement;
   private listEl!: HTMLElement;
   private statusEl!: HTMLElement;
   private attachEl!: HTMLElement;
@@ -93,10 +94,22 @@ export class AskView extends ItemView {
     this.listEl.addEventListener("click", (evt) => {
       const link = (evt.target as HTMLElement).closest("a.internal-link");
       if (!link) return;
+      // A drag that happens to end on a citation is someone copying text,
+      // not asking to navigate away from it.
+      if (!window.getSelection()?.isCollapsed) return;
       evt.preventDefault();
       const href = link.getAttribute("data-href") ?? link.getAttribute("href");
       if (href) void this.app.workspace.openLinkText(href, "", false);
     });
+
+    // Connected-service state lives here, not in the conversation: asking
+    // a question never triggers a sign-in, so this is the only place it
+    // can be noticed and acted on.
+    this.mcpEl = root.createDiv("covault-ask-mcp");
+    this.renderMcpChips();
+    // Probe silently on open so a service needing sign-in is visible
+    // before the first question rather than after it.
+    void this.plugin.mcp.tools().then(() => this.renderMcpChips());
 
     this.statusEl = root.createDiv("covault-ask-status");
 
@@ -180,6 +193,43 @@ export class AskView extends ItemView {
     this.statusEl.setText("");
     this.renderAttachments();
     this.inputEl.focus();
+  }
+
+  /**
+   * One chip per connected service that needs attention. Clicking a
+   * "Sign in" chip is the only thing in this view that opens a browser —
+   * questions connect silently and simply go without those tools.
+   */
+  private renderMcpChips(): void {
+    this.mcpEl.empty();
+    const needsAuth = this.plugin.mcp.needingSignIn();
+    const broken = this.plugin.mcp.broken();
+    this.mcpEl.toggleClass("is-empty", needsAuth.length === 0 && broken.length === 0);
+
+    for (const server of needsAuth) {
+      const chip = this.mcpEl.createEl("button", { cls: "covault-ask-mcp-chip mod-warning" });
+      setIcon(chip.createSpan("covault-ask-mcp-icon"), "log-in");
+      chip.createSpan({ text: `Sign in to ${server.name}` });
+      chip.onclick = () => void this.signIn(server.name, chip);
+    }
+    for (const server of broken) {
+      const chip = this.mcpEl.createDiv("covault-ask-mcp-chip is-broken");
+      setIcon(chip.createSpan("covault-ask-mcp-icon"), "alert-triangle");
+      chip.createSpan({ text: `${server.name} — ${server.error ?? "unavailable"}` });
+    }
+  }
+
+  private async signIn(name: string, chip: HTMLElement): Promise<void> {
+    chip.setAttribute("disabled", "true");
+    chip.setText(`Signing in to ${name}…`);
+    try {
+      await this.plugin.mcp.signIn(name);
+      new Notice(`Covault: connected to "${name}".`);
+    } catch (e) {
+      new Notice(`Covault: couldn't connect to "${name}" — ${(e as Error).message}`, 10_000);
+    } finally {
+      this.renderMcpChips();
+    }
   }
 
   private renderAttachments(): void {
@@ -301,6 +351,7 @@ export class AskView extends ItemView {
       this.statusEl.setText("");
       this.persist();
       this.renderTurns();
+      this.renderMcpChips();
     }
   }
 

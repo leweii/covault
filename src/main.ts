@@ -112,13 +112,19 @@ export default class CovaultPlugin extends Plugin {
       hasKey: (provider) => !!this.settings.llmKeys[provider],
     });
 
-    this.mcp = new McpManager(() => this.settings.ask.mcpServers);
     // Probed lazily on the first question, then cached: the agent is told
     // which CLIs this machine has, and run_command inherits the same PATH.
     this.cliInventory = new CliInventory({
       cwd: () => this.vaultBasePath(),
       declared: () => this.settings.ask.cliHints,
     });
+    // Built after the inventory: an MCP server started as a command needs
+    // the same real PATH, or `npx` is not found.
+    this.mcp = new McpManager(
+      () => this.settings.ask.mcpServers,
+      () => this.cliInventory.env(),
+      (url) => window.open(url, "_blank"),
+    );
     this.describer = new LibraryDescriber({
       models: this.models,
       getSelection: () => this.settings.llm,
