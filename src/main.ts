@@ -21,6 +21,8 @@ import { ShareFolderModal } from "./ui/ShareFolderModal";
 import { ConflictModal, type ConflictOps } from "./ui/ConflictModal";
 import { FileHistoryModal } from "./ui/FileHistoryModal";
 import { CovaultPanel, COVAULT_VIEW_TYPE } from "./ui/CovaultPanel";
+import { AskView, COVAULT_ASK_VIEW_TYPE } from "./ui/AskView";
+import { AskEngine } from "./llm/ask";
 import { ConflictResolver } from "./llm/resolver";
 import { createOrgRepo } from "./git/githubApi";
 import type { RepoRef } from "./git/GitEngine";
@@ -116,6 +118,7 @@ export default class CovaultPlugin extends Plugin {
     this.addSettingTab(this.settingsTab);
 
     this.registerView(COVAULT_VIEW_TYPE, (leaf) => new CovaultPanel(leaf, this));
+    this.registerView(COVAULT_ASK_VIEW_TYPE, (leaf) => new AskView(leaf, this));
     this.addRibbonIcon("library", "Open Covault panel", () => void this.activatePanel());
     this.addCommand({
       id: "open-panel",
@@ -152,6 +155,11 @@ export default class CovaultPlugin extends Plugin {
       id: "resolve-conflicts",
       name: "Resolve conflicts",
       callback: () => this.openConflictModal(),
+    });
+    this.addCommand({
+      id: "ask",
+      name: "Ask your knowledge base",
+      callback: () => void this.activateAskView(),
     });
     this.addCommand({
       id: "describe-libraries",
@@ -494,6 +502,36 @@ export default class CovaultPlugin extends Plugin {
     } catch (e) {
       console.warn("[covault] couldn't update the knowledge skill:", e);
     }
+  }
+
+  /** Each Ask view gets its own engine — its own conversation. */
+  newAskEngine(): AskEngine {
+    return new AskEngine({
+      models: this.models,
+      getSelection: () => this.settings.llm,
+      hasKey: (provider) => !!this.settings.llmKeys[provider],
+      vaultBase: () => this.vaultBasePath(),
+      repos: () => this.libraryManifest.load().repos,
+      libraryMap: () => {
+        try {
+          return fs.readFileSync(path.join(this.vaultBasePath(), SKILL_RELPATH), "utf8");
+        } catch {
+          return null;
+        }
+      },
+    });
+  }
+
+  async activateAskView(): Promise<void> {
+    const existing = this.app.workspace.getLeavesOfType(COVAULT_ASK_VIEW_TYPE)[0];
+    if (existing) {
+      await this.app.workspace.revealLeaf(existing);
+      return;
+    }
+    const leaf = this.app.workspace.getRightLeaf(false);
+    if (!leaf) return;
+    await leaf.setViewState({ type: COVAULT_ASK_VIEW_TYPE, active: true });
+    await this.app.workspace.revealLeaf(leaf);
   }
 
   /** Backfill: describe every library that doesn't have a line yet. */

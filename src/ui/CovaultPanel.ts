@@ -77,6 +77,12 @@ export class CovaultPanel extends ItemView {
     // ── Header ────────────────────────────────────────────────
     const header = scroll.createDiv("covault-panel-header");
     header.createSpan({ cls: "covault-panel-title", text: "Covault" });
+    const askBtn = header.createEl("button", {
+      cls: "covault-panel-icon-btn",
+      attr: { "aria-label": "Ask your knowledge base" },
+    });
+    setIcon(askBtn, "message-circle-question");
+    askBtn.onclick = () => void this.plugin.activateAskView();
     const syncBtn = header.createEl("button", {
       cls: "covault-panel-icon-btn",
       attr: { "aria-label": "Sync now" },
