@@ -24,7 +24,7 @@ const MAX_FILES_COUNTED = 5000;
 const MAX_TOP_ENTRIES = 12;
 const README_EXCERPT_CHARS = 400;
 
-interface LibraryFacts {
+export interface LibraryFacts {
   repo: ManifestRepo;
   name: string;
   noteCount: number;
@@ -78,7 +78,7 @@ function readmeExcerpt(file: string): string | null {
   return out.length > README_EXCERPT_CHARS ? `${out.slice(0, README_EXCERPT_CHARS)}…` : out;
 }
 
-function gatherFacts(vaultBase: string, repo: ManifestRepo): LibraryFacts {
+export function gatherFacts(vaultBase: string, repo: ManifestRepo): LibraryFacts {
   const dir = path.join(vaultBase, repo.path);
   const name = repoNameFromUrl(repo.url);
 

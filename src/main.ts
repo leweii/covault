@@ -14,6 +14,8 @@ import { sameRemote } from "./git/urls";
 import { FolderLinkedError } from "./covault/errors";
 import { writeKnowledgeSkill, SKILL_RELPATH } from "./covault/skill";
 import { removeAdapters, writeAdapters } from "./covault/adapters";
+import { gatherFacts } from "./covault/skill";
+import { LibraryDescriber } from "./llm/describe";
 import { AddLibraryModal } from "./ui/AddLibraryModal";
 import { ShareFolderModal } from "./ui/ShareFolderModal";
 import { ConflictModal, type ConflictOps } from "./ui/ConflictModal";
@@ -42,6 +44,7 @@ export default class CovaultPlugin extends Plugin {
   appAuth!: AppAuth;
   libraryManifest!: ManifestStore;
   resolver!: ConflictResolver;
+  describer!: LibraryDescriber;
   private settingsTab: CovaultSettingTab | null = null;
   private statusBarEl!: HTMLElement;
   private syncIntervalId: number | null = null;
@@ -82,6 +85,12 @@ export default class CovaultPlugin extends Plugin {
       getSelection: () => this.settings.llm,
       hasKey: (provider) => !!this.settings.llmKeys[provider],
       getExtraInstructions: () => this.settings.llm.conflictInstructions,
+    });
+
+    this.describer = new LibraryDescriber({
+      models: this.models,
+      getSelection: () => this.settings.llm,
+      hasKey: (provider) => !!this.settings.llmKeys[provider],
     });
 
     this.sync = new SyncController(
@@ -143,6 +152,11 @@ export default class CovaultPlugin extends Plugin {
       id: "resolve-conflicts",
       name: "Resolve conflicts",
       callback: () => this.openConflictModal(),
+    });
+    this.addCommand({
+      id: "describe-libraries",
+      name: "Write AI descriptions for libraries",
+      callback: () => void this.describeAllLibraries(),
     });
     this.addCommand({
       id: "update-knowledge-skill",
@@ -464,7 +478,9 @@ export default class CovaultPlugin extends Plugin {
     this.libraryManifest.add({ ...repo, branch: remoteBranch ?? repo.branch });
     this.sharedRepos(); // refresh .gitignore
     this.refreshSettingsUI();
-    void this.sync.syncAll("manual");
+    // Describe after the sync pass — a cloned library has no content
+    // to describe until then.
+    void this.sync.syncAll("manual").then(() => this.generateLibraryDescription(repo.path));
   }
 
   /** Rebuild the knowledge-routing skill (kernel index) and the agent
@@ -477,6 +493,48 @@ export default class CovaultPlugin extends Plugin {
       if (this.settings.announceToAgents) writeAdapters(this.vaultBasePath(), repos);
     } catch (e) {
       console.warn("[covault] couldn't update the knowledge skill:", e);
+    }
+  }
+
+  /** Backfill: describe every library that doesn't have a line yet. */
+  async describeAllLibraries(): Promise<void> {
+    if (!this.describer.isEnabled()) {
+      new Notice("Covault: configure an AI provider and key in Settings first.");
+      return;
+    }
+    const missing = this.libraryManifest.load().repos.filter((r) => !r.description);
+    if (missing.length === 0) {
+      new Notice("Covault: every library already has a description.");
+      return;
+    }
+    new Notice(`Covault: describing ${missing.length} librar${missing.length === 1 ? "y" : "ies"}…`);
+    let done = 0;
+    for (const repo of missing) {
+      if (await this.generateLibraryDescription(repo.path)) done += 1;
+    }
+    this.refreshSettingsUI();
+    new Notice(`Covault: described ${done} of ${missing.length} librar${missing.length === 1 ? "y" : "ies"}.`);
+  }
+
+  /**
+   * Draft a library's one-line description and store it in the manifest.
+   * Fire-and-forget: runs only on this device (the one that created or
+   * added the library — a single writer, so devices never race), only
+   * once (existing descriptions are kept), and only when a model is
+   * configured. Failures just leave the description empty.
+   */
+  async generateLibraryDescription(folderPath: string): Promise<boolean> {
+    try {
+      const repo = this.libraryManifest.load().repos.find((r) => r.path === folderPath);
+      if (!repo || repo.description || !this.describer.isEnabled()) return false;
+      const line = await this.describer.describe(gatherFacts(this.vaultBasePath(), repo));
+      if (!line) return false;
+      this.libraryManifest.setDescription(folderPath, line);
+      this.refreshKnowledgeSkill(); // adapters render the new description
+      return true;
+    } catch (e) {
+      console.warn(`[covault] couldn't describe "${folderPath}":`, e);
+      return false;
     }
   }
 
@@ -554,6 +612,7 @@ export default class CovaultPlugin extends Plugin {
     this.libraryManifest.add({ path: folderPath, url, branch: remoteBranch });
     this.sharedRepos(); // refresh .gitignore
     this.refreshSettingsUI();
+    void this.generateLibraryDescription(folderPath);
     if (backedUp.length > 0) {
       new Notice(`Covault: kept your versions of ${backedUp.length} note(s) as "(local copy)".`, 10_000);
     }
@@ -615,6 +674,7 @@ export default class CovaultPlugin extends Plugin {
     this.libraryManifest.add({ path: folderPath, url, branch: ref.branch });
     this.sharedRepos(); // refresh .gitignore
     this.refreshSettingsUI();
+    void this.generateLibraryDescription(folderPath);
   }
 
   /** (Re)arm the background sync timer from current settings. */

@@ -105,6 +105,17 @@ export class ManifestStore {
     return manifest;
   }
 
+  /** Record a library's one-line description (see ManifestRepo.description). */
+  setDescription(repoPath: string, description: string): CovaultManifest {
+    const manifest = this.load();
+    const repo = manifest.repos.find((r) => r.path === repoPath);
+    if (repo && repo.description !== description) {
+      repo.description = description;
+      this.save(manifest);
+    }
+    return manifest;
+  }
+
   /** Switch the personal knowledge base between opt-in and whole-vault. */
   setScope(scope: MainKbScope): CovaultManifest {
     const manifest = this.load();

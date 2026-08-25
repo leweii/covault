@@ -156,12 +156,21 @@ export class GitEngine {
     return target?.startsWith("refs/heads/") ? target.slice("refs/heads/".length) : null;
   }
 
+  /**
+   * Shallow: requestUrl buffers the whole packfile in memory (see
+   * http.ts), so a full-history clone of a large or old repo can fail
+   * outright. This keeps enough history for fileLog's default view
+   * without downloading everything; later fetches still grow it.
+   */
+  private static readonly CLONE_DEPTH = 50;
+
   async clone(ref: RepoRef): Promise<void> {
     await git.clone({
       ...this.common(ref),
       url: ref.url,
       ref: ref.branch,
       singleBranch: true,
+      depth: GitEngine.CLONE_DEPTH,
     });
   }
 

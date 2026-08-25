@@ -46,6 +46,19 @@ describe("ManifestStore", () => {
     expect(store.load().include).toEqual([]);
   });
 
+  it("stores and remaps library descriptions", () => {
+    const store = new ManifestStore(vault);
+    store.add({ path: "teams/ccp-kb", url: "https://github.com/o/ccp.git", branch: "main" });
+    store.setDescription("teams/ccp-kb", "Customer Care Portal — Zendesk bridge");
+    expect(new ManifestStore(vault).load().repos[0]?.description).toBe("Customer Care Portal — Zendesk bridge");
+    // The description follows the folder when it moves.
+    store.rename("teams", "depts");
+    expect(new ManifestStore(vault).load().repos[0]?.description).toBe("Customer Care Portal — Zendesk bridge");
+    // Unknown path is a no-op.
+    store.setDescription("nope", "x");
+    expect(new ManifestStore(vault).load().repos).toHaveLength(1);
+  });
+
   it("adds, persists, sorts, and dedupes by path", () => {
     const store = new ManifestStore(vault);
     store.add({ path: "teams/z-kb", url: "https://github.com/o/z.git", branch: "main" });
