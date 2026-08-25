@@ -169,7 +169,7 @@ export class GitEngine {
   private static readonly CLONE_DEPTH = 50;
 
   async clone(ref: RepoRef): Promise<void> {
-    const done = this.deps.log?.time("clone", ref.dir, {
+    const done = this.deps.log?.opTime("clone", ref.dir, {
       branch: ref.branch,
       depth: GitEngine.CLONE_DEPTH,
     });
@@ -194,6 +194,7 @@ export class GitEngine {
     opts: { exclude?: string[]; include?: string[] } = {},
   ): Promise<void> {
     const { fs } = this.deps;
+    const done = this.deps.log?.opTime("init-push", ref.dir, { branch: ref.branch });
     await fs.promises.mkdir(ref.dir, { recursive: true }); // may be a folder-to-be
     await git.init({ fs, dir: ref.dir, gitdir: ref.gitdir, defaultBranch: ref.branch });
     // init leaves an existing HEAD alone, and a folder can arrive with one
@@ -216,6 +217,7 @@ export class GitEngine {
       await this.commitAll(ref, message, changes);
     }
     await this.push(ref);
+    done?.({ files: changes.length });
   }
 
   /**
@@ -235,6 +237,7 @@ export class GitEngine {
    */
   async adoptRemote(ref: RepoRef, opts: { onBackup?: (path: string) => void } = {}): Promise<string[]> {
     const { fs } = this.deps;
+    const done = this.deps.log?.opTime("adopt", ref.dir, { branch: ref.branch });
     await git.init({ fs, dir: ref.dir, gitdir: ref.gitdir, defaultBranch: ref.branch });
     await git.addRemote({ fs, dir: ref.dir, gitdir: ref.gitdir, remote: "origin", url: ref.url, force: true });
     await git.fetch({ ...this.common(ref), remote: "origin", ref: ref.branch, singleBranch: true });
@@ -270,6 +273,7 @@ export class GitEngine {
       force: true,
     });
     await git.checkout({ fs, dir: ref.dir, gitdir: ref.gitdir, ref: ref.branch, force: true });
+    done?.({ backedUp: backedUp.length });
     return backedUp;
   }
 
@@ -397,6 +401,7 @@ export class GitEngine {
    */
   async completeMerge(ref: RepoRef, filepaths: string[], message: string): Promise<void> {
     const { fs } = this.deps;
+    const done = this.deps.log?.opTime("merge-complete", ref.dir, { files: filepaths.length });
     const local = await this.resolve(ref, `refs/heads/${ref.branch}`);
     const remote = await this.resolve(ref, `refs/remotes/origin/${ref.branch}`);
     if (!local || !remote) throw new Error("Merge state is gone — sync again first.");
@@ -412,18 +417,25 @@ export class GitEngine {
       author: this.deps.author(),
     });
     await this.push(ref);
+    done?.();
   }
 
   /** Throw away an unfinished merge: restore every file to the local
    *  commit (conflict markers vanish; the user's own edits are safe —
    *  they were committed before the merge began). */
   async discardMerge(ref: RepoRef): Promise<void> {
+    this.deps.log?.op("merge-discard", ref.dir);
     await git.checkout({ fs: this.deps.fs, dir: ref.dir, gitdir: ref.gitdir, ref: ref.branch, force: true });
   }
 
   /** Stage every change and commit. Returns the new commit oid. */
   async commitAll(ref: RepoRef, message: string, changes: LocalChange[]): Promise<string> {
     const { fs } = this.deps;
+    const done = this.deps.log?.opTime("commit", ref.dir, {
+      files: changes.length,
+      added: changes.filter((c) => c.kind === "added").length,
+      deleted: changes.filter((c) => c.kind === "deleted").length,
+    });
     for (const change of changes) {
       if (change.kind === "deleted") {
         await git.remove({ fs, dir: ref.dir, gitdir: ref.gitdir, filepath: change.filepath });
@@ -431,7 +443,9 @@ export class GitEngine {
         await git.add({ fs, dir: ref.dir, gitdir: ref.gitdir, filepath: change.filepath });
       }
     }
-    return git.commit({ fs, dir: ref.dir, gitdir: ref.gitdir, message, author: this.deps.author() });
+    const oid = await git.commit({ fs, dir: ref.dir, gitdir: ref.gitdir, message, author: this.deps.author() });
+    done?.({ oid: oid.slice(0, 8) });
+    return oid;
   }
 
   private async resolve(ref: RepoRef, gitRef: string): Promise<string | null> {
@@ -444,7 +458,7 @@ export class GitEngine {
   }
 
   async push(ref: RepoRef): Promise<void> {
-    const done = this.deps.log?.time("push", ref.dir, { branch: ref.branch });
+    const done = this.deps.log?.opTime("push", ref.dir, { branch: ref.branch });
     const result = await git.push({
       ...this.common(ref),
       remote: "origin",
@@ -490,7 +504,7 @@ export class GitEngine {
       result.committed = changes;
     }
 
-    const fetched = log?.time("fetch", ref.dir, { branch: ref.branch });
+    const fetched = log?.opTime("fetch", ref.dir, { branch: ref.branch });
     await git.fetch({ ...this.common(ref), remote: "origin", ref: ref.branch, singleBranch: true });
     fetched?.();
 
@@ -509,12 +523,15 @@ export class GitEngine {
 
     if (await git.isDescendent({ fs, dir: ref.dir, gitdir: ref.gitdir, oid: remote, ancestor: local, depth: -1 })) {
       // Remote is strictly ahead — fast-forward (fetches again internally; cheap, already current).
+      const ffDone = this.deps.log?.opTime("fast-forward", ref.dir, { branch: ref.branch });
       await git.fastForward({ ...this.common(ref), ref: ref.branch, singleBranch: true });
+      ffDone?.();
       result.pulled = true;
       return result;
     }
 
     // Diverged: merge the remote into the local branch.
+    const mergeDone = this.deps.log?.opTime("merge", ref.dir, { branch: ref.branch });
     try {
       await git.merge({
         fs,
@@ -528,6 +545,7 @@ export class GitEngine {
     } catch (e) {
       if (e instanceof git.Errors.MergeConflictError) {
         result.conflictFilepaths = e.data.filepaths;
+        mergeDone?.({ conflicts: e.data.filepaths.length });
         return result;
       }
       throw e;
@@ -537,6 +555,7 @@ export class GitEngine {
     // working directory. Non-forced, so an edit that landed mid-sync
     // aborts materialization and is picked up next round.
     await git.checkout({ fs, dir: ref.dir, gitdir: ref.gitdir, ref: ref.branch });
+    mergeDone?.({ merged: true });
     result.pulled = true;
     await this.push(ref);
     result.pushed = true;

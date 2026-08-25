@@ -100,7 +100,9 @@ export default class CovaultPlugin extends Plugin {
     this.libraryManifest = new ManifestStore(this.vaultBasePath());
     await this.migrateReposToManifest();
     // After the manifest: the header reports how many libraries are set up.
-    if (this.settings.debugMode) this.logDebugHeader();
+    // Always: the operations log runs unconditionally, so every log file
+    // opens with the environment it was collected on.
+    this.logDebugHeader();
 
     this.resolver = new ConflictResolver({
       models: this.models,
@@ -812,7 +814,7 @@ export default class CovaultPlugin extends Plugin {
    * switched on, and on load when it is already on.
    */
   logDebugHeader(): void {
-    this.debugLog.log("session", "debug mode on", {
+    this.debugLog.op("session", "session start", {
       plugin: this.manifest.version,
       obsidian: apiVersion,
       platform: process.platform,
@@ -825,10 +827,6 @@ export default class CovaultPlugin extends Plugin {
 
   /** Hand the collected log to the user — the point of collecting it. */
   private async copyDebugLog(): Promise<void> {
-    if (!this.settings.debugMode && this.debugLog.snapshot().length === 0) {
-      new Notice("Covault: turn on debug mode in settings first, then reproduce the problem.", 8_000);
-      return;
-    }
     const text = this.debugLog.format();
     if (!text) {
       new Notice("Covault: nothing logged yet — reproduce the problem, then copy again.", 8_000);

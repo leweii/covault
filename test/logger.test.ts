@@ -61,14 +61,14 @@ describe("DebugLog", () => {
     const { dir, log } = makeLog(false);
     log.log("http", "GET /info/refs");
     expect(log.snapshot()).toHaveLength(0);
-    expect(fs.existsSync(path.join(dir, "covault-debug.log"))).toBe(false);
+    expect(fs.existsSync(path.join(dir, "covault.log"))).toBe(false);
   });
 
   it("writes to both the ring and the file when enabled", () => {
     const { dir, log } = makeLog(true);
     log.log("http", "GET /info/refs", { status: 200 });
     expect(log.snapshot()).toHaveLength(1);
-    expect(fs.readFileSync(path.join(dir, "covault-debug.log"), "utf8")).toContain("[http] GET /info/refs");
+    expect(fs.readFileSync(path.join(dir, "covault.log"), "utf8")).toContain("[http] GET /info/refs");
   });
 
   it("times an operation and reports elapsed ms", () => {
@@ -90,14 +90,38 @@ describe("DebugLog", () => {
     log.log("http", "GET /info/refs");
     log.clear();
     expect(log.snapshot()).toHaveLength(0);
-    expect(fs.existsSync(path.join(dir, "covault-debug.log"))).toBe(false);
+    expect(fs.existsSync(path.join(dir, "covault.log"))).toBe(false);
   });
 
   it("redacts before anything reaches disk", () => {
     const { dir, log } = makeLog(true);
     log.log("push", "failed", { url: "https://x:ghp_abcdefghij0123456789@github.com/acme/kb.git" });
-    const written = fs.readFileSync(path.join(dir, "covault-debug.log"), "utf8");
+    const written = fs.readFileSync(path.join(dir, "covault.log"), "utf8");
     expect(written).not.toContain("ghp_abcdefghij0123456789");
     expect(written).toContain("<redacted>");
+  });
+});
+
+describe("operations level", () => {
+  const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "covault-oplog-"));
+
+  it("records op()/opTime() even with debug mode off", () => {
+    const dir = tmp();
+    const log = new DebugLog({ fs, enabled: () => false, logDir: () => dir });
+    log.op("commit", "vault", { files: 3 });
+    const done = log.opTime("push", "vault");
+    done({ ok: true });
+    expect(log.snapshot().map((e) => e.scope)).toEqual(["commit", "push", "push"]);
+    expect(fs.readFileSync(path.join(dir, "covault.log"), "utf8")).toContain("[commit] vault");
+    // Verbose stays gated.
+    log.log("http", "GET /x");
+    expect(log.snapshot().some((e) => e.scope === "http")).toBe(false);
+  });
+
+  it("redacts operation data too", () => {
+    const dir = tmp();
+    const log = new DebugLog({ fs, enabled: () => false, logDir: () => dir });
+    log.op("push", "https://x:ghp_abcdefghijklmnop1234@github.com/o/r.git");
+    expect(log.format()).not.toContain("ghp_abcdefghijklmnop1234");
   });
 });

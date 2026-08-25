@@ -1,17 +1,22 @@
 /**
- * Configuration export: everything needed to describe (or reproduce) a
- * Covault setup, with secrets constitutionally excluded.
+ * Configuration export and import: enough to reproduce a Covault setup on
+ * another machine, with secrets and personal identity excluded.
  *
- * Built as an ALLOWLIST — fields are picked one by one, never "settings
- * minus the secret ones" — so a future secret field can't leak by being
- * forgotten here. Out by design: the PAT, API keys, backend sessions,
- * the device id. MCP server configs are included but their env values
- * (a favourite place for tokens) are masked.
+ * Built as an ALLOWLIST in both directions — fields are picked one by one,
+ * never "settings minus the bad ones" — so a future secret field can't
+ * leak by being forgotten here, and a hostile file can't reach a setting
+ * import was never meant to touch. Out by design: the PAT, API keys,
+ * backend sessions, the device id, and the commit identity (name/email),
+ * which belongs to a person rather than to a setup. MCP server configs are
+ * exported but their env values (a favourite place for tokens) are masked,
+ * which is also why import refuses to restore a masked one.
  */
 import type { CovaultSettings } from "../settings";
-import type { CovaultManifest } from "./manifest";
+import type { CovaultManifest, ManifestRepo } from "./manifest";
 
-export const EXPORT_VERSION = 1;
+/** 2 dropped `settings.author` — a v1 file may still carry it, and import
+ *  ignores it either way. */
+export const EXPORT_VERSION = 2;
 
 const REDACTED = "«redacted»";
 
@@ -48,7 +53,9 @@ export function buildConfigExport(settings: CovaultSettings, manifest: CovaultMa
     settings: {
       authMethod: settings.authMethod,
       baseOrg: settings.baseOrg,
-      author: { name: settings.author.name, email: settings.author.email },
+      // No author here on purpose: the commit identity is who you are, not
+      // how the vault is set up, and it is re-derived from the GitHub
+      // login on sign-in anyway.
       llm: { provider: settings.llm.provider, model: settings.llm.model },
       sync: { auto: settings.sync.auto, intervalMinutes: settings.sync.intervalMinutes },
       ask: {

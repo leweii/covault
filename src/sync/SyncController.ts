@@ -95,12 +95,12 @@ export class SyncController {
     if (this.running) {
       // Worth logging: a pass that overruns the auto interval silently
       // swallows later triggers, which reads to the user as "stuck".
-      this.log?.log("pass", "skipped — a sync is already running", { trigger });
+      this.log?.op("pass", "skipped — a sync is already running", { trigger });
       return;
     }
     this.running = true;
     const repos = this.host.repos();
-    const done = this.log?.time("pass", "sync pass", { trigger, repos: repos.length });
+    const done = this.log?.opTime("pass", "sync pass", { trigger, repos: repos.length });
     try {
       for (const repo of repos) {
         await this.syncOne(repo, trigger);
@@ -116,7 +116,7 @@ export class SyncController {
     const ref = this.toRef(repo);
     const name = repo.label ?? repo.path;
     this.setState(repo.path, { phase: "syncing" });
-    const done = this.log?.time("repo", name, { branch: ref.branch, trigger });
+    const done = this.log?.opTime("repo", name, { branch: ref.branch, trigger });
     try {
       if (!(await this.engine.isRepo(ref))) {
         if (repo.noAutoClone) {
@@ -169,7 +169,7 @@ export class SyncController {
 
       this.pending.delete(repo.path);
       this.setState(repo.path, { phase: "idle", lastSyncedAt: Date.now() });
-      this.log?.log("repo", `${name} — ${summarize(result)}`, {
+      this.log?.op("repo", `${name} — ${summarize(result)}`, {
         committed: result.committed.length,
         pulled: result.pulled,
         pushed: result.pushed,
@@ -182,7 +182,7 @@ export class SyncController {
       this.setState(repo.path, { phase: "error", detail: message });
       console.error(`[covault] sync failed for ${name}:`, e);
       // The stack is the part a bug report needs and the Notice can't carry.
-      this.log?.log("repo", `${name} — failed`, { error: e, stack: e instanceof Error ? e.stack : undefined });
+      this.log?.op("repo", `${name} — failed`, { error: e, stack: e instanceof Error ? e.stack : undefined });
       if (trigger === "manual") new Notice(`Covault: couldn't sync "${name}" — ${message}`);
     } finally {
       done?.();

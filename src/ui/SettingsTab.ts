@@ -517,11 +517,11 @@ export class CovaultSettingTab extends PluginSettingTab {
           },
         },
         {
-          name: "Collect a diagnostic log",
+          name: "Verbose diagnostics",
           desc:
-            "For troubleshooting only. Records what happens during each sync — how long each step takes and " +
-            "how much data moves — to .covault/logs/, which is never shared with your team. " +
-            "Reproduce the problem, then run “Covault: Copy the diagnostic log” and send it along.",
+            "Covault always keeps a log of every sync and git operation in .covault/logs/ (never shared " +
+            "with your team). This adds network-level detail — request sizes and timings — for " +
+            "troubleshooting; reproduce the problem, then run “Copy the diagnostic log”.",
           control: { type: "toggle", key: "debugMode" },
         },
       ],

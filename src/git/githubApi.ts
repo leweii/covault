@@ -39,6 +39,57 @@ export async function addCollaborator(
   }
 }
 
+export interface GitHubIdentity {
+  login: string;
+  /** Profile display name, or null when the user never set one. */
+  name: string | null;
+  /** Best commit email available, or null when none could be read. */
+  email: string | null;
+}
+
+/** Never a real address — GitHub's own privacy default, and what we fall
+ *  back to whenever the profile email can't be read. */
+export function noreplyEmail(login: string): string {
+  return `${login}@users.noreply.github.com`;
+}
+
+/**
+ * Who this token belongs to, for the commit identity.
+ *
+ * Only works with a user-scoped token (a PAT). A GitHub App installation
+ * token acts as the app, not the user, and gets 403 here — callers in App
+ * mode have the login from the sign-in callback and should derive from
+ * that instead.
+ *
+ * `GET /user` omits the email whenever the user keeps it private, which is
+ * the common case, so a null email is chased through `/user/emails` (needs
+ * user:email). Anything unreadable resolves to null rather than throwing:
+ * a missing email must never block signing in.
+ */
+export async function fetchUserIdentity(token: string): Promise<GitHubIdentity | null> {
+  const headers = { Authorization: `token ${token}`, Accept: "application/vnd.github+json", ...UA };
+  const res = await requestUrl({ url: "https://api.github.com/user", headers, throw: false });
+  if (res.status !== 200) return null;
+  const user = res.json as { login?: string; name?: string | null; email?: string | null } | null;
+  const login = user?.login;
+  if (!login) return null;
+  return {
+    login,
+    name: user?.name ?? null,
+    email: user?.email ?? (await fetchPrimaryEmail(headers)) ?? null,
+  };
+}
+
+/** The verified primary address, when the token is allowed to list them. */
+async function fetchPrimaryEmail(headers: Record<string, string>): Promise<string | null> {
+  const res = await requestUrl({ url: "https://api.github.com/user/emails", headers, throw: false });
+  if (res.status !== 200) return null; // no user:email scope, or a fine-grained PAT without it
+  const rows = res.json as { email?: string; primary?: boolean; verified?: boolean }[] | null;
+  if (!Array.isArray(rows)) return null;
+  const pick = rows.find((r) => r.primary && r.verified) ?? rows.find((r) => r.verified);
+  return pick?.email ?? null;
+}
+
 export interface CreatedRepo {
   fullName: string;
   /** HTTPS clone URL. */

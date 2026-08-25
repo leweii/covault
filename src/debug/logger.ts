@@ -1,10 +1,17 @@
 /**
- * Opt-in diagnostic log for troubleshooting syncs that fail on someone
- * else's machine.
+ * The plugin's operations log.
  *
- * Two sinks, both gated on the debug-mode setting: an in-memory ring (for
- * "copy the log" right after a failure) and an append-only file under
- * .covault/logs/ (survives the restart that a stuck sync usually invites).
+ * Two levels. OPERATIONS — every git action the plugin performs (clone,
+ * fetch, push, commit, merge, adopt…) — are ALWAYS recorded: this plugin
+ * silently rewrites the user's notes over git, and an unconditional
+ * journal of what it did is part of the trust contract (and the undo
+ * story: the log says what happened, git history holds the content).
+ * VERBOSE — network-level detail like request byte counts — is gated on
+ * the debug-mode setting, for chasing a specific failure.
+ *
+ * Two sinks: an in-memory ring (for "copy the log" right after a
+ * failure) and an append-only file under .covault/logs/ (survives the
+ * restart that a stuck sync usually invites).
  *
  * Everything written here is meant to be pasted into a bug report, so
  * every value passes through redact() first — git traffic carries tokens
@@ -30,7 +37,7 @@ export interface DebugLogDeps {
 const MAX_ENTRIES = 2_000;
 /** Rotate at 2 MB: one generation back is plenty for a bug report. */
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
-const FILE_NAME = "covault-debug.log";
+const FILE_NAME = "covault.log";
 
 /** Key names whose values are secrets wherever they appear. */
 const SECRET_KEY = /^(authorization|auth|token|password|secret|cookie|set-cookie|sessionid|session_id)$/i;
@@ -101,12 +108,33 @@ export class DebugLog {
     return `${this.deps.logDir()}/${FILE_NAME}`;
   }
 
+  /** OPERATIONS level: always recorded, regardless of debug mode. */
+  op(scope: string, message: string, data?: Record<string, unknown>): void {
+    this.write(scope, message, data);
+  }
+
+  /** Time an operation (always recorded). */
+  opTime(scope: string, message: string, data?: Record<string, unknown>): (extra?: Record<string, unknown>) => void {
+    const startedAt = Date.now();
+    this.write(scope, `${message} — started`, data);
+    return (extra?: Record<string, unknown>) => {
+      this.write(scope, `${message} — done`, { ...extra, ms: Date.now() - startedAt });
+    };
+  }
+
+  /** VERBOSE level: recorded only while debug mode is on. */
   log(scope: string, message: string, data?: Record<string, unknown>): void {
     if (!this.isEnabled()) return;
+    this.write(scope, message, data);
+  }
+
+  private write(scope: string, message: string, data?: Record<string, unknown>): void {
     const entry: DebugLogEntry = {
       at: Date.now(),
       scope,
-      message,
+      // Messages get the same scrub as data: error texts embed URLs, and
+      // URLs can embed credentials.
+      message: redact(message) as string,
       data: data ? (redact(data) as Record<string, unknown>) : undefined,
     };
     this.entries.push(entry);

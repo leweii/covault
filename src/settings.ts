@@ -68,9 +68,8 @@ export interface CovaultSettings {
    *  assistants working in this vault discover the libraries on their own. */
   announceToAgents: boolean;
 
-  /** Collect a diagnostic log of sync activity (.covault/logs/), for
-   *  troubleshooting a sync that fails on a particular machine. Off by
-   *  default: it is only useful while chasing a bug. */
+  /** Add network-level detail (request sizes, timings) to the always-on
+   *  operations log. Off by default: only useful while chasing a bug. */
   debugMode: boolean;
 
   /** The org every knowledge repo (shared libraries + personal KBs) lives in. */
