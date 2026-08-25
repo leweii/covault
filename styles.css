@@ -1621,3 +1621,50 @@
   resize: none;
   font-size: 0.92em;
 }
+
+/* ── Diff approval (Ask note edits) ───────────────────────── */
+
+.modal.covault-diff-approve {
+  max-width: 720px;
+  width: 90vw;
+}
+
+.covault-diff-body {
+  max-height: 55vh;
+  overflow: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  font-family: var(--font-monospace);
+  font-size: 0.8em;
+  line-height: 1.45;
+  padding: 4px 0;
+  background: var(--background-primary-alt);
+}
+
+.covault-diff-line {
+  padding: 0 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.covault-diff-line.add {
+  background: rgba(var(--color-green-rgb), 0.14);
+  color: var(--color-green);
+}
+
+.covault-diff-line.del {
+  background: rgba(var(--color-red-rgb), 0.12);
+  color: var(--color-red);
+}
+
+.covault-diff-line.hunk {
+  color: var(--text-faint);
+  padding-top: 4px;
+}
+
+.covault-diff-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}

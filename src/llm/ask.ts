@@ -14,7 +14,7 @@
  */
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import { contentText, type AssistantMessage, type MutableModels } from "@earendil-works/pi-ai";
-import type { AskTool } from "./agentTools";
+import type { ApprovalRequest, AskTool } from "./agentTools";
 
 /** Runaway guard: one question should never burn more turns than this. */
 const MAX_TURNS = 16;
@@ -25,6 +25,7 @@ Rules:
 - ALWAYS look before you answer: pick the likely library from the map, call search_notes, read the most promising notes with read_note. The notes are the source of truth; your general knowledge is only for interpreting them.
 - If the notes don't answer the question, say so plainly — never invent an answer that isn't in the libraries.
 - Other tools (shell commands, connected services) may be available; use them when they genuinely help answer or complete what was asked. The user approves risky actions individually — a declined action is an answer, not an obstacle: work with what you have.
+- When the user asks you to update, fix or add to the team's notes, do it with edit_note (targeted oldText → newText replacements; prefer it) or write_note (new notes). Keep each note's existing language, style and structure; make the smallest change that fulfils the request. The user reviews a diff before anything is written.
 - Answer in the language the question was asked in.
 - Keep answers focused; quote concrete facts (names, values, steps) from the notes.
 - End with a "Sources:" line listing every note you used, each as an Obsidian wiki link: [[path/to/note.md]] (the vault-relative path you saw in tool results).`;
@@ -36,7 +37,7 @@ export interface AskCallbacks {
   /** One line per agent action ("Searching ccp-kb…", "$ git log…"). */
   onActivity?: (line: string) => void;
   /** Ask the user to allow an action. Absent → everything gated is denied. */
-  approve?: (action: string) => Promise<boolean>;
+  approve?: (request: ApprovalRequest) => Promise<boolean>;
 }
 
 export interface AskAnswer {
@@ -94,9 +95,15 @@ export class AskEngine {
       streamFn: (model, context, options) => this.deps.models.streamSimple(model, context, options),
       beforeToolCall: async (ctx) => {
         const tool = this.byName.get(ctx.toolCall.name);
-        const action = tool?.needsApproval?.((ctx.args ?? {}) as Record<string, unknown>);
-        if (!action) return undefined;
-        const allowed = (await this.cb.approve?.(action)) ?? false;
+        let request: ApprovalRequest | null | undefined;
+        try {
+          request = tool?.needsApproval?.((ctx.args ?? {}) as Record<string, unknown>);
+        } catch (e) {
+          // The gate itself rejected the call (bad path, missing note…).
+          return { block: true, reason: (e as Error).message };
+        }
+        if (!request) return undefined;
+        const allowed = (await this.cb.approve?.(request)) ?? false;
         return allowed ? undefined : { block: true, reason: "The user declined this action. Continue without it." };
       },
     });

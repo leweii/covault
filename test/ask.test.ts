@@ -57,7 +57,7 @@ describe("readLibraryNote", () => {
 describe("run_command tool", () => {
   it("always demands approval and runs in the vault directory", async () => {
     const tool = makeRunCommandTool(() => vault);
-    expect(tool.needsApproval?.({ command: "ls" })).toBe("$ ls");
+    expect(tool.needsApproval?.({ command: "ls" })).toEqual({ action: "$ ls" });
     const outcome = await tool.execute({ command: "ls teams" });
     expect(outcome.isError).toBeFalsy();
     expect(outcome.text).toContain("ccp-kb");
@@ -183,8 +183,8 @@ describe("AskEngine", () => {
     const asked: string[] = [];
     const allowed = engine(scriptedModels(script), { allowCommands: true });
     await allowed.ask("list", {
-      approve: async (action) => {
-        asked.push(action);
+      approve: async (request) => {
+        asked.push(request.action);
         return true;
       },
     });
@@ -198,5 +198,73 @@ describe("AskEngine", () => {
     ask.reset();
     const a = await ask.ask("q3");
     expect(a.text).toBe("answer");
+  });
+});
+
+describe("edit tools through the agent", () => {
+  it("previews a diff, requires fresh approval, edits the note, and pokes sync", async () => {
+    const { makeEditTools } = await import("../src/llm/editTools");
+    let mutations = 0;
+    const tools = makeEditTools({ vaultBase: () => vault, repos, onMutation: () => (mutations += 1) });
+    const edit = tools.find((t) => t.name === "edit_note")!;
+
+    const req = edit.needsApproval!({
+      path: "teams/ccp-kb/02_domain/refunds.md",
+      edits: [{ oldText: "Zendesk first", newText: "Zendesk FIRST (always)" }],
+    })!;
+    expect(req.action).toBe("Edit teams/ccp-kb/02_domain/refunds.md");
+    expect(req.diff).toContain("-Refunds go through Zendesk first");
+    expect(req.diff).toContain("+Refunds go through Zendesk FIRST (always)");
+
+    const outcome = await edit.execute({
+      path: "teams/ccp-kb/02_domain/refunds.md",
+      edits: [{ oldText: "Zendesk first", newText: "Zendesk FIRST (always)" }],
+    });
+    expect(outcome.isError).toBeFalsy();
+    expect(fs.readFileSync(path.join(vault, "teams/ccp-kb/02_domain/refunds.md"), "utf8")).toContain("FIRST (always)");
+    expect(mutations).toBe(1);
+  });
+
+  it("refuses paths outside the libraries at the gate", async () => {
+    const { makeEditTools } = await import("../src/llm/editTools");
+    const tools = makeEditTools({ vaultBase: () => vault, repos, onMutation: () => {} });
+    const edit = tools.find((t) => t.name === "edit_note")!;
+    expect(() => edit.needsApproval!({ path: "private/diary.md", edits: [] })).toThrow(/outside the knowledge libraries/);
+    const write = tools.find((t) => t.name === "write_note")!;
+    expect(() => write.needsApproval!({ path: "../evil.md", content: "x" })).toThrow(/outside/);
+  });
+
+  it("write_note distinguishes create from replace in the approval", async () => {
+    const { makeEditTools } = await import("../src/llm/editTools");
+    const tools = makeEditTools({ vaultBase: () => vault, repos, onMutation: () => {} });
+    const write = tools.find((t) => t.name === "write_note")!;
+    const fresh = write.needsApproval!({ path: "teams/oms-kb/new-runbook.md", content: "# Runbook\n" })!;
+    expect(fresh.action).toBe("Create teams/oms-kb/new-runbook.md");
+    expect(fresh.diff).toContain("+# Runbook");
+    const replace = write.needsApproval!({ path: "teams/oms-kb/cancel.md", content: "# New\n" })!;
+    expect(replace.action).toBe("Replace teams/oms-kb/cancel.md");
+  });
+
+  it("a blocked edit never touches the file", async () => {
+    const { makeEditTools } = await import("../src/llm/editTools");
+    const ask = new AskEngine({
+      models: scriptedModels([
+        [toolCall("1", "edit_note", { path: "teams/oms-kb/cancel.md", edits: [{ oldText: "OMS console", newText: "NEW console" }] })],
+        [{ type: "text", text: "declined, done" }],
+      ]),
+      getSelection: () => ({ provider: "fake", model: "fake" }),
+      hasKey: () => true,
+      tools: async () => makeEditTools({ vaultBase: () => vault, repos, onMutation: () => {} }),
+      libraryMap: () => null,
+    });
+    const seen: string[] = [];
+    await ask.ask("edit it", {
+      approve: async (r) => {
+        seen.push(r.diff ?? "");
+        return false;
+      },
+    });
+    expect(seen[0]).toContain("+Use the NEW console");
+    expect(fs.readFileSync(path.join(vault, "teams/oms-kb/cancel.md"), "utf8")).toContain("OMS console");
   });
 });

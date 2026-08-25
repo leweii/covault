@@ -18,14 +18,24 @@ export interface AskToolOutcome {
   isError?: boolean;
 }
 
+/** What the user is asked to allow before a gated tool runs. */
+export interface ApprovalRequest {
+  /** Short action line ("$ git log", "jira: search", "Edit refunds.md"). */
+  action: string;
+  /** Unified diff to render when the action changes a file. Actions
+   *  carrying a diff are confirmed every time — never remembered. */
+  diff?: string;
+}
+
 export interface AskTool {
   name: string;
   description: string;
   parameters: TSchema;
   /** Status line shown in the UI while the tool runs. */
   statusFor: (args: Record<string, unknown>) => string;
-  /** Human-readable action needing user approval, or null to run freely. */
-  needsApproval?: (args: Record<string, unknown>) => string | null;
+  /** The approval the action needs, or null to run freely. May throw to
+   *  reject the call outright (e.g. a path outside the libraries). */
+  needsApproval?: (args: Record<string, unknown>) => ApprovalRequest | null;
   execute: (args: Record<string, unknown>, signal?: AbortSignal) => Promise<AskToolOutcome>;
 }
 
@@ -90,7 +100,7 @@ export function makeRunCommandTool(cwd: () => string): AskTool {
       const command = String(args.command ?? "");
       return `Running: ${command.length > 60 ? `${command.slice(0, 60)}…` : command}`;
     },
-    needsApproval: (args) => `$ ${String(args.command ?? "")}`,
+    needsApproval: (args) => ({ action: `$ ${String(args.command ?? "")}` }),
     execute: (args, signal) =>
       new Promise((resolve) => {
         const command = String(args.command ?? "");

@@ -8,6 +8,8 @@ import { ItemView, MarkdownRenderer, setIcon, type WorkspaceLeaf } from "obsidia
 import type CovaultPlugin from "../main";
 import type { AskEngine } from "../llm/ask";
 import { ConfirmModal } from "./ConfirmModal";
+import { DiffApproveModal } from "./DiffApproveModal";
+import type { ApprovalRequest } from "../llm/agentTools";
 
 export const COVAULT_ASK_VIEW_TYPE = "covault-ask";
 
@@ -152,15 +154,18 @@ export class AskView extends ItemView {
     }
   }
 
-  /** Approval gate: each distinct action is confirmed once per conversation. */
-  private async approveAction(action: string): Promise<boolean> {
-    if (this.approved.has(action)) return true;
+  /** Approval gate. Plain actions are remembered per conversation once
+   *  allowed; anything carrying a diff (a note edit) is shown and
+   *  confirmed every single time. */
+  private async approveAction(request: ApprovalRequest): Promise<boolean> {
+    if (request.diff) return DiffApproveModal.ask(this.app, request.action, request.diff);
+    if (this.approved.has(request.action)) return true;
     const ok = await ConfirmModal.ask(this.app, {
       title: "Allow this action?",
-      message: action,
+      message: request.action,
       cta: "Allow",
     });
-    if (ok) this.approved.add(action);
+    if (ok) this.approved.add(request.action);
     return ok;
   }
 

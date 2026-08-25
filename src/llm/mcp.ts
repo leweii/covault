@@ -105,7 +105,7 @@ export class McpManager {
             description: `[${server.name}] ${tool.description ?? tool.name}`,
             parameters: (tool.inputSchema ?? { type: "object", properties: {} }) as unknown as TSchema,
             statusFor: () => `${server.name}: ${tool.name}…`,
-            needsApproval: () => `${server.name}: ${tool.name}`,
+            needsApproval: () => ({ action: `${server.name}: ${tool.name}` }),
             execute: async (args) => {
               const result = await client.callTool({ name: tool.name, arguments: args });
               const content = (result.content ?? []) as McpText[];

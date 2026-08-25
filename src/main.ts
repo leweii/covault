@@ -24,6 +24,7 @@ import { CovaultPanel, COVAULT_VIEW_TYPE } from "./ui/CovaultPanel";
 import { AskView, COVAULT_ASK_VIEW_TYPE } from "./ui/AskView";
 import { AskEngine } from "./llm/ask";
 import { makeReadTool, makeRunCommandTool, makeSearchTool, type AskTool } from "./llm/agentTools";
+import { makeEditTools } from "./llm/editTools";
 import { McpManager } from "./llm/mcp";
 import { ConflictResolver } from "./llm/resolver";
 import { createOrgRepo } from "./git/githubApi";
@@ -520,7 +521,13 @@ export default class CovaultPlugin extends Plugin {
       hasKey: (provider) => !!this.settings.llmKeys[provider],
       // Assembled fresh per question: the toggles and MCP config are live.
       tools: async () => {
-        const tools: AskTool[] = [makeSearchTool(libraryDeps), makeReadTool(libraryDeps)];
+        const tools: AskTool[] = [
+          makeSearchTool(libraryDeps),
+          makeReadTool(libraryDeps),
+          // Edits ride the normal sync loop — committed and shared like
+          // hand-made changes, undoable through File History.
+          ...makeEditTools({ ...libraryDeps, onMutation: () => void this.sync.syncAll("auto") }),
+        ];
         if (this.settings.ask.allowCommands) tools.push(makeRunCommandTool(() => this.vaultBasePath()));
         tools.push(...(await this.mcp.tools()));
         return tools;
