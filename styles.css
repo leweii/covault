@@ -1795,3 +1795,39 @@
 .covault-ask-a:hover .covault-ask-foot {
   opacity: 1;
 }
+
+/* ── Config import ────────────────────────────────────────── */
+
+.covault-import-input {
+  width: 100%;
+  font-family: var(--font-monospace);
+  font-size: 0.8em;
+}
+
+.covault-import-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0 12px;
+}
+
+.covault-import-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.86em;
+}
+
+.covault-import-delta {
+  color: var(--text-muted);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 60%;
+}
+
+.covault-import-note {
+  font-size: 0.8em;
+  color: var(--text-faint);
+}

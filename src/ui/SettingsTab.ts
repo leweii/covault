@@ -12,6 +12,7 @@ import type CovaultPlugin from "../main";
 import { AddLibraryModal } from "./AddLibraryModal";
 import { MainKbModal } from "./MainKbModal";
 import { SharedItemsModal } from "./SharedItemsModal";
+import { ImportConfigModal } from "./ImportConfigModal";
 
 /**
  * Covault settings, declarative (Obsidian 1.13+): definitions feed the
@@ -185,6 +186,9 @@ export class CovaultSettingTab extends PluginSettingTab {
               .onChange(async (v) => {
                 this.plugin.settings.githubToken = v.trim();
                 await this.plugin.saveSettings();
+                // PAT mode never runs the Connect flow, so this is the
+                // one point where a user-scoped token becomes available.
+                if (this.plugin.settings.githubToken) await this.plugin.refreshAuthorFromGitHub();
               });
           }),
       },
@@ -492,7 +496,7 @@ export class CovaultSettingTab extends PluginSettingTab {
       heading: "Sync",
       items: [
         {
-          name: "Export configuration",
+          name: "Export / import configuration",
           desc:
             "Copies all settings — libraries, organization, AI and sync preferences — as JSON. " +
             "Keys, tokens and sessions are never included.",
@@ -500,6 +504,9 @@ export class CovaultSettingTab extends PluginSettingTab {
           render: (setting: Setting) => {
             setting.addButton((btn) =>
               btn.setButtonText("Copy to clipboard").onClick(() => void this.plugin.exportConfiguration()),
+            );
+            setting.addButton((btn) =>
+              btn.setButtonText("Import…").onClick(() => new ImportConfigModal(this.app, this.plugin).open()),
             );
           },
         },

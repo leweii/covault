@@ -16,7 +16,7 @@ import { FolderLinkedError } from "./covault/errors";
 import { writeKnowledgeSkill, SKILL_RELPATH } from "./covault/skill";
 import { removeAdapters, writeAdapters } from "./covault/adapters";
 import { gatherFacts } from "./covault/skill";
-import { buildConfigExport } from "./covault/exportConfig";
+import { buildConfigExport, type ImportPlan } from "./covault/exportConfig";
 import { LibraryDescriber } from "./llm/describe";
 import { AddLibraryModal } from "./ui/AddLibraryModal";
 import { ShareFolderModal } from "./ui/ShareFolderModal";
@@ -30,7 +30,7 @@ import { makeEditTools } from "./llm/editTools";
 import { McpManager } from "./llm/mcp";
 import { CliInventory } from "./llm/cliInventory";
 import { ConflictResolver } from "./llm/resolver";
-import { createOrgRepo } from "./git/githubApi";
+import { createOrgRepo, fetchUserIdentity, noreplyEmail, type GitHubIdentity } from "./git/githubApi";
 import type { RepoRef } from "./git/GitEngine";
 import {
   applySecrets,
@@ -79,6 +79,8 @@ export default class CovaultPlugin extends Plugin {
     this.registerObsidianProtocolHandler(PROTOCOL_ACTION, (params) => {
       void this.appAuth.handleCallback(params);
     });
+    // Signing in is the one moment the identity is knowable without asking.
+    this.appAuth.addConnectedListener(() => void this.refreshAuthorFromGitHub());
 
     // Built before the engine: it wraps the http client, and reads the
     // setting live so toggling debug mode takes effect without a reload.
@@ -551,11 +553,70 @@ export default class CovaultPlugin extends Plugin {
     }
   }
 
+  /**
+   * Apply a confirmed import plan — exactly the plan, nothing else.
+   * Settings first (one save), then the new libraries (each clones on
+   * the sync pass this kicks off).
+   */
+  async applyConfigImport(plan: ImportPlan): Promise<void> {
+    for (const change of plan.changes) {
+      switch (change.key) {
+        case "baseOrg":
+          this.settings.baseOrg = String(change.value);
+          break;
+        case "llmProvider":
+          this.settings.llm.provider = String(change.value);
+          this.settings.llm.model = "";
+          break;
+        case "llmModel":
+          this.settings.llm.model = String(change.value);
+          break;
+        case "syncAuto":
+          this.settings.sync.auto = Boolean(change.value);
+          break;
+        case "syncInterval":
+          this.settings.sync.intervalMinutes = Number(change.value);
+          break;
+        case "askApprove":
+          this.settings.ask.requireApproval = Boolean(change.value);
+          break;
+        case "askMcp":
+          this.settings.ask.mcpServers = String(change.value);
+          break;
+        case "askCliHints":
+          this.settings.ask.cliHints = String(change.value);
+          this.cliInventory.refresh();
+          break;
+        case "announceAgents":
+          await this.setAnnounceToAgents(Boolean(change.value));
+          break;
+        case "personalKbScope":
+          this.libraryManifest.setScope(change.value === "vault" ? "vault" : "marked");
+          break;
+      }
+    }
+    await this.saveSettings();
+    this.applySyncSchedule();
+
+    this.debugLog.op("import", "configuration import", {
+      changes: plan.changes.length,
+      libraries: plan.newLibraries.length,
+    });
+    for (const repo of plan.newLibraries) {
+      try {
+        await this.addLibrary(repo);
+      } catch (e) {
+        new Notice(`Covault: couldn't add "${repo.path}" — ${(e as Error).message}`, 8_000);
+      }
+    }
+    this.refreshSettingsUI();
+  }
+
   /** Copy the secret-free configuration snapshot to the clipboard. */
   async exportConfiguration(): Promise<void> {
     const data = buildConfigExport(this.settings, this.libraryManifest.load());
     await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
-    new Notice("Covault: configuration copied to the clipboard (no keys or tokens included).");
+    new Notice("Covault: configuration copied to the clipboard (no keys, tokens or personal details included).");
   }
 
   /** Each Ask view gets its own engine — its own conversation. */
@@ -846,8 +907,49 @@ export default class CovaultPlugin extends Plugin {
     const login = this.settings.githubApp.connections[0]?.login;
     return {
       name: custom.name || login || "Covault",
-      email: custom.email || (login ? `${login}@users.noreply.github.com` : "covault@users.noreply.github.com"),
+      email: custom.email || (login ? noreplyEmail(login) : "covault@users.noreply.github.com"),
     };
+  }
+
+  /**
+   * Fill the commit identity from GitHub after signing in.
+   *
+   * Only fills what is empty — a name the user typed themselves is theirs
+   * to keep. The real profile is readable only with a user-scoped token
+   * (PAT mode); a GitHub App installation token acts as the app and gets
+   * 403 on /user, so App mode derives from the login it already has.
+   */
+  async refreshAuthorFromGitHub(): Promise<void> {
+    const login = this.settings.githubApp.connections[0]?.login;
+    let identity: GitHubIdentity | null = null;
+    if (this.settings.authMethod === "pat" && this.settings.githubToken) {
+      try {
+        identity = await fetchUserIdentity(this.settings.githubToken);
+      } catch (e) {
+        // Never block sign-in on this: the fallback below is always valid.
+        this.debugLog.log("auth", "couldn't read the GitHub profile", { error: e });
+      }
+    }
+    const name = identity?.name || identity?.login || login;
+    const email = identity?.email || (identity?.login ?? login ? noreplyEmail(identity?.login ?? login ?? "") : null);
+    if (!name && !email) return;
+
+    let changed = false;
+    if (!this.settings.author.name && name) {
+      this.settings.author.name = name;
+      changed = true;
+    }
+    if (!this.settings.author.email && email) {
+      this.settings.author.email = email;
+      changed = true;
+    }
+    if (!changed) return;
+    await this.saveSettings();
+    this.debugLog.log("auth", "commit identity filled from GitHub", {
+      source: identity ? "profile" : "login",
+      email: this.settings.author.email,
+    });
+    this.refreshSettingsUI();
   }
 
   private renderStatusBar(states: ReadonlyMap<string, RepoState>): void {

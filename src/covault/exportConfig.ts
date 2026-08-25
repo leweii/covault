@@ -75,3 +75,172 @@ export function buildConfigExport(settings: CovaultSettings, manifest: CovaultMa
     })),
   };
 }
+
+// ── Import ────────────────────────────────────────────────────────
+
+/**
+ * Settings an import is allowed to write. Deliberately absent, even though
+ * they are in the file:
+ *  - `authMethod` — swapping it can lock you out of your own sign-in.
+ *  - `personalKb` — someone else's personal repo is not yours.
+ *  - `author` — identity; see the module comment.
+ *  - `personalKbScope.include` — paths in the exporter's vault, not yours.
+ */
+export type ImportKey =
+  | "baseOrg"
+  | "llmProvider"
+  | "llmModel"
+  | "syncAuto"
+  | "syncInterval"
+  | "askApprove"
+  | "askMcp"
+  | "askCliHints"
+  | "announceAgents"
+  | "personalKbScope";
+
+/** One field the user is asked to confirm before it is written. */
+export interface ImportChange {
+  key: ImportKey;
+  /** Human label for the confirmation list. */
+  label: string;
+  from: string;
+  to: string;
+  /** The value to assign when confirmed. */
+  value: string | number | boolean;
+}
+
+export interface ImportPlan {
+  /** Fields whose value would actually change. */
+  changes: ImportChange[];
+  /** Libraries in the file that this vault doesn't have yet. */
+  newLibraries: ManifestRepo[];
+  /** Libraries already set up here, left alone. */
+  existingLibraries: number;
+  /** Things in the file that import refuses to touch, and why. */
+  skipped: string[];
+}
+
+const MASK_MARKER = REDACTED;
+
+function asString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function asBool(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+/**
+ * Validate a pasted export. Throws a message meant to be shown as-is —
+ * everything here is user-pasted text, so nothing is assumed about shape.
+ */
+export function parseConfigImport(text: string): Record<string, unknown> {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text.trim());
+  } catch {
+    throw new Error("That isn't valid JSON — copy the whole configuration, including the outer { }.");
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("That JSON isn't a Covault configuration.");
+  }
+  const version = (raw as Record<string, unknown>).covaultExport;
+  if (typeof version !== "number") {
+    throw new Error("That JSON isn't a Covault configuration (no covaultExport version).");
+  }
+  if (version > EXPORT_VERSION) {
+    throw new Error(`That configuration comes from a newer Covault (format ${version}) — update the plugin first.`);
+  }
+  return raw as Record<string, unknown>;
+}
+
+/**
+ * Work out what importing would change, without changing anything. The
+ * user confirms this list; nothing outside it is ever written.
+ */
+export function planConfigImport(
+  current: CovaultSettings,
+  currentManifest: CovaultManifest,
+  file: Record<string, unknown>,
+): ImportPlan {
+  const changes: ImportChange[] = [];
+  const skipped: string[] = [];
+  const settings = (file.settings ?? {}) as Record<string, unknown>;
+  const llm = (settings.llm ?? {}) as Record<string, unknown>;
+  const sync = (settings.sync ?? {}) as Record<string, unknown>;
+  const ask = (settings.ask ?? {}) as Record<string, unknown>;
+
+  const add = (
+    key: ImportKey,
+    label: string,
+    from: string | number | boolean,
+    to: string | number | boolean | null,
+  ) => {
+    if (to === null || to === from) return;
+    changes.push({ key, label, from: String(from) || "(empty)", to: String(to) || "(empty)", value: to });
+  };
+
+  add("baseOrg", "Organization", current.baseOrg, asString(settings.baseOrg));
+  add("llmProvider", "AI provider", current.llm.provider, asString(llm.provider));
+  add("llmModel", "AI model", current.llm.model, asString(llm.model));
+  add("syncAuto", "Automatic sync", current.sync.auto, asBool(sync.auto));
+  add(
+    "syncInterval",
+    "Sync interval (minutes)",
+    current.sync.intervalMinutes,
+    typeof sync.intervalMinutes === "number" ? sync.intervalMinutes : null,
+  );
+  add("askApprove", "Ask approval required", current.ask.requireApproval, asBool(ask.requireApproval));
+  add("askCliHints", "Extra CLI notes for Ask", current.ask.cliHints, asString(ask.cliHints));
+  add("announceAgents", "Announce libraries to AI assistants", current.announceToAgents, asBool(settings.announceToAgents));
+
+  // Exported with its env values masked, so restoring it would write
+  // "«redacted»" in place of real tokens and quietly break the servers.
+  const mcp = asString(ask.mcpServers);
+  if (mcp && mcp.includes(MASK_MARKER)) {
+    skipped.push("Connected services (MCP) — the export masks their tokens, so they must be re-entered by hand.");
+  } else {
+    add("askMcp", "Connected services (MCP)", current.ask.mcpServers, mcp);
+  }
+
+  const scope = (file.personalKbScope ?? {}) as Record<string, unknown>;
+  const wanted = asString(scope.scope);
+  if (wanted === "marked" || wanted === "vault") {
+    add("personalKbScope", "Personal notes shared", currentManifest.scope, wanted);
+  }
+  if (Array.isArray(scope.include) && scope.include.length > 0) {
+    skipped.push("The exporter's list of individually shared notes — those paths belong to their vault, not yours.");
+  }
+  if (settings.personalKb) skipped.push("Their personal knowledge base — that repo is theirs, not yours.");
+  if (settings.authMethod && settings.authMethod !== current.authMethod) {
+    skipped.push("Their sign-in method — changing it here could lock you out of your own account.");
+  }
+  if ((settings as { author?: unknown }).author) {
+    skipped.push("Their name and email — your commit identity comes from your own GitHub sign-in.");
+  }
+
+  const have = new Set(currentManifest.repos.map((r) => r.path));
+  const libraries = Array.isArray(file.libraries) ? file.libraries : [];
+  const newLibraries: ManifestRepo[] = [];
+  for (const entry of libraries) {
+    if (!entry || typeof entry !== "object") continue;
+    const row = entry as Record<string, unknown>;
+    const repoPath = asString(row.path);
+    const url = asString(row.url);
+    if (!repoPath || !url) continue;
+    if (have.has(repoPath)) continue;
+    newLibraries.push({
+      path: repoPath,
+      url,
+      branch: asString(row.branch) ?? "main",
+      ...(asString(row.description) ? { description: asString(row.description) as string } : {}),
+    });
+  }
+
+  return {
+    changes,
+    newLibraries,
+    existingLibraries: libraries.length - newLibraries.length,
+    skipped,
+  };
+}
