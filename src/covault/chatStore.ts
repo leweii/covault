@@ -10,6 +10,7 @@
  */
 import * as fs from "fs";
 import * as path from "path";
+import { AttachmentStore, type AttachmentRef } from "./attachmentStore";
 
 export interface ChatTurn {
   question: string;
@@ -17,6 +18,8 @@ export interface ChatTurn {
   activity: string[];
   error?: string;
   costUsd?: number;
+  /** Images pasted with the question — bytes live in the AttachmentStore. */
+  images?: AttachmentRef[];
 }
 
 export interface ChatSession {
@@ -32,7 +35,12 @@ export interface ChatSession {
 const MAX_SESSIONS = 50;
 
 export class ChatStore {
-  constructor(private file: string) {}
+  /** Image bytes for these sessions, kept in step on save/delete. */
+  readonly attachments: AttachmentStore;
+
+  constructor(private file: string) {
+    this.attachments = new AttachmentStore(path.join(path.dirname(file), "attachments"));
+  }
 
   list(): ChatSession[] {
     try {
@@ -49,12 +57,15 @@ export class ChatStore {
     const sessions = [session, ...rest].slice(0, MAX_SESSIONS);
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     fs.writeFileSync(this.file, JSON.stringify({ version: 1, sessions }, null, 2));
+    // Sessions that just fell off the end take their images with them.
+    this.attachments.prune(sessions.map((s) => s.id));
   }
 
   delete(id: string): void {
     const sessions = this.list().filter((s) => s.id !== id);
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     fs.writeFileSync(this.file, JSON.stringify({ version: 1, sessions }, null, 2));
+    this.attachments.deleteSession(id);
   }
 }
 

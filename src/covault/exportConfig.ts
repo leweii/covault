@@ -54,6 +54,7 @@ export function buildConfigExport(settings: CovaultSettings, manifest: CovaultMa
       ask: {
         requireApproval: settings.ask.requireApproval,
         mcpServers: redactMcpConfig(settings.ask.mcpServers),
+        cliHints: settings.ask.cliHints,
       },
       announceToAgents: settings.announceToAgents,
       personalKb: settings.mainRepo ? { url: settings.mainRepo.url, branch: settings.mainRepo.branch } : null,

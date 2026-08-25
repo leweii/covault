@@ -58,8 +58,11 @@ export interface CovaultSettings {
 
   /** Ask's agent behavior. requireApproval=false is the
    *  dangerously-skip-permissions mode: commands, connected services and
-   *  note edits run without asking. MCP servers are opt-in by config. */
-  ask: { requireApproval: boolean; mcpServers: string };
+   *  note edits run without asking. MCP servers are opt-in by config.
+   *  cliHints is free text listing extra command-line tools (and how to
+   *  use them here) that detection can't guess — it joins the detected
+   *  inventory in the agent's system prompt. */
+  ask: { requireApproval: boolean; mcpServers: string; cliHints: string };
 
   /** Maintain AGENTS.md/CLAUDE.md blocks + an Agent Skill so AI coding
    *  assistants working in this vault discover the libraries on their own. */
@@ -86,7 +89,7 @@ export const DEFAULT_SETTINGS: CovaultSettings = {
   sync: { auto: true, intervalMinutes: 10 },
   repos: [],
   author: { name: "", email: "" },
-  ask: { requireApproval: true, mcpServers: "" },
+  ask: { requireApproval: true, mcpServers: "", cliHints: "" },
   announceToAgents: true,
   debugMode: false,
   baseOrg: "",

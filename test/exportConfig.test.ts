@@ -16,6 +16,7 @@ function settings(): CovaultSettings {
     ask: {
       requireApproval: false,
       mcpServers: '{"mcpServers": {"jira": {"command": "npx", "env": {"JIRA_TOKEN": "tok_SECRET"}}}}',
+      cliHints: "mycli — internal deploy tool",
     },
     mainRepo: { url: "https://github.com/ct-kb/personal-kb-jakob.git", branch: "main" },
   };

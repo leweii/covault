@@ -1609,6 +1609,72 @@
   font-size: 0.82em;
 }
 
+/* Pasted screenshots: chips above the composer, thumbnails in the thread */
+
+.covault-ask-attach {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 12px 0;
+}
+
+.covault-ask-attach.is-empty {
+  display: none;
+}
+
+.covault-ask-chip {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+}
+
+.covault-ask-chip img {
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: 4px;
+  display: block;
+}
+
+.covault-ask-chip-meta {
+  color: var(--text-faint);
+  font-size: 0.75em;
+}
+
+.covault-ask-chip-x {
+  padding: 2px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.covault-ask-chip-x:hover {
+  color: var(--text-normal);
+}
+
+.covault-ask-q-images {
+  align-self: flex-end;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  max-width: 88%;
+}
+
+.covault-ask-q-images img {
+  max-width: 180px;
+  max-height: 180px;
+  border-radius: 8px;
+  border: 1px solid var(--background-modifier-border);
+  display: block;
+}
+
 .covault-ask-input {
   display: flex;
   gap: 8px;

@@ -28,6 +28,7 @@ import { AskEngine } from "./llm/ask";
 import { makeReadTool, makeRunCommandTool, makeSearchTool, type AskTool } from "./llm/agentTools";
 import { makeEditTools } from "./llm/editTools";
 import { McpManager } from "./llm/mcp";
+import { CliInventory } from "./llm/cliInventory";
 import { ConflictResolver } from "./llm/resolver";
 import { createOrgRepo } from "./git/githubApi";
 import type { RepoRef } from "./git/GitEngine";
@@ -53,6 +54,7 @@ export default class CovaultPlugin extends Plugin {
   resolver!: ConflictResolver;
   describer!: LibraryDescriber;
   mcp!: McpManager;
+  cliInventory!: CliInventory;
   debugLog!: DebugLog;
   private settingsTab: CovaultSettingTab | null = null;
   private statusBarEl!: HTMLElement;
@@ -107,6 +109,12 @@ export default class CovaultPlugin extends Plugin {
     });
 
     this.mcp = new McpManager(() => this.settings.ask.mcpServers);
+    // Probed lazily on the first question, then cached: the agent is told
+    // which CLIs this machine has, and run_command inherits the same PATH.
+    this.cliInventory = new CliInventory({
+      cwd: () => this.vaultBasePath(),
+      declared: () => this.settings.ask.cliHints,
+    });
     this.describer = new LibraryDescriber({
       models: this.models,
       getSelection: () => this.settings.llm,
@@ -567,7 +575,10 @@ export default class CovaultPlugin extends Plugin {
           // Edits ride the normal sync loop — committed and shared like
           // hand-made changes, undoable through File History.
           ...makeEditTools({ ...libraryDeps, onMutation: () => void this.sync.syncAll("auto") }),
-          makeRunCommandTool(() => this.vaultBasePath()),
+          makeRunCommandTool(
+            () => this.vaultBasePath(),
+            () => this.cliInventory.env(),
+          ),
         ];
         tools.push(...(await this.mcp.tools()));
         return tools;
@@ -579,6 +590,7 @@ export default class CovaultPlugin extends Plugin {
           return null;
         }
       },
+      cliManifest: () => this.cliInventory.manifest(),
     });
   }
 

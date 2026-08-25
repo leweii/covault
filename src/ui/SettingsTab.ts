@@ -63,6 +63,8 @@ export class CovaultSettingTab extends PluginSettingTab {
         return s.ask.requireApproval;
       case "askMcp":
         return s.ask.mcpServers;
+      case "askClis":
+        return s.ask.cliHints;
       case "syncAuto":
         return s.sync.auto;
       case "syncInterval":
@@ -107,6 +109,12 @@ export class CovaultSettingTab extends PluginSettingTab {
         break;
       case "askMcp":
         s.ask.mcpServers = String(value);
+        break;
+      case "askClis":
+        s.ask.cliHints = String(value);
+        // Re-probe too: someone editing this list has usually just
+        // installed something the agent should now see.
+        this.plugin.cliInventory.refresh();
         break;
       case "syncAuto":
         s.sync.auto = Boolean(value);
@@ -451,6 +459,19 @@ export class CovaultSettingTab extends PluginSettingTab {
             '{"mcpServers": {"name": {"command": "npx", "args": […]}}} or {"name": {"url": "https://…"}}.',
           aliases: ["mcp", "model context protocol", "servers", "tools"],
           control: { type: "textarea", key: "askMcp", placeholder: '{"mcpServers": {}}' },
+        },
+        {
+          name: "Extra command-line tools",
+          desc:
+            "Covault already tells the agent which common CLIs are installed here (bq, gcloud, psql, git, jq, …). " +
+            "Add anything else it should know about, one per line — an in-house CLI, or how to use one in your setup: " +
+            "\"bq — always query with --use_legacy_sql=false, project analytics-prod\".",
+          aliases: ["cli", "shell", "commands", "bq", "bigquery", "tools", "terminal"],
+          control: {
+            type: "textarea",
+            key: "askClis",
+            placeholder: "mycli — internal deploy tool, `mycli status` shows current release",
+          },
         },
         {
           name: "Let AI assistants discover your libraries",

@@ -15,7 +15,13 @@
  * library search/read always, shell and MCP tools per settings.
  */
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
-import { contentText, type AssistantMessage, type Message, type MutableModels } from "@earendil-works/pi-ai";
+import {
+  contentText,
+  type AssistantMessage,
+  type ImageContent,
+  type Message,
+  type MutableModels,
+} from "@earendil-works/pi-ai";
 import type { ApprovalRequest, AskTool } from "./agentTools";
 
 /** Runaway guard: one question should never burn more turns than this. */
@@ -65,6 +71,29 @@ export interface AskDeps {
   cliManifest?: () => Promise<string | null>;
 }
 
+/**
+ * Transcript with image bytes swapped for a placeholder, for saving.
+ *
+ * The live agent keeps the real parts, so follow-ups in the open
+ * conversation still see the screenshot; what gets written to disk does
+ * not, because a resumed session would otherwise re-send megabytes of
+ * base64 forever and bloat chats.json. The view still shows the thumbnail
+ * from the AttachmentStore, so the loss is the model's memory of the
+ * pixels — not the user's record of them.
+ */
+export function withoutImageData(messages: Message[]): Message[] {
+  return messages.map((message) => {
+    if (typeof message.content === "string" || !Array.isArray(message.content)) return message;
+    if (!message.content.some((part) => part.type === "image")) return message;
+    return {
+      ...message,
+      content: message.content.map((part) =>
+        part.type === "image" ? { type: "text" as const, text: "[image omitted from the saved transcript]" } : part,
+      ),
+    } as Message;
+  });
+}
+
 export class AskEngine {
   private agent: Agent | null = null;
   private byName = new Map<string, AskTool>();
@@ -77,6 +106,17 @@ export class AskEngine {
   isEnabled(): boolean {
     const { provider, model } = this.deps.getSelection();
     return !!provider && !!model && this.deps.hasKey(provider);
+  }
+
+  /**
+   * Can the selected model read images? pi-ai's registry declares this per
+   * model (`input`), so the composer can offer attaching only when it will
+   * actually be looked at.
+   */
+  supportsImages(): boolean {
+    const { provider, model: modelId } = this.deps.getSelection();
+    if (!provider || !modelId) return false;
+    return this.deps.models.getModel(provider, modelId)?.input.includes("image") ?? false;
   }
 
   /** Drop the conversation; the next ask starts fresh. */
@@ -136,10 +176,15 @@ export class AskEngine {
   }
 
   /** Ask a question; resolves with the final answer once the agent stops. */
-  async ask(question: string, cb: AskCallbacks = {}): Promise<AskAnswer> {
+  async ask(question: string, cb: AskCallbacks = {}, images: ImageContent[] = []): Promise<AskAnswer> {
     const { provider, model: modelId } = this.deps.getSelection();
     const model = this.deps.models.getModel(provider, modelId);
     if (!model) throw new Error(`Model ${provider}/${modelId} is not available — pick one in Settings.`);
+    // pi-ai drops image parts on a text-only model without a word, which
+    // reads as the model ignoring the screenshot. Say so instead.
+    if (images.length > 0 && !model.input.includes("image")) {
+      throw new Error(`${model.name} can't read images — pick a model with vision in Settings to send screenshots.`);
+    }
 
     // Both are per-question: settings, MCP config and the installed CLIs
     // can all change between asks. Resolved together so neither waits.
@@ -203,7 +248,7 @@ export class AskEngine {
     cb.signal?.addEventListener("abort", onAbort);
 
     try {
-      await agent.prompt(question);
+      await agent.prompt(question, images);
       const error = agent.state.errorMessage;
       if (cb.signal?.aborted) throw new Error("Cancelled.");
       if (turns > MAX_TURNS) throw new Error("The model kept working without answering — try a more specific question.");

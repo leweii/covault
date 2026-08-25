@@ -86,13 +86,16 @@ export function makeReadTool(deps: LibraryToolDeps): AskTool {
 const COMMAND_TIMEOUT_MS = 30_000;
 const MAX_OUTPUT_CHARS = 16_000;
 
-/** Shell access — gated twice: a settings toggle to exist at all, and a
- *  per-command user approval to run. */
-export function makeRunCommandTool(cwd: () => string): AskTool {
+/** Shell access — gated by a per-command user approval to run.
+ *
+ *  env supplies the user's real login-shell PATH (see cliInventory.ts):
+ *  Obsidian launched from the Dock inherits a bare PATH, so without it
+ *  homebrew/gcloud/bq are simply "command not found". */
+export function makeRunCommandTool(cwd: () => string, env?: () => Record<string, string | undefined>): AskTool {
   return {
     name: "run_command",
     description:
-      "Run a shell command in the vault directory and return its output. Use for anything the note tools can't answer: git history, file conversions, external CLIs. The user approves every command before it runs.",
+      "Run a shell command in the vault directory and return its output. Use for anything the note tools can't answer: git history, file conversions, querying live data with the CLIs listed in your system prompt (bq, gcloud, psql, …). The user approves every command before it runs.",
     parameters: Type.Object({
       command: Type.String({ description: "The exact shell command to run." }),
     }),
@@ -106,7 +109,7 @@ export function makeRunCommandTool(cwd: () => string): AskTool {
         const command = String(args.command ?? "");
         const child = exec(
           command,
-          { cwd: cwd(), timeout: COMMAND_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 },
+          { cwd: cwd(), env: env?.() as NodeJS.ProcessEnv | undefined, timeout: COMMAND_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 },
           (error, stdout, stderr) => {
             let text = [stdout, stderr].filter(Boolean).join("\n--- stderr ---\n").trim();
             if (text.length > MAX_OUTPUT_CHARS) text = `${text.slice(0, MAX_OUTPUT_CHARS)}\n…(truncated)`;

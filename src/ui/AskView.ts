@@ -11,12 +11,20 @@
 import { ItemView, MarkdownRenderer, Notice, setIcon, type WorkspaceLeaf } from "obsidian";
 import * as path from "path";
 import type CovaultPlugin from "../main";
-import type { AskEngine } from "../llm/ask";
+import { withoutImageData, type AskEngine } from "../llm/ask";
 import type { Message } from "@earendil-works/pi-ai";
 import { ChatStore, newSessionId, titleFor, type ChatSession, type ChatTurn } from "../covault/chatStore";
 import { ConfirmModal } from "./ConfirmModal";
 import { DiffApproveModal } from "./DiffApproveModal";
 import type { ApprovalRequest } from "../llm/agentTools";
+import {
+  dataUrl,
+  describeBytes,
+  imageFilesFrom,
+  toImageContent,
+  MAX_IMAGES,
+  type PastedImage,
+} from "../llm/images";
 
 export const COVAULT_ASK_VIEW_TYPE = "covault-ask";
 
@@ -29,8 +37,12 @@ export class AskView extends ItemView {
   /** Actions the user already allowed in this conversation — don't re-ask. */
   private approved = new Set<string>();
 
+  /** Images pasted for the question being composed, not yet sent. */
+  private attached: PastedImage[] = [];
+
   private listEl!: HTMLElement;
   private statusEl!: HTMLElement;
+  private attachEl!: HTMLElement;
   private inputEl!: HTMLTextAreaElement;
   private sendBtn!: HTMLButtonElement;
 
@@ -88,6 +100,10 @@ export class AskView extends ItemView {
 
     this.statusEl = root.createDiv("covault-ask-status");
 
+    // Above the composer: thumbnails of what will ride along with the
+    // question, each removable before sending.
+    this.attachEl = root.createDiv("covault-ask-attach");
+
     const inputRow = root.createDiv("covault-ask-input");
     this.inputEl = inputRow.createEl("textarea", {
       attr: { rows: "2", placeholder: "Ask about anything in your vault…" },
@@ -102,9 +118,28 @@ export class AskView extends ItemView {
         this.running.abort();
       }
     });
+    this.inputEl.addEventListener("paste", (evt) => {
+      const files = imageFilesFrom(evt.clipboardData);
+      if (files.length === 0) return; // plain text paste — leave it alone
+      evt.preventDefault();
+      void this.attach(files);
+    });
+    // Dropping a screenshot onto the composer reads as the same gesture.
+    this.inputEl.addEventListener("dragover", (evt) => {
+      if (imageFilesFrom(evt.dataTransfer).length > 0 || evt.dataTransfer?.types.includes("Files")) {
+        evt.preventDefault();
+      }
+    });
+    this.inputEl.addEventListener("drop", (evt) => {
+      const files = imageFilesFrom(evt.dataTransfer);
+      if (files.length === 0) return;
+      evt.preventDefault();
+      void this.attach(files);
+    });
     this.sendBtn = inputRow.createEl("button", { cls: "mod-cta", text: "Ask" });
     this.sendBtn.onclick = () => void this.submit();
 
+    this.renderAttachments();
     this.renderTurns();
   }
 
@@ -112,21 +147,79 @@ export class AskView extends ItemView {
     this.running?.abort();
   }
 
+  /**
+   * Take pasted/dropped image files into the composer. Each is normalized
+   * (scaled down, re-encoded) before it counts against the cap, and a
+   * failure names the file rather than killing the whole paste.
+   */
+  private async attach(files: File[]): Promise<void> {
+    if (!this.engine.isEnabled()) {
+      this.statusEl.setText("Set up an AI provider and key first (Settings → Covault → AI engine).");
+      return;
+    }
+    if (!this.engine.supportsImages()) {
+      this.statusEl.setText("The selected model can't read images — pick one with vision in Settings → Covault → AI.");
+      return;
+    }
+    const room = MAX_IMAGES - this.attached.length;
+    if (room <= 0) {
+      this.statusEl.setText(`Up to ${MAX_IMAGES} images per question.`);
+      return;
+    }
+    if (files.length > room) {
+      new Notice(`Covault: only the first ${room} image${room === 1 ? "" : "s"} were attached (max ${MAX_IMAGES}).`);
+    }
+    this.statusEl.setText("Preparing image…");
+    for (const file of files.slice(0, room)) {
+      try {
+        this.attached.push(await toImageContent(file));
+      } catch (e) {
+        new Notice(`Covault: ${(e as Error).message}`);
+      }
+    }
+    this.statusEl.setText("");
+    this.renderAttachments();
+    this.inputEl.focus();
+  }
+
+  private renderAttachments(): void {
+    this.attachEl.empty();
+    this.attachEl.toggleClass("is-empty", this.attached.length === 0);
+    this.attached.forEach((image, i) => {
+      const chip = this.attachEl.createDiv("covault-ask-chip");
+      chip.createEl("img", { attr: { src: dataUrl(image), alt: image.name } });
+      chip.createSpan({ cls: "covault-ask-chip-meta", text: describeBytes(image.bytes) });
+      const remove = chip.createEl("button", {
+        cls: "covault-ask-chip-x",
+        attr: { "aria-label": `Remove ${image.name}` },
+      });
+      setIcon(remove, "x");
+      remove.onclick = () => {
+        this.attached.splice(i, 1);
+        this.renderAttachments();
+      };
+    });
+  }
+
   private startNewChat(): void {
     this.running?.abort();
     this.engine.reset();
     this.approved.clear();
+    this.attached = [];
     this.session = this.freshSession();
     this.showSessions = false;
+    this.renderAttachments();
     this.renderTurns();
   }
 
   private openSession(saved: ChatSession): void {
     this.running?.abort();
     this.approved.clear();
+    this.attached = [];
     this.session = saved;
     this.engine.setTranscript(saved.transcript as Message[]);
     this.showSessions = false;
+    this.renderAttachments();
     this.renderTurns();
   }
 
@@ -135,7 +228,7 @@ export class AskView extends ItemView {
   private persist(): void {
     if (this.session.turns.length === 0) return;
     this.session.updatedAt = Date.now();
-    this.session.transcript = this.engine.getTranscript();
+    this.session.transcript = withoutImageData(this.engine.getTranscript());
     try {
       this.store.save(this.session);
     } catch (e) {
@@ -149,7 +242,10 @@ export class AskView extends ItemView {
       return;
     }
     const question = this.inputEl.value.trim();
-    if (!question) return;
+    const images = this.attached;
+    // An image on its own is a question ("what is this?"); text is only
+    // required when there is nothing else to go on.
+    if (!question && images.length === 0) return;
 
     if (!this.engine.isEnabled()) {
       this.statusEl.setText("Set up an AI provider and key first (Settings → Covault → AI engine).");
@@ -157,10 +253,19 @@ export class AskView extends ItemView {
     }
 
     const turn: ChatTurn = { question, activity: [] };
+    if (images.length > 0) {
+      // Write the bytes out now: the turn survives in chats.json, which
+      // only ever holds the file names.
+      turn.images = images.map((image, i) => this.store.attachments.save(this.session.id, image, i));
+    }
     this.session.turns.push(turn);
-    if (this.session.turns.length === 1) this.session.title = titleFor(question);
+    if (this.session.turns.length === 1) {
+      this.session.title = titleFor(question || `${images.length} image${images.length === 1 ? "" : "s"}`);
+    }
     this.inputEl.value = "";
+    this.attached = [];
     this.showSessions = false;
+    this.renderAttachments();
     this.renderTurns();
 
     this.running = new AbortController();
@@ -168,20 +273,24 @@ export class AskView extends ItemView {
     this.statusEl.setText("Thinking… (Esc to stop)");
     let partial = "";
     try {
-      const answer = await this.engine.ask(question, {
-        signal: this.running.signal,
-        onDelta: (text) => {
-          partial = text;
-          this.statusEl.setText("Writing… (Esc to stop)");
-          this.renderTurns(partial);
+      const answer = await this.engine.ask(
+        question || "What do you make of this?",
+        {
+          signal: this.running.signal,
+          onDelta: (text) => {
+            partial = text;
+            this.statusEl.setText("Writing… (Esc to stop)");
+            this.renderTurns(partial);
+          },
+          onActivity: (line) => {
+            turn.activity.push(line);
+            this.statusEl.setText(line);
+            this.renderTurns(partial);
+          },
+          approve: (request) => this.approveAction(request),
         },
-        onActivity: (line) => {
-          turn.activity.push(line);
-          this.statusEl.setText(line);
-          this.renderTurns(partial);
-        },
-        approve: (request) => this.approveAction(request),
-      });
+        images,
+      );
       turn.answer = answer.text;
       turn.costUsd = answer.costUsd;
     } catch (e) {
@@ -228,7 +337,8 @@ export class AskView extends ItemView {
     }
     const last = turns.length - 1;
     turns.forEach((turn, i) => {
-      this.listEl.createDiv({ cls: "covault-ask-q", text: turn.question });
+      if (turn.images?.length) this.renderTurnImages(turn);
+      if (turn.question) this.listEl.createDiv({ cls: "covault-ask-q", text: turn.question });
 
       const isLive = i === last && this.running !== null;
       if (turn.activity.length > 0) this.renderActivity(turn, isLive);
@@ -244,6 +354,20 @@ export class AskView extends ItemView {
       }
     });
     this.listEl.scrollTop = this.listEl.scrollHeight;
+  }
+
+  /** Sent images, read back from the attachment store. */
+  private renderTurnImages(turn: ChatTurn): void {
+    const row = this.listEl.createDiv("covault-ask-q-images");
+    for (const ref of turn.images ?? []) {
+      const data = this.store.attachments.read(this.session.id, ref);
+      if (!data) {
+        // Aged out with its session, or deleted underneath us.
+        row.createSpan({ cls: "covault-ask-chip-meta", text: `[${ref.name} — no longer stored]` });
+        continue;
+      }
+      row.createEl("img", { attr: { src: dataUrl({ data, mimeType: ref.mimeType }), alt: ref.name, title: ref.name } });
+    }
   }
 
   /** Live: every step as it happens. Done: collapsed to "n steps". */
