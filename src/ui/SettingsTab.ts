@@ -59,6 +59,8 @@ export class CovaultSettingTab extends PluginSettingTab {
         return s.llm.model;
       case "conflictInstructions":
         return s.llm.conflictInstructions;
+      case "announceAgents":
+        return s.announceToAgents;
       case "syncAuto":
         return s.sync.auto;
       case "syncInterval":
@@ -95,6 +97,10 @@ export class CovaultSettingTab extends PluginSettingTab {
       case "conflictInstructions":
         s.llm.conflictInstructions = String(value);
         break;
+      case "announceAgents":
+        // Owns its own persistence: writes/removes the adapter files too.
+        await this.plugin.setAnnounceToAgents(Boolean(value));
+        return;
       case "syncAuto":
         s.sync.auto = Boolean(value);
         break;
@@ -415,6 +421,14 @@ export class CovaultSettingTab extends PluginSettingTab {
             key: "llmModel",
             options: Object.fromEntries(models.map((m) => [m.id, m.name ?? m.id])),
           },
+        },
+        {
+          name: "Let AI assistants discover your libraries",
+          desc:
+            "Keeps a note for AI coding tools (Claude Code, Codex, Cursor, …) in this vault " +
+            "describing your knowledge libraries, so they consult them before answering.",
+          aliases: ["agents.md", "claude.md", "skill", "announce"],
+          control: { type: "toggle", key: "announceAgents" },
         },
         {
           name: "Conflict merge instructions",

@@ -14,6 +14,10 @@ export interface ManifestRepo {
   path: string;
   url: string;
   branch: string;
+  /** One-line topic description. Written once when the library is created
+   *  or added (LLM-drafted from its README), then propagated verbatim via
+   *  this manifest — so every consumer renders identical bytes. */
+  description?: string;
 }
 
 /**
@@ -49,10 +53,12 @@ export class ManifestStore {
     try {
       const raw = JSON.parse(fs.readFileSync(this.filePath(), "utf8")) as Partial<CovaultManifest>;
       const repos = Array.isArray(raw.repos)
-        ? raw.repos.filter(
-            (r): r is ManifestRepo =>
-              typeof r?.path === "string" && typeof r?.url === "string" && typeof r?.branch === "string",
-          )
+        ? raw.repos
+            .filter(
+              (r): r is ManifestRepo =>
+                typeof r?.path === "string" && typeof r?.url === "string" && typeof r?.branch === "string",
+            )
+            .map((r) => (typeof r.description === "string" ? r : { path: r.path, url: r.url, branch: r.branch }))
         : [];
       const include = Array.isArray(raw.include) ? raw.include.filter((p): p is string => typeof p === "string") : [];
       // Anything unrecognized — including manifests written before scopes

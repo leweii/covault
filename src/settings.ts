@@ -56,6 +56,10 @@ export interface CovaultSettings {
   /** Commit identity ("who saved this"). Empty → derived from the login. */
   author: { name: string; email: string };
 
+  /** Maintain AGENTS.md/CLAUDE.md blocks + an Agent Skill so AI coding
+   *  assistants working in this vault discover the libraries on their own. */
+  announceToAgents: boolean;
+
   /** The org every knowledge repo (shared libraries + personal KBs) lives in. */
   baseOrg: string;
   /** Personal knowledge base: the vault root synced to a personal repo. */
@@ -72,6 +76,7 @@ export const DEFAULT_SETTINGS: CovaultSettings = {
   sync: { auto: true, intervalMinutes: 10 },
   repos: [],
   author: { name: "", email: "" },
+  announceToAgents: true,
   baseOrg: "",
   mainRepo: null,
 };

@@ -13,6 +13,7 @@ import { ensureIgnored } from "./covault/gitignore";
 import { sameRemote } from "./git/urls";
 import { FolderLinkedError } from "./covault/errors";
 import { writeKnowledgeSkill, SKILL_RELPATH } from "./covault/skill";
+import { removeAdapters, writeAdapters } from "./covault/adapters";
 import { AddLibraryModal } from "./ui/AddLibraryModal";
 import { ShareFolderModal } from "./ui/ShareFolderModal";
 import { ConflictModal, type ConflictOps } from "./ui/ConflictModal";
@@ -466,13 +467,28 @@ export default class CovaultPlugin extends Plugin {
     void this.sync.syncAll("manual");
   }
 
-  /** Rebuild the knowledge-routing skill from what's on disk right now.
-   *  Cheap (directory walks only), so it runs after every sync pass. */
+  /** Rebuild the knowledge-routing skill (kernel index) and the agent
+   *  adapters from what's on disk right now. Cheap (directory walks
+   *  only), so it runs after every sync pass. */
   refreshKnowledgeSkill(): void {
     try {
-      writeKnowledgeSkill(this.vaultBasePath(), this.libraryManifest.load().repos);
+      const repos = this.libraryManifest.load().repos;
+      writeKnowledgeSkill(this.vaultBasePath(), repos);
+      if (this.settings.announceToAgents) writeAdapters(this.vaultBasePath(), repos);
     } catch (e) {
       console.warn("[covault] couldn't update the knowledge skill:", e);
+    }
+  }
+
+  /** Toggle handler: on → write the adapters now; off → remove them. */
+  async setAnnounceToAgents(enabled: boolean): Promise<void> {
+    this.settings.announceToAgents = enabled;
+    await this.saveSettings();
+    try {
+      if (enabled) writeAdapters(this.vaultBasePath(), this.libraryManifest.load().repos);
+      else removeAdapters(this.vaultBasePath());
+    } catch (e) {
+      console.warn("[covault] couldn't update the agent adapters:", e);
     }
   }
 
