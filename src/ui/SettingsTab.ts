@@ -3,6 +3,7 @@ import {
   PluginSettingTab,
   type App,
   type Setting,
+  type SettingDefinition,
   type SettingDefinitionGroup,
   type SettingDefinitionItem,
   type SettingDefinitionList,
@@ -41,7 +42,14 @@ export class CovaultSettingTab extends PluginSettingTab {
     // display() called, and this runs on every render — so it is the one
     // reliable place to mark the container.
     this.containerEl.addClass("covault-settings");
-    return [this.githubGroup(), this.personalKbGroup(), this.librariesList(), this.aiGroup(), this.syncGroup()];
+    return [
+      this.configTransfer(),
+      this.githubGroup(),
+      this.personalKbGroup(),
+      this.librariesList(),
+      this.aiGroup(),
+      this.syncGroup(),
+    ];
   }
 
   // ── Value plumbing ───────────────────────────────────────────────
@@ -69,8 +77,6 @@ export class CovaultSettingTab extends PluginSettingTab {
         return s.ask.requireApproval;
       case "askMcp":
         return s.ask.mcpServers;
-      case "askClis":
-        return s.ask.cliHints;
       case "syncAuto":
         return s.sync.auto;
       case "syncInterval":
@@ -118,12 +124,6 @@ export class CovaultSettingTab extends PluginSettingTab {
         // Drop cached connections: the entry just edited may be the broken one.
         this.plugin.mcp.reset();
         break;
-      case "askClis":
-        s.ask.cliHints = String(value);
-        // Re-probe too: someone editing this list has usually just
-        // installed something the agent should now see.
-        this.plugin.cliInventory.refresh();
-        break;
       case "syncAuto":
         s.sync.auto = Boolean(value);
         break;
@@ -142,6 +142,23 @@ export class CovaultSettingTab extends PluginSettingTab {
     await this.plugin.saveSettings();
     if (key === "syncAuto" || key === "syncInterval") this.plugin.applySyncSchedule();
     if (key === "llmProvider") this.update(); // model options depend on it
+  }
+
+  /** Ungrouped, above everything: moving a setup between machines is the
+   *  first thing you reach for, not a footnote under Sync. */
+  private configTransfer(): SettingDefinition {
+    return {
+      name: "Export / import configuration",
+      aliases: ["backup", "export", "import", "share settings"],
+      render: (setting: Setting) => {
+        setting.addButton((btn) =>
+          btn.setButtonText("Copy to clipboard").onClick(() => void this.plugin.exportConfiguration()),
+        );
+        setting.addButton((btn) =>
+          btn.setButtonText("Import…").onClick(() => new ImportConfigModal(this.app, this.plugin).open()),
+        );
+      },
+    };
   }
 
   // ── GitHub ───────────────────────────────────────────────────────
@@ -514,11 +531,6 @@ export class CovaultSettingTab extends PluginSettingTab {
           },
         },
         {
-          name: "Ask before the agent acts",
-          aliases: ["approve", "permissions", "skip permissions", "dangerous", "shell", "cli"],
-          control: { type: "toggle", key: "askApprove" },
-        },
-        {
           name: "Connected services (MCP)",
           aliases: ["mcp", "model context protocol", "servers", "tools"],
           // The shape hint lives in the placeholder now rather than in a
@@ -535,14 +547,14 @@ export class CovaultSettingTab extends PluginSettingTab {
           render: (setting: Setting) => this.renderMcpStatus(setting),
         },
         {
-          name: "Extra command-line tools",
-          aliases: ["cli", "shell", "commands", "bq", "bigquery", "tools", "terminal"],
-          control: { type: "textarea", key: "askClis" },
-        },
-        {
           name: "Let AI assistants discover your libraries",
           aliases: ["agents.md", "claude.md", "skill", "announce"],
           control: { type: "toggle", key: "announceAgents" },
+        },
+        {
+          name: "Ask before the agent acts",
+          aliases: ["approve", "permissions", "skip permissions", "dangerous", "shell", "cli"],
+          control: { type: "toggle", key: "askApprove" },
         },
       ],
     };
@@ -554,18 +566,6 @@ export class CovaultSettingTab extends PluginSettingTab {
       type: "group",
       heading: "Sync",
       items: [
-        {
-          name: "Export / import configuration",
-          aliases: ["backup", "export", "share settings"],
-          render: (setting: Setting) => {
-            setting.addButton((btn) =>
-              btn.setButtonText("Copy to clipboard").onClick(() => void this.plugin.exportConfiguration()),
-            );
-            setting.addButton((btn) =>
-              btn.setButtonText("Import…").onClick(() => new ImportConfigModal(this.app, this.plugin).open()),
-            );
-          },
-        },
         {
           name: "Keep shared knowledge up to date automatically",
           control: { type: "toggle", key: "syncAuto" },
