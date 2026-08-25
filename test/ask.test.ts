@@ -237,6 +237,20 @@ describe("AskEngine", () => {
     const a = await ask.ask("q3");
     expect(a.text).toBe("answer");
   });
+
+  it("round-trips the transcript through save and restore", async () => {
+    const first = engine(scriptedModels([[{ type: "text", text: "answer one" }]]));
+    await first.ask("q1");
+    const saved = first.getTranscript();
+    expect(saved.length).toBe(2); // user + assistant
+    // A different engine (fresh view, later day) resumes the context.
+    const second = engine(scriptedModels([[{ type: "text", text: "answer two" }]]));
+    second.setTranscript(saved);
+    await second.ask("q2");
+    const transcript = second.getTranscript();
+    expect(transcript.length).toBe(4);
+    expect(JSON.stringify(transcript)).toContain("answer one");
+  });
 });
 
 describe("edit tools through the agent", () => {

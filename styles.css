@@ -1668,3 +1668,64 @@
   gap: 8px;
   margin-top: 12px;
 }
+
+/* ── Ask sessions & answer chrome ─────────────────────────── */
+
+.covault-ask-session {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.covault-ask-session:hover {
+  background: var(--background-secondary);
+}
+
+.covault-ask-session-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.covault-ask-session-title {
+  font-size: 0.9em;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.covault-ask-session-date {
+  font-size: 0.75em;
+  color: var(--text-faint);
+}
+
+.covault-ask-steps {
+  align-self: flex-start;
+  font-size: 0.78em;
+  color: var(--text-faint);
+  padding: 0 4px;
+}
+
+.covault-ask-steps summary {
+  cursor: pointer;
+}
+
+.covault-ask-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  color: var(--text-faint);
+  font-size: 0.75em;
+  padding: 0 0 6px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.covault-ask-a:hover .covault-ask-foot {
+  opacity: 1;
+}

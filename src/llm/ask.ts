@@ -9,11 +9,13 @@
  * after the UI confirms that exact action with the user.
  *
  * The model gets the kernel index (which library covers what) in its
- * system prompt; the tool surface is assembled by the plugin — library
- * search/read always, shell and MCP tools per settings.
+ * system prompt, plus the inventory of command-line tools actually
+ * installed on this machine — a shell it doesn't know the contents of is
+ * a shell it never uses. The tool surface is assembled by the plugin:
+ * library search/read always, shell and MCP tools per settings.
  */
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
-import { contentText, type AssistantMessage, type MutableModels } from "@earendil-works/pi-ai";
+import { contentText, type AssistantMessage, type Message, type MutableModels } from "@earendil-works/pi-ai";
 import type { ApprovalRequest, AskTool } from "./agentTools";
 
 /** Runaway guard: one question should never burn more turns than this. */
@@ -24,7 +26,7 @@ const SYSTEM_PROMPT = `You answer questions using the notes in this vault: the t
 Rules:
 - ALWAYS look before you answer: pick the likely library from the map (or search the whole vault when the question sounds personal), call search_notes, read the most promising notes with read_note. The notes are the source of truth; your general knowledge is only for interpreting them.
 - If the notes don't answer the question, say so plainly — never invent an answer that isn't in the libraries.
-- Other tools (shell commands, connected services) may be available; use them when they genuinely help answer or complete what was asked. The user approves risky actions individually — a declined action is an answer, not an obstacle: work with what you have.
+- Other tools (shell commands, connected services) may be available; use them when they genuinely help answer or complete what was asked. The inventory below lists the command-line tools installed on this machine — consult it before concluding you can't reach some data or system. The user approves risky actions individually — a declined action is an answer, not an obstacle: work with what you have.
 - When the user asks you to update, fix or add to the team's notes, do it with edit_note (targeted oldText → newText replacements; prefer it) or write_note (new notes). Keep each note's existing language, style and structure; make the smallest change that fulfils the request. The user reviews a diff before anything is written.
 - Answer in the language the question was asked in.
 - Keep answers focused; quote concrete facts (names, values, steps) from the notes.
@@ -57,12 +59,18 @@ export interface AskDeps {
   tools: () => Promise<AskTool[]>;
   /** The kernel index content (library map), or null before first sync. */
   libraryMap: () => string | null;
+  /** The installed-CLI block for the system prompt, or null when there is
+   *  nothing to advertise. Resolved per question, so a tool installed
+   *  mid-session shows up after a refresh. */
+  cliManifest?: () => Promise<string | null>;
 }
 
 export class AskEngine {
   private agent: Agent | null = null;
   private byName = new Map<string, AskTool>();
   private cb: AskCallbacks = {};
+  /** Transcript restored from a saved session, applied on next ask. */
+  private pendingHistory: Message[] | null = null;
 
   constructor(private deps: AskDeps) {}
 
@@ -75,6 +83,19 @@ export class AskEngine {
   reset(): void {
     this.agent?.abort();
     this.agent = null;
+    this.pendingHistory = null;
+  }
+
+  /** The conversation so far — persisted with the session. */
+  getTranscript(): Message[] {
+    return (this.agent?.state.messages as Message[] | undefined) ?? this.pendingHistory ?? [];
+  }
+
+  /** Restore a saved conversation; the next ask continues it. */
+  setTranscript(messages: Message[]): void {
+    this.agent?.abort();
+    this.agent = null;
+    this.pendingHistory = messages;
   }
 
   private toAgentTool(tool: AskTool): AgentTool {
@@ -120,14 +141,25 @@ export class AskEngine {
     const model = this.deps.models.getModel(provider, modelId);
     if (!model) throw new Error(`Model ${provider}/${modelId} is not available — pick one in Settings.`);
 
-    const tools = await this.deps.tools();
+    // Both are per-question: settings, MCP config and the installed CLIs
+    // can all change between asks. Resolved together so neither waits.
+    const [tools, cliManifest] = await Promise.all([this.deps.tools(), this.deps.cliManifest?.() ?? null]);
     this.byName = new Map(tools.map((t) => [t.name, t]));
     this.cb = cb;
 
-    if (!this.agent) this.agent = this.buildAgent();
+    if (!this.agent) {
+      this.agent = this.buildAgent();
+      if (this.pendingHistory) {
+        this.agent.state.messages = this.pendingHistory;
+        this.pendingHistory = null;
+      }
+    }
     const agent = this.agent;
     const map = this.deps.libraryMap();
-    agent.state.systemPrompt = map ? `${SYSTEM_PROMPT}\n\n=== Library map ===\n${map}` : SYSTEM_PROMPT;
+    const sections = [SYSTEM_PROMPT];
+    if (map) sections.push(`=== Library map ===\n${map}`);
+    if (cliManifest) sections.push(cliManifest);
+    agent.state.systemPrompt = sections.join("\n\n");
     agent.state.model = model;
     agent.state.tools = tools.map((t) => this.toAgentTool(t));
 
