@@ -35,22 +35,7 @@ async function collect(body: AsyncIterableIterator<Uint8Array> | Uint8Array[]): 
   return Buffer.concat(chunks.map((c) => Buffer.from(c)));
 }
 
-/** Response body as an async iterator, with idle-timeout enforcement. */
-function streamBody(res: http.IncomingMessage, onByte: (n: number) => void): AsyncIterableIterator<Uint8Array> {
-  const iterator = res[Symbol.asyncIterator]() as AsyncIterableIterator<Buffer>;
-  return {
-    [Symbol.asyncIterator]() {
-      return this;
-    },
-    async next() {
-      const step = await iterator.next();
-      if (!step.done) onByte(step.value.byteLength);
-      return step as IteratorResult<Uint8Array>;
-    },
-  } as AsyncIterableIterator<Uint8Array>;
-}
-
-export function createNodeHttp(log?: DebugLog): HttpClient {
+export function createNodeHttp(log?: DebugLog, idleMs: number = IDLE_TIMEOUT_MS): HttpClient {
   return {
     async request({ url, method, headers, body }: GitHttpRequest): Promise<GitHttpResponse> {
       const sent = body ? await collect(body) : undefined;
@@ -63,6 +48,25 @@ export function createNodeHttp(log?: DebugLog): HttpClient {
 
       return new Promise<GitHttpResponse>((resolve, reject) => {
         let received = 0;
+        /**
+         * The watchdog is armed only while we are genuinely waiting, and
+         * disarmed the moment the body ends. Leaving it armed was a bug:
+         * a keep-alive socket idles in the agent pool after a completed
+         * response, so 30s later it fired and destroyed a response whose
+         * data had arrived long before — surfacing as a stall on whatever
+         * still held the iterator.
+         */
+        let timer: NodeJS.Timeout | undefined;
+        const disarm = () => {
+          if (timer) clearTimeout(timer);
+          timer = undefined;
+        };
+        const arm = (onStall: () => void) => {
+          disarm();
+          timer = setTimeout(onStall, idleMs);
+          timer.unref?.();
+        };
+
         const req = transport.request(
           target,
           {
@@ -70,35 +74,66 @@ export function createNodeHttp(log?: DebugLog): HttpClient {
             headers: { ...headers, ...(sent ? { "Content-Length": String(sent.byteLength) } : {}) },
           },
           (res) => {
-            // Re-armed by every chunk, so the clock measures silence
-            // rather than duration.
-            res.setTimeout(IDLE_TIMEOUT_MS, () => {
-              res.destroy(new Error(`${route} stalled — no data for ${IDLE_TIMEOUT_MS / 1000}s`));
+            // The response has started, so the "no response" watchdog has
+            // done its job. Leaving it armed destroyed the socket later —
+            // and with it a body that had already arrived.
+            disarm();
+            const stall = (why: string) => () => {
+              disarm();
+              res.destroy(new Error(`${route} stalled — ${why}`));
+            };
+            // The watchdog runs only while a read is outstanding. Silence
+            // while nobody is reading is not a stall — the consumer may
+            // legitimately hold the body for a while — and counting it as
+            // one is what destroyed responses whose bytes had all arrived.
+            // Counting bytes here rather than in an "data" listener also
+            // matters: a listener switches the stream to flowing mode and
+            // consumes the body before isomorphic-git ever iterates it.
+            // Created on first read, not here: taking the iterator early
+            // starts the stream consuming, and a body the caller has not
+            // asked for yet is then lost.
+            let source: AsyncIterableIterator<Buffer> | undefined;
+            const watched: AsyncIterableIterator<Uint8Array> = {
+              [Symbol.asyncIterator]() {
+                return this;
+              },
+              async next() {
+                source ??= res[Symbol.asyncIterator]() as AsyncIterableIterator<Buffer>;
+                arm(stall(`no data for ${idleMs / 1000}s`));
+                try {
+                  const step = await source.next();
+                  if (!step.done) received += step.value.byteLength;
+                  return step as IteratorResult<Uint8Array>;
+                } finally {
+                  disarm();
+                }
+              },
+            } as AsyncIterableIterator<Uint8Array>;
+            res.on("end", () => done?.({ status: res.statusCode, responseBytes: received }));
+            res.on("close", disarm);
+            res.on("error", (e) => {
+              disarm();
+              log?.op("http", `${route} — failed mid-body`, { error: e, responseBytes: received });
+              done?.({ outcome: "error", responseBytes: received });
             });
             resolve({
               url,
               method,
               headers: res.headers as Record<string, string>,
-              body: streamBody(res, (n) => {
-                received += n;
-                res.setTimeout(IDLE_TIMEOUT_MS);
-              }),
+              body: watched,
               statusCode: res.statusCode ?? 0,
               statusMessage: res.statusMessage ?? String(res.statusCode ?? 0),
             });
-            res.on("end", () => done?.({ status: res.statusCode, responseBytes: received }));
-            res.on("error", (e) => {
-              log?.op("http", `${route} — failed mid-body`, { error: e, responseBytes: received });
-              done?.({ outcome: "error", responseBytes: received });
-            });
           },
         );
-        // Before the response starts, silence is the connection failing to
-        // establish; destroying it is what makes the limit real.
-        req.setTimeout(IDLE_TIMEOUT_MS, () => {
-          req.destroy(new Error(`${route} stalled — no response for ${IDLE_TIMEOUT_MS / 1000}s`));
+        // Before a response exists, silence means the connection never came
+        // up; destroying it is what makes the limit real.
+        arm(() => {
+          disarm();
+          req.destroy(new Error(`${route} stalled — no response for ${idleMs / 1000}s`));
         });
         req.on("error", (e) => {
+          disarm();
           log?.op("http", `${route} — failed`, { error: e });
           done?.({ outcome: "error" });
           reject(e);
