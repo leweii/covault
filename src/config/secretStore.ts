@@ -44,13 +44,19 @@ export function appConfigDir(): string {
 }
 
 /**
+ * Short stable id for a vault, from its absolute path. A hash so the
+ * filename doesn't leak where the vault lives.
+ */
+export function vaultKey(vaultBasePath: string): string {
+  return crypto.createHash("sha256").update(vaultBasePath).digest("hex").slice(0, 16);
+}
+
+/**
  * One secret file per vault, keyed by the vault's absolute path, so two
  * vaults open on the same machine don't clobber each other's credentials.
- * The basename is a hash so the filename doesn't leak the vault path.
  */
 function secretFilePath(vaultBasePath: string): string {
-  const key = crypto.createHash("sha256").update(vaultBasePath).digest("hex").slice(0, 16);
-  return path.join(appConfigDir(), `vault-${key}.json`);
+  return path.join(appConfigDir(), `vault-${vaultKey(vaultBasePath)}.json`);
 }
 
 export interface LocalSecrets {

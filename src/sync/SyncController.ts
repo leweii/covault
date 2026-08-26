@@ -12,6 +12,14 @@ import type { ConflictResolver } from "../llm/resolver";
 import type { DebugLog } from "../debug/logger";
 import { applyResolutions, extractHunks, getContextLines, parseConflict, type HunkResolution } from "./ConflictParser";
 
+/**
+ * Last line of defence for one repo. The HTTP layer caps each request, but
+ * a round is many requests plus local work, and a pass that never ends
+ * silently swallows every later trigger (they see `running` and skip). A
+ * repo that outruns this is reported and the pass moves on.
+ */
+const REPO_TIMEOUT_MS = 10 * 60_000;
+
 /** Below this AI confidence (0–5) a hunk is never auto-applied. */
 const SILENT_MIN_CONFIDENCE = 3;
 
@@ -112,71 +120,25 @@ export class SyncController {
     }
   }
 
+  /**
+   * One repo, with a ceiling. Racing rather than cancelling: git work
+   * already in flight cannot be called back, but the pass must not wait on
+   * it forever.
+   */
   private async syncOne(repo: SyncItem, trigger: "manual" | "auto"): Promise<void> {
     const ref = this.toRef(repo);
     const name = repo.label ?? repo.path;
     this.setState(repo.path, { phase: "syncing" });
     const done = this.log?.opTime("repo", name, { branch: ref.branch, trigger });
+    let expiry: ReturnType<typeof setTimeout> | undefined;
     try {
-      if (!(await this.engine.isRepo(ref))) {
-        if (repo.noAutoClone) {
-          this.setState(repo.path, { phase: "error", detail: "Needs set up again (repo state missing)" });
-          return;
-        }
-        // An empty library (created on GitHub but never pushed to) has
-        // nothing to clone — seed it from the vault folder instead.
-        if (await this.engine.remoteHasBranch(ref)) {
-          await this.engine.clone(ref);
-        } else {
-          await this.engine.initAndPush(ref, `Share ${name} as a knowledge library`);
-        }
-        this.setState(repo.path, { phase: "idle", lastSyncedAt: Date.now() });
-        if (trigger === "manual") new Notice(`Covault: "${name}" is ready.`);
-        return;
-      }
-
-      const result = await this.engine.syncToRemote(ref, {
-        commitMessage: describeChanges, // placeholder — the agent takes this over in M4
-        exclude: repo.exclude,
-        include: repo.include,
-      });
-
-      if (result.conflictFilepaths.length > 0) {
-        // First line of defense: the agent merges silently when confident.
-        const auto = await this.tryAutoResolve(ref, result.conflictFilepaths);
-        if (auto) {
-          this.pending.delete(repo.path);
-          this.setState(repo.path, { phase: "idle", lastSyncedAt: Date.now() });
-          new Notice(
-            `Covault: you and a teammate edited the same note(s) in "${name}" — ` +
-              `the AI merged ${result.conflictFilepaths.length} of them automatically.`,
-          );
-          return;
-        }
-
-        this.pending.set(repo.path, { item: repo, filepaths: result.conflictFilepaths });
-        this.setState(repo.path, {
-          phase: "conflict",
-          detail: `${result.conflictFilepaths.length} note(s) changed by you and a teammate`,
-        });
-        new Notice(
-          `Covault: in "${name}", ${result.conflictFilepaths.length} note(s) need your input — ` +
-            `run "Covault: Resolve conflicts" to sort them out.`,
-          10_000,
-        );
-        return;
-      }
-
-      this.pending.delete(repo.path);
-      this.setState(repo.path, { phase: "idle", lastSyncedAt: Date.now() });
-      this.log?.op("repo", `${name} — ${summarize(result)}`, {
-        committed: result.committed.length,
-        pulled: result.pulled,
-        pushed: result.pushed,
-      });
-      if (trigger === "manual") {
-        new Notice(`Covault: "${name}" ${summarize(result)}.`);
-      }
+      await Promise.race([
+        this.syncRepo(ref, repo, trigger, name),
+        new Promise<never>((_resolve, reject) => {
+          const tooLong = `took longer than ${REPO_TIMEOUT_MS / 60_000} minutes and was given up on`;
+          expiry = setTimeout(() => reject(new Error(tooLong)), REPO_TIMEOUT_MS);
+        }),
+      ]);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       this.setState(repo.path, { phase: "error", detail: message });
@@ -185,7 +147,71 @@ export class SyncController {
       this.log?.op("repo", `${name} — failed`, { error: e, stack: e instanceof Error ? e.stack : undefined });
       if (trigger === "manual") new Notice(`Covault: couldn't sync "${name}" — ${message}`);
     } finally {
+      if (expiry) clearTimeout(expiry);
       done?.();
+    }
+  }
+
+  /** One repo's round. Throws on failure; syncOne owns the reporting. */
+  private async syncRepo(ref: RepoRef, repo: SyncItem, trigger: "manual" | "auto", name: string): Promise<void> {
+    if (!(await this.engine.isRepo(ref))) {
+      if (repo.noAutoClone) {
+        this.setState(repo.path, { phase: "error", detail: "Needs set up again (repo state missing)" });
+        return;
+      }
+      // An empty library (created on GitHub but never pushed to) has
+      // nothing to clone — seed it from the vault folder instead.
+      if (await this.engine.remoteHasBranch(ref)) {
+        await this.engine.clone(ref);
+      } else {
+        await this.engine.initAndPush(ref, `Share ${name} as a knowledge library`);
+      }
+      this.setState(repo.path, { phase: "idle", lastSyncedAt: Date.now() });
+      if (trigger === "manual") new Notice(`Covault: "${name}" is ready.`);
+      return;
+    }
+
+    const result = await this.engine.syncToRemote(ref, {
+      commitMessage: describeChanges, // placeholder — the agent takes this over in M4
+      exclude: repo.exclude,
+      include: repo.include,
+    });
+
+    if (result.conflictFilepaths.length > 0) {
+      // First line of defense: the agent merges silently when confident.
+      const auto = await this.tryAutoResolve(ref, result.conflictFilepaths);
+      if (auto) {
+        this.pending.delete(repo.path);
+        this.setState(repo.path, { phase: "idle", lastSyncedAt: Date.now() });
+        new Notice(
+          `Covault: you and a teammate edited the same note(s) in "${name}" — ` +
+            `the AI merged ${result.conflictFilepaths.length} of them automatically.`,
+        );
+        return;
+      }
+
+      this.pending.set(repo.path, { item: repo, filepaths: result.conflictFilepaths });
+      this.setState(repo.path, {
+        phase: "conflict",
+        detail: `${result.conflictFilepaths.length} note(s) changed by you and a teammate`,
+      });
+      new Notice(
+        `Covault: in "${name}", ${result.conflictFilepaths.length} note(s) need your input — ` +
+          `run "Covault: Resolve conflicts" to sort them out.`,
+        10_000,
+      );
+      return;
+    }
+
+    this.pending.delete(repo.path);
+    this.setState(repo.path, { phase: "idle", lastSyncedAt: Date.now() });
+    this.log?.op("repo", `${name} — ${summarize(result)}`, {
+      committed: result.committed.length,
+      pulled: result.pulled,
+      pushed: result.pushed,
+    });
+    if (trigger === "manual") {
+      new Notice(`Covault: "${name}" ${summarize(result)}.`);
     }
   }
 

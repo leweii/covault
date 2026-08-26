@@ -33,12 +33,14 @@ import { ConflictResolver } from "./llm/resolver";
 import { createOrgRepo, fetchUserIdentity, noreplyEmail, type GitHubIdentity } from "./git/githubApi";
 import type { RepoRef } from "./git/GitEngine";
 import {
+  appConfigDir,
   applySecrets,
   clearSecrets,
   extractSecrets,
   readSecrets,
   redactSecrets,
   settingsHaveInlineSecrets,
+  vaultKey,
   writeSecrets,
 } from "./config/secretStore";
 import { buildModels, customProvider, CUSTOM_PROVIDER_ID } from "./llm/models";
@@ -88,7 +90,12 @@ export default class CovaultPlugin extends Plugin {
     this.debugLog = new DebugLog({
       fs,
       enabled: () => this.settings.debugMode,
-      logDir: () => path.join(this.vaultBasePath(), ".covault", "logs"),
+      // Outside the vault, deliberately. This vault may be synced (iCloud,
+      // Dropbox, Obsidian Sync), and a log inside it becomes one file that
+      // several machines append to — which is how a machine that was never
+      // signed in filled this one's log with its own failures. Diagnostics
+      // are per-device; keyed by vault so two vaults here stay apart.
+      logDir: () => path.join(appConfigDir(), "logs", vaultKey(this.vaultBasePath())),
     });
 
     // AppAuth delegates per-call: GitHub App when connected, PAT otherwise.

@@ -7,6 +7,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { DebugLog, redact } from "../src/debug/logger";
+import { vaultKey } from "../src/config/secretStore";
 
 describe("redact", () => {
   it("strips credentials from a URL's userinfo", () => {
@@ -123,5 +124,26 @@ describe("operations level", () => {
     const log = new DebugLog({ fs, enabled: () => false, logDir: () => dir });
     log.op("push", "https://x:ghp_abcdefghijklmnop1234@github.com/o/r.git");
     expect(log.format()).not.toContain("ghp_abcdefghijklmnop1234");
+  });
+});
+
+describe("where the log lives", () => {
+  /**
+   * The bug: the log used to sit in .covault/logs/ inside the vault. A
+   * synced vault (iCloud, Dropbox, Obsidian Sync) then hands the same file
+   * to several machines, which all append to it — one machine's failures
+   * appear in another's log, and the paths in it belong to whichever home
+   * directory wrote the line. Per-device, keyed by vault, fixes both.
+   */
+  it("keys the directory by vault, so two vaults on one machine stay apart", () => {
+    const a = vaultKey("/Users/me/vault-one");
+    const b = vaultKey("/Users/me/vault-two");
+    expect(a).not.toBe(b);
+    expect(a).toBe(vaultKey("/Users/me/vault-one")); // stable
+  });
+
+  it("does not leak the vault path into the directory name", () => {
+    expect(vaultKey("/Users/me/Secret Project")).not.toContain("Secret");
+    expect(vaultKey("/Users/me/Secret Project")).toMatch(/^[0-9a-f]{16}$/);
   });
 });

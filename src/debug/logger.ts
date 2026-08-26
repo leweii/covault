@@ -9,9 +9,11 @@
  * VERBOSE — network-level detail like request byte counts — is gated on
  * the debug-mode setting, for chasing a specific failure.
  *
- * Two sinks: an in-memory ring (for "copy the log" right after a
- * failure) and an append-only file under .covault/logs/ (survives the
- * restart that a stuck sync usually invites).
+ * Two sinks: an in-memory ring (for "copy the log" right after a failure)
+ * and an append-only file in the per-device config directory, which
+ * survives the restart a stuck sync usually invites. Deliberately not
+ * inside the vault: a synced vault hands one log file to several machines,
+ * which all append to it.
  *
  * Everything written here is meant to be pasted into a bug report, so
  * every value passes through redact() first — git traffic carries tokens

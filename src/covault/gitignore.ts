@@ -28,6 +28,7 @@ export function ensureIgnored(vaultBase: string, repoPaths: string[]): void {
     // Derived data, regenerated per device — synced nowhere, by anything.
     "/.covault/skills/",
     // Local diagnostics: this machine's problem, and potentially large.
+    // Kept for vaults written by an older version, which put the log here.
     "/.covault/logs/",
   ].sort();
   const block = [START, ...entries, END].join("\n");

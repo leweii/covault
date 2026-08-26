@@ -59,6 +59,37 @@ function toAsyncIterator(buffer: ArrayBuffer): AsyncIterableIterator<Uint8Array>
 }
 
 /**
+ * Per-request ceiling. requestUrl takes no signal and buffers the whole
+ * body, so a stalled transfer never resolves on its own: without this a
+ * single request hangs the sync pass, and because passes are serialized
+ * every later trigger is silently skipped. Generous enough for a large
+ * packfile on a slow link.
+ */
+const REQUEST_TIMEOUT_MS = 120_000;
+
+/** Reject if the request hasn't settled in time. requestUrl cannot be
+ *  cancelled, so the underlying fetch may still be running — the point is
+ *  to stop *waiting* on it, not to reclaim it. */
+function withTimeout<T>(work: Promise<T>, route: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${route} timed out after ${REQUEST_TIMEOUT_MS / 1000}s`)),
+      REQUEST_TIMEOUT_MS,
+    );
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+/**
  * Because bodies are buffered whole, request/response byte counts are the
  * signal that explains most large-repo failures — a debug log carrying
  * them tells you whether a sync died on a huge packfile, an auth reply, or
@@ -75,13 +106,16 @@ export function createObsidianHttp(log?: DebugLog): HttpClient {
 
       let res;
       try {
-        res = await requestUrl({
-          url,
-          method,
-          headers: { "Accept-Encoding": "identity", ...headers },
-          body: collectedBody,
-          throw: false,
-        });
+        res = await withTimeout(
+          requestUrl({
+            url,
+            method,
+            headers: { "Accept-Encoding": "identity", ...headers },
+            body: collectedBody,
+            throw: false,
+          }),
+          route,
+        );
       } catch (e) {
         // No response at all: the failure mode when a buffered body is too
         // big for the platform, or the connection dropped mid-transfer.
