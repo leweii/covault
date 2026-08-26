@@ -2032,13 +2032,19 @@ button.covault-ask-mcp-chip:hover {
    Asking is what the panel is mostly for, so it gets a full-width row
    instead of a small icon competing with the header controls. */
 
+/* Pinned between the scrolling list and the history pane. */
+.covault-panel-ask-bar {
+  flex: 0 0 auto;
+  padding: 8px 10px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
 .covault-panel-ask {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
   width: 100%;
-  margin: 8px 0 4px;
   padding: 9px 12px;
   border-radius: 8px;
   background: var(--interactive-accent);

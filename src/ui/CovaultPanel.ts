@@ -84,16 +84,6 @@ export class CovaultPanel extends ItemView {
     setIcon(syncBtn, "refresh-cw");
     syncBtn.onclick = () => void this.plugin.sync.syncAll("manual");
 
-    // Asking is the main thing this panel is for, so it gets a row of its
-    // own rather than competing with the icons in the header.
-    const ask = scroll.createEl("button", {
-      cls: "covault-panel-ask",
-      attr: { "aria-label": "Ask your knowledge base" },
-    });
-    setIcon(ask.createSpan({ cls: "covault-panel-ask-icon" }), "message-circle-question");
-    ask.createSpan({ text: "Ask your knowledge base" });
-    ask.onclick = () => void this.plugin.activateAskView();
-
     const conflicts = this.plugin.sync.pendingConflicts();
     if (conflicts.length > 0) {
       const warn = scroll.createDiv("covault-panel-conflict-banner");
@@ -106,7 +96,41 @@ export class CovaultPanel extends ItemView {
 
     this.renderPersonalSection(scroll);
     this.renderLibrariesSection(scroll);
+    this.renderAskButton(root);
     this.renderHistorySection(root);
+  }
+
+  /**
+   * Outside the scrolling area on purpose: with fifteen libraries the list
+   * fills the panel, and a button that scrolls away is a button that isn't
+   * there when it's wanted.
+   */
+  private renderAskButton(root: HTMLElement): void {
+    const bar = root.createDiv("covault-panel-ask-bar");
+    const ask = bar.createEl("button", {
+      cls: "covault-panel-ask",
+      attr: { "aria-label": "Ask your knowledge base" },
+    });
+    setIcon(ask.createSpan({ cls: "covault-panel-ask-icon" }), "message-circle-question");
+    ask.createSpan({ text: "Ask your knowledge base" });
+    ask.onclick = () => void this.plugin.activateAskView();
+  }
+
+  /**
+   * The coloured dot every synced thing carries, with its state in the
+   * tooltip. Shared so the personal repo reads the same as a library.
+   */
+  private addStateDot(row: HTMLElement, repoPath: string): void {
+    const state = this.plugin.sync.state(repoPath);
+    const dot = row.createSpan({ cls: `covault-panel-state ${state.phase}` });
+    dot.setAttribute(
+      "title",
+      state.phase === "idle"
+        ? state.lastSyncedAt
+          ? `Up to date · ${new Date(state.lastSyncedAt).toLocaleTimeString()}`
+          : "Waiting for first sync"
+        : (state.detail ?? state.phase),
+    );
   }
 
   // ── Section 3: history of the current note ─────────────────
@@ -287,6 +311,9 @@ export class CovaultPanel extends ItemView {
   private renderPersonalSection(root: HTMLElement): void {
     const section = root.createDiv("covault-panel-section");
     const head = section.createDiv("covault-panel-section-head");
+    // Same dot as a library: this repo syncs like any other, so it should
+    // report like any other.
+    if (this.plugin.settings.mainRepo) this.addStateDot(head, "");
     head.createSpan({ cls: "covault-panel-section-title", text: "My knowledge base" });
     const addBtn = head.createEl("button", { cls: "covault-panel-icon-btn", attr: { "aria-label": "Share a note or folder" } });
     setIcon(addBtn, "plus");
@@ -389,16 +416,7 @@ export class CovaultPanel extends ItemView {
     for (const repo of repos) {
       const state = this.plugin.sync.state(repo.path);
       const row = list.createDiv("covault-panel-row");
-
-      const dot = row.createSpan({ cls: `covault-panel-state ${state.phase}` });
-      dot.setAttribute(
-        "title",
-        state.phase === "idle"
-          ? state.lastSyncedAt
-            ? `Up to date · ${new Date(state.lastSyncedAt).toLocaleTimeString()}`
-            : "Waiting for first sync"
-          : (state.detail ?? state.phase),
-      );
+      this.addStateDot(row, repo.path);
 
       const name = row.createSpan({ cls: "covault-panel-row-name", text: repo.path });
       name.setAttribute("title", `${repo.url} (${repo.branch})`);
