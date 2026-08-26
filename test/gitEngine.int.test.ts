@@ -11,6 +11,7 @@ import * as os from "os";
 import * as path from "path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 // eslint-disable-next-line import/no-internal-modules
+import * as git from "isomorphic-git";
 import { createNodeHttp } from "../src/git/nodeHttp";
 import { GitEngine, type RepoRef } from "../src/git/GitEngine";
 import { PatTokenProvider } from "../src/auth/TokenProvider";
@@ -69,6 +70,18 @@ describe("GitEngine against a real smart-HTTP remote", () => {
     await engineA.clone(refA);
     expect(fs.readFileSync(path.join(refA.dir, "README.md"), "utf8")).toContain("Team KB");
     expect(await engineA.isRepo(refA)).toBe(true);
+  });
+
+  /**
+   * The first download takes the tip only. A library is used at its head;
+   * paying for the whole history up front is what made a large one slow to
+   * set up and a 350 MB one fail. Pushing from a shallow clone still has
+   * to work, which the next test covers.
+   */
+  it("clones shallow — one commit, marked shallow", async () => {
+    expect(fs.existsSync(path.join(refA.dir, ".git", "shallow"))).toBe(true);
+    const log = await git.log({ fs, dir: refA.dir });
+    expect(log).toHaveLength(1);
   });
 
   it("commits and pushes local edits (consumer stays silent)", async () => {

@@ -161,23 +161,27 @@ export class GitEngine {
   }
 
   /**
-   * Shallow: full history of a large or old repo is a long download for
-   * history nobody asked for. This keeps enough for fileLog's default view
-   * without fetching everything; later fetches still grow it.
+   * How much history the first download brings: just the tip.
+   *
+   * A knowledge library is read and edited at its head; its history is for
+   * the occasional "who changed this note", which fileLog deepens on
+   * demand. Paying for all of it up front is what made a large or old
+   * library slow to set up, and 350 MB of it is what made one fail
+   * outright. Later fetches grow the history naturally.
    */
-  private static readonly CLONE_DEPTH = 50;
+  private static readonly FIRST_FETCH_DEPTH = 1;
 
   async clone(ref: RepoRef): Promise<void> {
     const done = this.deps.log?.opTime("clone", ref.dir, {
       branch: ref.branch,
-      depth: GitEngine.CLONE_DEPTH,
+      depth: GitEngine.FIRST_FETCH_DEPTH,
     });
     await git.clone({
       ...this.common(ref),
       url: ref.url,
       ref: ref.branch,
       singleBranch: true,
-      depth: GitEngine.CLONE_DEPTH,
+      depth: GitEngine.FIRST_FETCH_DEPTH,
     });
     done?.();
   }
@@ -239,7 +243,15 @@ export class GitEngine {
     const done = this.deps.log?.opTime("adopt", ref.dir, { branch: ref.branch });
     await git.init({ fs, dir: ref.dir, gitdir: ref.gitdir, defaultBranch: ref.branch });
     await git.addRemote({ fs, dir: ref.dir, gitdir: ref.gitdir, remote: "origin", url: ref.url, force: true });
-    await git.fetch({ ...this.common(ref), remote: "origin", ref: ref.branch, singleBranch: true });
+    // Shallow for the same reason clone() is: the repo was just init'd, so
+    // this is a first download with nothing local to negotiate against.
+    await git.fetch({
+      ...this.common(ref),
+      remote: "origin",
+      ref: ref.branch,
+      singleBranch: true,
+      depth: GitEngine.FIRST_FETCH_DEPTH,
+    });
 
     const remote = await this.resolve(ref, `refs/remotes/origin/${ref.branch}`);
     if (!remote) throw new Error(`The remote has no "${ref.branch}" branch yet.`);
