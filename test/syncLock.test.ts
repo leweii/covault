@@ -111,3 +111,47 @@ describe("per-repo sync locking", () => {
     await Promise.all([personal, lib]);
   });
 });
+
+/**
+ * The panel needs to name what is running and for how long: a sweep
+ * working through fifteen libraries looked identical to a stuck one.
+ */
+describe("what the panel can see", () => {
+  it("lists nothing while idle", () => {
+    const { engine } = pausableEngine();
+    const sync = controller(engine, items("lib-a"));
+    expect(sync.activeTasks()).toEqual([]);
+    expect(sync.isSweeping()).toBe(false);
+  });
+
+  it("names each running round, oldest first, with a start time", async () => {
+    const { engine, started, releaseAll } = pausableEngine();
+    const repos: SyncItem[] = [
+      { path: "", url: "u", branch: "main", label: "Personal knowledge base" },
+      { path: "lib-a", url: "u", branch: "main" },
+    ];
+    const sync = controller(engine, repos);
+    const a = sync.syncJust("");
+    await vi.waitFor(() => expect(started).toHaveLength(1));
+    const b = sync.syncJust("lib-a");
+    await vi.waitFor(() => expect(started).toHaveLength(2));
+    const tasks = sync.activeTasks();
+    // Falls back to the path when there is no label, and keeps order.
+    expect(tasks.map((t) => t.label)).toEqual(["Personal knowledge base", "lib-a"]);
+    expect(tasks[0]!.startedAt).toBeLessThanOrEqual(tasks[1]!.startedAt);
+    releaseAll();
+    await Promise.all([a, b]);
+    expect(sync.activeTasks()).toEqual([]);
+  });
+
+  it("reports a sweep as a sweep", async () => {
+    const { engine, started, releaseAll } = pausableEngine();
+    const sync = controller(engine, items("lib-a"));
+    const pass = sync.syncAll("auto");
+    await vi.waitFor(() => expect(started).toHaveLength(1));
+    expect(sync.isSweeping()).toBe(true);
+    releaseAll();
+    await pass;
+    expect(sync.isSweeping()).toBe(false);
+  });
+})

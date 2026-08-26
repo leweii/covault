@@ -321,7 +321,7 @@ export default class CovaultPlugin extends Plugin {
     this.applySyncSchedule();
     // Warm the repo list so the pickers open without a spinner.
     this.app.workspace.onLayoutReady(() => {
-      void this.fetchOrgRepos();
+      void this.fetchAccessibleRepos();
       this.refreshKnowledgeSkill();
     });
     // First pass shortly after startup, once the workspace has settled.
@@ -389,30 +389,43 @@ export default class CovaultPlugin extends Plugin {
   // Repo names in the base org, cached so pickers open instantly. Warmed
   // on startup and whenever the connection changes; refreshed in the
   // background each time a picker opens.
-  private repoCache: { org: string; repos: string[] } | null = null;
-  private repoCacheInFlight: Promise<string[]> | null = null;
+  /** Every org this connection can reach, with their repo names. Cached
+   *  as a whole rather than per-org: the API call returns all of them, and
+   *  the setup dialog now lets the user switch org without refetching. */
+  private repoCache: { login: string; repos: string[] }[] | null = null;
+  private repoCacheInFlight: Promise<{ login: string; repos: string[] }[]> | null = null;
 
-  /** Cached repo names for the base org, or null when never fetched. */
-  cachedOrgRepos(): string[] | null {
-    const org = this.settings.baseOrg;
-    return this.repoCache && this.repoCache.org === org ? this.repoCache.repos : null;
+  /** Orgs to offer, base org first — it is the likeliest answer. */
+  accessibleOrgs(): string[] {
+    const logins = (this.repoCache ?? []).map((g) => g.login);
+    const base = this.settings.baseOrg;
+    if (base && !logins.includes(base)) logins.unshift(base);
+    return base ? [base, ...logins.filter((l) => l !== base)] : logins;
   }
 
-  /** Fetch (and cache) the base org's repo names. Concurrent calls share
-   *  one request; failures leave any existing cache in place. */
-  async fetchOrgRepos(): Promise<string[]> {
-    const org = this.settings.baseOrg;
-    if (!org || this.settings.authMethod !== "githubApp") return [];
+  /** Repo names in one org, or null while nothing has been fetched yet. */
+  cachedReposIn(org: string): string[] | null {
+    if (!this.repoCache) return null;
+    return this.repoCache.find((g) => g.login === org)?.repos ?? [];
+  }
+
+  /** Fetch (and cache) what this connection can reach. Concurrent calls
+   *  share one request; failures leave any existing cache in place. */
+  async fetchAccessibleRepos(): Promise<{ login: string; repos: string[] }[]> {
+    if (this.settings.authMethod !== "githubApp") return [];
     if (this.repoCacheInFlight) return this.repoCacheInFlight;
     this.repoCacheInFlight = (async () => {
       try {
         const groups = await this.appAuth.listAccessibleRepos();
-        const names = (groups.find((g) => g.login === org)?.repos ?? []).map((r) => r.split("/")[1] ?? r).sort();
-        this.repoCache = { org, repos: names };
-        return names;
+        this.repoCache = groups.map((g) => ({
+          login: g.login,
+          // The API returns "owner/name"; the dialogs want just the name.
+          repos: g.repos.map((r) => r.split("/")[1] ?? r).sort(),
+        }));
+        return this.repoCache;
       } catch (e) {
         console.warn("[covault] couldn't list repos:", e);
-        return this.cachedOrgRepos() ?? [];
+        return this.repoCache ?? [];
       } finally {
         this.repoCacheInFlight = null;
       }

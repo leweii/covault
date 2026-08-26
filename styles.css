@@ -2090,3 +2090,52 @@ button.covault-ask-mcp-chip:hover {
     transform: rotate(360deg);
   }
 }
+
+/* ── Panel: what is syncing right now ─────────────────────── */
+
+.covault-panel-tasks {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 7px 9px;
+  background: var(--background-secondary);
+  font-size: 0.82em;
+}
+
+.covault-panel-tasks-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-weight: var(--font-medium);
+  margin-bottom: 4px;
+}
+
+.covault-panel-tasks-icon {
+  display: inline-flex;
+}
+
+.covault-panel-tasks-icon .svg-icon {
+  width: 13px;
+  height: 13px;
+  animation: covault-spin 1.6s linear infinite;
+}
+
+.covault-panel-task {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 1px 0 1px 19px;
+}
+
+.covault-panel-task-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.covault-panel-task-age {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}

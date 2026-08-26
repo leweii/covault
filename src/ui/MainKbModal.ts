@@ -32,6 +32,9 @@ export class MainKbModal extends Modal {
   private bodyEl!: HTMLElement;
   private footerEl!: HTMLElement;
   private kbScope: MainKbScope; // not `scope`: Modal.scope is the keymap scope
+  /** Which org to look in. Starts at the base org but is switchable —
+   *  a personal KB doesn't have to live where the team libraries do. */
+  private org: string;
   private ctaBtn: HTMLButtonElement | null = null;
 
   constructor(
@@ -42,8 +45,9 @@ export class MainKbModal extends Modal {
     const login = plugin.settings.githubApp.connections[0]?.login ?? "";
     this.name = `personal-kb-${login.toLowerCase()}`;
     this.kbScope = plugin.mainKbScope();
+    this.org = plugin.settings.baseOrg;
     // Start from the warm cache so the dropdown is filled immediately.
-    this.repos = plugin.cachedOrgRepos();
+    this.repos = plugin.cachedReposIn(this.org);
     if (this.repos) this.selected = pickDefault(this.repos);
   }
 
@@ -83,9 +87,9 @@ export class MainKbModal extends Modal {
 
     // Refresh in the background: the cache may predate something the user
     // created elsewhere.
-    void this.plugin.fetchOrgRepos().then((repos) => {
-      this.repos = repos;
-      if (!this.selected) this.selected = pickDefault(repos);
+    void this.plugin.fetchAccessibleRepos().then(() => {
+      this.repos = this.plugin.cachedReposIn(this.org);
+      if (!this.selected && this.repos) this.selected = pickDefault(this.repos);
       this.renderBody();
     });
   }
@@ -121,7 +125,8 @@ export class MainKbModal extends Modal {
   }
 
   private renderExisting(): Cta {
-    const org = this.plugin.settings.baseOrg;
+    const org = this.org;
+    this.renderOrgPicker();
     const repos = this.repos;
 
     const setting = new Setting(this.bodyEl).setName("Knowledge base");
@@ -144,7 +149,26 @@ export class MainKbModal extends Modal {
     };
   }
 
+  /** Which organization to look in / create under. */
+  private renderOrgPicker(): void {
+    const orgs = this.plugin.accessibleOrgs();
+    if (orgs.length <= 1) return; // nothing to choose
+    new Setting(this.bodyEl).setName("Organization").addDropdown((dd) => {
+      for (const o of orgs) dd.addOption(o, o);
+      dd.setValue(this.org).onChange((v) => {
+        this.org = v;
+        // A repo picked in another org means nothing here.
+        this.repos = this.plugin.cachedReposIn(v);
+        this.selected = this.repos ? pickDefault(this.repos) : "";
+        this.nameState = "unknown";
+        this.token = ""; // scoped to the org it was minted for
+        this.renderBody();
+      });
+    });
+  }
+
   private renderCreate(): Cta {
+    this.renderOrgPicker();
     new Setting(this.bodyEl).setName("Knowledge base").addText((t) =>
       t.setValue(this.name).onChange((v) => {
         this.name = v.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
@@ -200,7 +224,7 @@ export class MainKbModal extends Modal {
   }
 
   private async checkName(): Promise<void> {
-    const org = this.plugin.settings.baseOrg;
+    const org = this.org;
     if (!this.name) {
       this.nameState = "idle";
       this.renderBody();
@@ -225,7 +249,7 @@ export class MainKbModal extends Modal {
   private async submit(mode: "adopt" | "create"): Promise<void> {
     if (this.busy) return;
     const s = this.plugin.settings;
-    const org = s.baseOrg;
+    const org = this.org;
     const login = s.githubApp.connections[0]?.login;
     const repoName = mode === "adopt" ? this.selected : this.name;
     if (!repoName) return;
@@ -262,9 +286,20 @@ export class MainKbModal extends Modal {
 
       // Scope first: "create" builds the very first commit from it.
       this.plugin.libraryManifest.setScope(this.kbScope);
-      await this.plugin.setupMainKb(`https://github.com/${org}/${repoName}.git`, "main", mode);
-      new Notice(`Covault: your personal knowledge base is connected to ${org}/${repoName}.`);
+      // Everything that needed asking has been asked. Adopting a knowledge
+      // base pulls its whole history, so the dialog gets out of the way and
+      // the panel shows the task while it runs.
+      const url = `https://github.com/${org}/${repoName}.git`;
       this.close();
+      new Notice(`Covault: connecting to ${org}/${repoName} in the background…`);
+      this.plugin
+        .setupMainKb(url, "main", mode)
+        .then(() => new Notice(`Covault: your personal knowledge base is connected to ${org}/${repoName}.`))
+        .catch((e: Error) => {
+          console.error("[covault] personal KB setup failed:", e);
+          new Notice(`Covault: setup failed — ${e.message}`, 12_000);
+        });
+      return;
     } catch (e) {
       console.error("[covault] personal KB setup failed:", e);
       new Notice(`Covault: setup failed — ${(e as Error).message}`, 10_000);

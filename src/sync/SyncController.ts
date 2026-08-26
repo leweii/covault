@@ -72,6 +72,8 @@ export class SyncController {
    * that is one index and one working tree.
    */
   private inFlight = new Map<string, Promise<void>>();
+  /** When each in-flight round began, so the panel can say how long. */
+  private started = new Map<string, number>();
   /**
    * The pass currently sweeping every repo, if any.
    *
@@ -123,6 +125,27 @@ export class SyncController {
   }
 
   /**
+   * What is syncing right now, for the panel. A long round used to be
+   * invisible: the row's dot said "syncing" but not since when, and a
+   * sweep working through fifteen libraries looked identical to a stuck
+   * one.
+   */
+  activeTasks(): { repoPath: string; label: string; startedAt: number }[] {
+    return [...this.started.entries()]
+      .map(([repoPath, startedAt]) => ({
+        repoPath,
+        label: this.host.repos().find((r) => r.path === repoPath)?.label ?? repoPath,
+        startedAt,
+      }))
+      .sort((a, b) => a.startedAt - b.startedAt);
+  }
+
+  /** True while a full sweep is in progress. */
+  isSweeping(): boolean {
+    return this.pass !== null;
+  }
+
+  /**
    * Sync every configured repo, one after another.
    *
    * Sequential on purpose: fifteen simultaneous clones would thrash the
@@ -162,8 +185,11 @@ export class SyncController {
   private track(repo: SyncItem, trigger: "manual" | "auto"): Promise<void> {
     const round = this.syncOne(repo, trigger).finally(() => {
       this.inFlight.delete(repo.path);
+      this.started.delete(repo.path);
+      this.host.onStateChange(this.states); // the panel's task list shrank
     });
     this.inFlight.set(repo.path, round);
+    this.started.set(repo.path, Date.now());
     return round;
   }
 

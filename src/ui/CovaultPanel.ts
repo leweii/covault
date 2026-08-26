@@ -21,6 +21,8 @@ export const COVAULT_VIEW_TYPE = "covault-panel";
 export class CovaultPanel extends ItemView {
   // History section state — kept on the instance so a re-render (which
   // rebuilds the whole panel on every sync tick) doesn't wipe the view.
+  /** Ticks the age labels while something is syncing; null when idle. */
+  private taskTimer: number | null = null;
   private ghSectionEl: HTMLElement | null = null;
   private ghTitleEl: HTMLElement | null = null;
   private ghListEl: HTMLElement | null = null;
@@ -84,6 +86,8 @@ export class CovaultPanel extends ItemView {
     setIcon(syncBtn, "refresh-cw");
     syncBtn.onclick = () => void this.plugin.sync.syncAll("manual");
 
+    this.renderActiveTasks(scroll);
+
     const conflicts = this.plugin.sync.pendingConflicts();
     if (conflicts.length > 0) {
       const warn = scroll.createDiv("covault-panel-conflict-banner");
@@ -98,6 +102,42 @@ export class CovaultPanel extends ItemView {
     this.renderLibrariesSection(scroll);
     this.renderAskButton(root);
     this.renderHistorySection(root);
+  }
+
+  /**
+   * What is syncing right now. Hidden when nothing is, so it never costs
+   * space; visible the moment something starts, because otherwise a long
+   * round is indistinguishable from a stuck one.
+   */
+  private renderActiveTasks(root: HTMLElement): void {
+    if (this.taskTimer !== null) {
+      window.clearInterval(this.taskTimer);
+      this.taskTimer = null;
+    }
+    const tasks = this.plugin.sync.activeTasks();
+    if (tasks.length === 0) return;
+    const ages: { el: HTMLElement; startedAt: number }[] = [];
+    const box = root.createDiv("covault-panel-tasks");
+    const head = box.createDiv("covault-panel-tasks-head");
+    setIcon(head.createSpan({ cls: "covault-panel-tasks-icon" }), "refresh-cw");
+    head.createSpan({
+      text: this.plugin.sync.isSweeping()
+        ? `Syncing everything · ${tasks.length} in progress`
+        : `Syncing · ${tasks.length} in progress`,
+    });
+    for (const task of tasks) {
+      const row = box.createDiv("covault-panel-task");
+      row.createSpan({ cls: "covault-panel-task-name", text: task.label });
+      const age = row.createSpan({ cls: "covault-panel-task-age", text: describeAge(Date.now() - task.startedAt) });
+      ages.push({ el: age, startedAt: task.startedAt });
+    }
+    // The panel only re-renders when a round starts or ends, so without a
+    // tick a long round would show the age it had when it began — exactly
+    // the case this list exists to make visible. Only the labels change.
+    this.taskTimer = window.setInterval(() => {
+      for (const { el, startedAt } of ages) el.setText(describeAge(Date.now() - startedAt));
+    }, 1000);
+    this.registerInterval(this.taskTimer);
   }
 
   /**
@@ -494,4 +534,10 @@ class SharePickerModal extends FuzzySuggestModal<TAbstractFile> {
     new Notice(`Covault: "${f.path}" will be shared on the next sync (running now).`);
     this.onDone();
   }
+}
+
+/** "12s" / "3m" — enough to tell a slow round from a stuck one. */
+function describeAge(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
