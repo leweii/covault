@@ -10,6 +10,7 @@ import {
   type SettingGroupItem,
 } from "obsidian";
 import { installUrl } from "../auth/constants";
+import { CUSTOM_PROVIDER_ID } from "../llm/models";
 import type CovaultPlugin from "../main";
 import { AddLibraryModal } from "./AddLibraryModal";
 import { MainKbModal } from "./MainKbModal";
@@ -71,6 +72,12 @@ export class CovaultSettingTab extends PluginSettingTab {
         return s.llm.provider;
       case "llmModel":
         return s.llm.model;
+      case "customBaseUrl":
+        return s.customLlm.baseUrl;
+      case "customModel":
+        return s.customLlm.model;
+      case "customVision":
+        return s.customLlm.vision;
       case "announceAgents":
         return s.announceToAgents;
       case "askApprove":
@@ -112,6 +119,15 @@ export class CovaultSettingTab extends PluginSettingTab {
       case "llmModel":
         s.llm.model = String(value);
         break;
+      case "customBaseUrl":
+        s.customLlm.baseUrl = String(value).trim().replace(/\/+$/, "");
+        break;
+      case "customModel":
+        s.customLlm.model = String(value).trim();
+        break;
+      case "customVision":
+        s.customLlm.vision = Boolean(value);
+        break;
       case "announceAgents":
         // Owns its own persistence: writes/removes the adapter files too.
         await this.plugin.setAnnounceToAgents(Boolean(value));
@@ -139,9 +155,16 @@ export class CovaultSettingTab extends PluginSettingTab {
       default:
         return;
     }
+    if (key.startsWith("custom")) {
+      // Rebuild the provider before saving: the selected model id is
+      // derived from these fields.
+      this.plugin.refreshCustomProvider();
+    }
     await this.plugin.saveSettings();
     if (key === "syncAuto" || key === "syncInterval") this.plugin.applySyncSchedule();
-    if (key === "llmProvider") this.update(); // model options depend on it
+    // The provider choice changes which model options exist, and the
+    // custom fields change whether they are shown at all.
+    if (key === "llmProvider" || key.startsWith("custom")) this.update();
   }
 
   /** Ungrouped, above everything: moving a setup between machines is the
@@ -524,11 +547,30 @@ export class CovaultSettingTab extends PluginSettingTab {
         },
         {
           name: "Model",
+          visible: () => this.plugin.settings.llm.provider !== CUSTOM_PROVIDER_ID,
           control: {
             type: "dropdown",
             key: "llmModel",
             options: Object.fromEntries(models.map((m) => [m.id, m.name ?? m.id])),
           },
+        },
+        {
+          name: "Endpoint",
+          aliases: ["custom", "base url", "openai compatible", "local", "ollama", "lm studio", "gateway"],
+          visible: () => this.plugin.settings.llm.provider === CUSTOM_PROVIDER_ID,
+          control: { type: "text", key: "customBaseUrl", placeholder: "https://openrouter.ai/api/v1" },
+        },
+        {
+          name: "Model name",
+          aliases: ["custom model", "model id"],
+          visible: () => this.plugin.settings.llm.provider === CUSTOM_PROVIDER_ID,
+          control: { type: "text", key: "customModel", placeholder: "deepseek/deepseek-v4-flash-vision-exp" },
+        },
+        {
+          name: "This model can read images",
+          aliases: ["vision", "images", "screenshots"],
+          visible: () => this.plugin.settings.llm.provider === CUSTOM_PROVIDER_ID,
+          control: { type: "toggle", key: "customVision" },
         },
         {
           name: "Connected services (MCP)",

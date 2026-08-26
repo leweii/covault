@@ -40,6 +40,18 @@ export interface CovaultSettings {
   /** GitHub App connections (secret — carry backend session ids). */
   githubApp: { connections: GitHubAppConnection[] };
 
+  /** An OpenAI-compatible endpoint the user runs or pays for themselves —
+   *  a local server, a gateway, or a model pi-ai's registry doesn't carry.
+   *  Its key lives in llmKeys under "custom", like any other provider. */
+  customLlm: {
+    /** Base URL, e.g. https://openrouter.ai/api/v1 or http://localhost:1234/v1. */
+    baseUrl: string;
+    /** Model id exactly as that endpoint names it. */
+    model: string;
+    /** Whether the model accepts images; pi-ai drops them silently if not. */
+    vision: boolean;
+  };
+
   /** Selected LLM provider/model (pi-ai provider id + model id), plus
    *  user-authored rules appended to the conflict-merge system prompt. */
   llm: { provider: string; model: string };
@@ -83,6 +95,7 @@ export const DEFAULT_SETTINGS: CovaultSettings = {
   githubToken: "",
   deviceId: "",
   githubApp: { connections: [] },
+  customLlm: { baseUrl: "", model: "", vision: false },
   llm: { provider: "anthropic", model: "" },
   llmKeys: {},
   sync: { auto: true, intervalMinutes: 10 },

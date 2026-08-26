@@ -41,7 +41,7 @@ import {
   settingsHaveInlineSecrets,
   writeSecrets,
 } from "./config/secretStore";
-import { buildModels } from "./llm/models";
+import { buildModels, customProvider, CUSTOM_PROVIDER_ID } from "./llm/models";
 import { CovaultSettingTab } from "./ui/SettingsTab";
 
 export default class CovaultPlugin extends Plugin {
@@ -72,6 +72,7 @@ export default class CovaultPlugin extends Plugin {
       },
       listKeyedProviders: () => Object.keys(this.settings.llmKeys),
     });
+    this.refreshCustomProvider();
 
     // The plugin itself is the host: AppAuth reads settings through the
     // live reference, so a future loadSettings() swap stays visible.
@@ -109,7 +110,7 @@ export default class CovaultPlugin extends Plugin {
     this.resolver = new ConflictResolver({
       models: this.models,
       getSelection: () => this.settings.llm,
-      hasKey: (provider) => !!this.settings.llmKeys[provider],
+      hasKey: (provider) => this.hasModelAccess(provider),
     });
 
     // Probed lazily on the first question, then cached: the agent is told
@@ -128,7 +129,7 @@ export default class CovaultPlugin extends Plugin {
     this.describer = new LibraryDescriber({
       models: this.models,
       getSelection: () => this.settings.llm,
-      hasKey: (provider) => !!this.settings.llmKeys[provider],
+      hasKey: (provider) => this.hasModelAccess(provider),
     });
 
     this.sync = new SyncController(
@@ -533,6 +534,35 @@ export default class CovaultPlugin extends Plugin {
   /** Register an existing shared library and start syncing it. The
    *  branch recorded is the remote's actual default — pinning "main"
    *  onto a master-era repo would leave nothing to clone. */
+  /**
+   * Is the selected provider usable? Every hosted provider needs a key;
+   * a custom endpoint may legitimately have none (a local server), so
+   * there it is the URL and model that have to be filled in.
+   */
+  hasModelAccess(provider: string): boolean {
+    if (provider === CUSTOM_PROVIDER_ID) {
+      const { baseUrl, model } = this.settings.customLlm;
+      return baseUrl.length > 0 && model.length > 0;
+    }
+    return !!this.settings.llmKeys[provider];
+  }
+
+  /**
+   * (Re)register the user's own OpenAI-compatible endpoint.
+   *
+   * Always registered, even while empty, so "Custom" can be picked from
+   * the provider list at all — a provider that only appears once it is
+   * configured cannot be configured. setProvider replaces in place, so
+   * this is also how an edited URL or model id takes effect.
+   */
+  refreshCustomProvider(): void {
+    this.models.setProvider(customProvider(this.settings.customLlm));
+    if (this.settings.llm.provider === CUSTOM_PROVIDER_ID) {
+      // Keep the selection pointing at whatever was just typed.
+      this.settings.llm.model = this.settings.customLlm.model;
+    }
+  }
+
   /** Whether GitHub access is set up at all — see isSignedIn(settings). */
   isSignedIn(): boolean {
     return isSignedIn(this.settings);
@@ -704,7 +734,7 @@ export default class CovaultPlugin extends Plugin {
     return new AskEngine({
       models: this.models,
       getSelection: () => this.settings.llm,
-      hasKey: (provider) => !!this.settings.llmKeys[provider],
+      hasKey: (provider) => this.hasModelAccess(provider),
       // Assembled fresh per question: the toggles and MCP config are live.
       requireApproval: () => this.settings.ask.requireApproval,
       tools: async () => {
