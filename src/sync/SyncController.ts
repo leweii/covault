@@ -125,6 +125,32 @@ export class SyncController {
    * already in flight cannot be called back, but the pass must not wait on
    * it forever.
    */
+  /**
+   * Sync one repo on its own, for the per-row button in the panel.
+   *
+   * Shares the pass guard: git work here is not isolated from a full pass
+   * (same working tree, same manifest), so overlapping the two would have
+   * them fighting. `path` is the SyncItem key — "" is the personal repo.
+   */
+  async syncJust(repoPath: string): Promise<void> {
+    if (this.running) {
+      this.log?.op("pass", "single sync skipped — a sync is already running", { repoPath });
+      new Notice("Covault: a sync is already running — try again once it finishes.");
+      return;
+    }
+    const repo = this.host.repos().find((r) => r.path === repoPath);
+    if (!repo) return;
+    this.running = true;
+    const done = this.log?.opTime("pass", "single sync", { repo: repo.label ?? repo.path });
+    try {
+      await this.syncOne(repo, "manual");
+    } finally {
+      done?.();
+      this.running = false;
+      this.host.onSyncPass?.();
+    }
+  }
+
   private async syncOne(repo: SyncItem, trigger: "manual" | "auto"): Promise<void> {
     const ref = this.toRef(repo);
     const name = repo.label ?? repo.path;

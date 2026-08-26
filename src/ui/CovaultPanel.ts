@@ -77,18 +77,22 @@ export class CovaultPanel extends ItemView {
     // ── Header ────────────────────────────────────────────────
     const header = scroll.createDiv("covault-panel-header");
     header.createSpan({ cls: "covault-panel-title", text: "Covault" });
-    const askBtn = header.createEl("button", {
-      cls: "covault-panel-icon-btn",
-      attr: { "aria-label": "Ask your knowledge base" },
-    });
-    setIcon(askBtn, "message-circle-question");
-    askBtn.onclick = () => void this.plugin.activateAskView();
     const syncBtn = header.createEl("button", {
       cls: "covault-panel-icon-btn",
       attr: { "aria-label": "Sync now" },
     });
     setIcon(syncBtn, "refresh-cw");
     syncBtn.onclick = () => void this.plugin.sync.syncAll("manual");
+
+    // Asking is the main thing this panel is for, so it gets a row of its
+    // own rather than competing with the icons in the header.
+    const ask = scroll.createEl("button", {
+      cls: "covault-panel-ask",
+      attr: { "aria-label": "Ask your knowledge base" },
+    });
+    setIcon(ask.createSpan({ cls: "covault-panel-ask-icon" }), "message-circle-question");
+    ask.createSpan({ text: "Ask your knowledge base" });
+    ask.onclick = () => void this.plugin.activateAskView();
 
     const conflicts = this.plugin.sync.pendingConflicts();
     if (conflicts.length > 0) {
@@ -302,6 +306,9 @@ export class CovaultPanel extends ItemView {
     if (this.plugin.mainKbScope() === "vault") {
       addBtn.disabled = true;
       addBtn.setAttribute("aria-label", "Everything is backed up already");
+      // Nothing to pick, so nothing else would offer a way to sync just
+      // this repo — the row is the only place for it.
+      this.addSyncButton(head, "", "Sync my knowledge base now");
       const libs = this.plugin.libraryManifest.load().repos.length;
       section.createDiv({
         cls: "covault-panel-empty",
@@ -341,6 +348,28 @@ export class CovaultPanel extends ItemView {
   }
 
   // ── Section 2: team libraries ──────────────────────────────
+  /**
+   * Sync just this repo. Disabled while any sync runs — a single sync
+   * shares the pass guard, so offering it then would only be refused.
+   */
+  private addSyncButton(row: HTMLElement, repoPath: string, label: string): void {
+    const btn = row.createEl("button", { cls: "covault-panel-icon-btn", attr: { "aria-label": label } });
+    setIcon(btn, "refresh-cw");
+    if (this.plugin.sync.state(repoPath).phase === "syncing") {
+      btn.addClass("is-syncing");
+      btn.disabled = true;
+    }
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      btn.disabled = true;
+      try {
+        await this.plugin.sync.syncJust(repoPath);
+      } finally {
+        this.render();
+      }
+    };
+  }
+
   private renderLibrariesSection(root: HTMLElement): void {
     const section = root.createDiv("covault-panel-section");
     const head = section.createDiv("covault-panel-section-head");
@@ -375,6 +404,8 @@ export class CovaultPanel extends ItemView {
 
       const name = row.createSpan({ cls: "covault-panel-row-name", text: repo.path });
       name.setAttribute("title", `${repo.url} (${repo.branch})`);
+
+      this.addSyncButton(row, repo.path, `Sync ${repo.path} now`);
 
       if (state.phase === "conflict") {
         const fix = row.createEl("button", { cls: "covault-panel-icon-btn conflict", attr: { "aria-label": "Resolve conflicts" } });
