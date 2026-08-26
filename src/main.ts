@@ -1105,14 +1105,26 @@ export default class CovaultPlugin extends Plugin {
 
   private renderStatusBar(states: ReadonlyMap<string, RepoState>): void {
     const all = [...states.values()];
-    const text = all.some((s) => s.phase === "syncing")
-      ? "Covault: syncing…"
-      : all.some((s) => s.phase === "conflict")
-        ? "Covault: needs attention"
-        : all.some((s) => s.phase === "error")
-          ? "Covault: sync issue"
-          : "Covault: up to date";
+    // Tasks, not just phases: setting up a knowledge base and adopting a
+    // library run outside the phase machinery, and the status bar used to
+    // read "up to date" through the whole of one.
+    const tasks = this.sync.activeTasks();
+    const text = tasks.length > 0
+      ? tasks.length === 1
+        ? `Covault: ${tasks[0]!.label}…`
+        : `Covault: syncing ${tasks.length}…`
+      : all.some((s) => s.phase === "syncing")
+        ? "Covault: syncing…"
+        : all.some((s) => s.phase === "conflict")
+          ? "Covault: needs attention"
+          : all.some((s) => s.phase === "error")
+            ? "Covault: sync issue"
+            : "Covault: up to date";
     this.statusBarEl.setText(text);
+    this.statusBarEl.setAttribute(
+      "aria-label",
+      tasks.length > 0 ? tasks.map((t) => t.label).join(", ") : "Covault — click to sync",
+    );
   }
 
   /** Vault location on disk — the key for the per-device secret file. */
