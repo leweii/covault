@@ -872,6 +872,19 @@ export default class CovaultPlugin extends Plugin {
     await this.shareFolder(folderPath, repo.url);
   }
 
+  /**
+   * The other library this folder is still linked to, if any.
+   *
+   * Cheap and local (it reads the folder's git config), so a caller can
+   * ask before starting the network work rather than discovering it by
+   * catching FolderLinkedError halfway through.
+   */
+  async conflictingOrigin(folderPath: string, url: string): Promise<string | null> {
+    const dir = path.join(this.vaultBasePath(), folderPath);
+    const origin = await this.engine.existingOrigin({ dir, url, branch: "main" });
+    return origin && !sameRemote(origin, url) ? origin : null;
+  }
+
   /** Bind a folder to an already-existing library repo: the library's
    *  content wins (local versions of overlapping notes are kept aside),
    *  then keep it synced. The remote's own default branch is followed;
