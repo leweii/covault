@@ -4,7 +4,7 @@ import * as path from "path";
 import type { MutableModels } from "@earendil-works/pi-ai";
 import { DEFAULT_SETTINGS, isSignedIn, type CovaultSettings } from "./settings";
 import { GitEngine } from "./git/GitEngine";
-import { createObsidianHttp } from "./git/http";
+import { createNodeHttp } from "./git/nodeHttp";
 import { DebugLog } from "./debug/logger";
 import { SyncController, type RepoState, type SyncItem } from "./sync/SyncController";
 import { AppAuth } from "./auth/AppAuth";
@@ -102,7 +102,7 @@ export default class CovaultPlugin extends Plugin {
     // AppAuth delegates per-call: GitHub App when connected, PAT otherwise.
     this.engine = new GitEngine({
       fs,
-      http: createObsidianHttp(this.debugLog),
+      http: createNodeHttp(this.debugLog),
       tokens: this.appAuth,
       author: () => this.gitAuthor(),
       configDir: () => this.app.vault.configDir,

@@ -1,8 +1,9 @@
 /**
  * Integration test: the full silent-sync flow (clone → edit → push → pull →
  * diverge → merge → conflict) against a real git smart-HTTP remote served
- * by `git http-backend` (see gitHttpServer.ts). Uses isomorphic-git's node
- * http client where the plugin uses the requestUrl one.
+ * by `git http-backend` (see gitHttpServer.ts). Runs against Covault's own
+ * Node transport — the same client the plugin uses — so the streaming and
+ * idle-timeout code is exercised here rather than only in production.
  */
 import { execFileSync } from "child_process";
 import * as fs from "fs";
@@ -10,7 +11,7 @@ import * as os from "os";
 import * as path from "path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 // eslint-disable-next-line import/no-internal-modules
-import nodeHttp from "isomorphic-git/http/node";
+import { createNodeHttp } from "../src/git/nodeHttp";
 import { GitEngine, type RepoRef } from "../src/git/GitEngine";
 import { PatTokenProvider } from "../src/auth/TokenProvider";
 import { startGitServer, type GitServer } from "./gitHttpServer";
@@ -27,7 +28,7 @@ const msg = (changes: { filepath: string }[]) => `Update ${changes.length} file(
 function makeEngine(name: string): GitEngine {
   return new GitEngine({
     fs,
-    http: nodeHttp,
+    http: createNodeHttp(),
     tokens: new PatTokenProvider(() => ""),
     author: () => ({ name, email: `${name}@test.local` }),
     configDir: () => ".obsidian",

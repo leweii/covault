@@ -72,6 +72,17 @@ export class SyncController {
    * that is one index and one working tree.
    */
   private inFlight = new Map<string, Promise<void>>();
+  /**
+   * The pass currently sweeping every repo, if any.
+   *
+   * Passes exclude each other even though individual repos no longer do.
+   * Letting an auto sweep, a manual sweep and the row buttons all overlap
+   * put seven fetches on the wire at once, and since they share one
+   * connection each got slower — median fetch went 16s → 60s and the
+   * slowest crossed the request ceiling. One sweep, plus whatever the user
+   * asks for by hand, is the useful amount of concurrency.
+   */
+  private pass: Promise<void> | null = null;
 
   constructor(
     private engine: GitEngine,
@@ -120,6 +131,17 @@ export class SyncController {
    * running is the round this pass would have given it.
    */
   async syncAll(trigger: "manual" | "auto"): Promise<void> {
+    if (this.pass) {
+      this.log?.op("pass", "sweep skipped — one is already running", { trigger });
+      return this.pass;
+    }
+    this.pass = this.runPass(trigger).finally(() => {
+      this.pass = null;
+    });
+    return this.pass;
+  }
+
+  private async runPass(trigger: "manual" | "auto"): Promise<void> {
     const repos = this.host.repos();
     const done = this.log?.opTime("pass", "sync pass", { trigger, repos: repos.length });
     try {

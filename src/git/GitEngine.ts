@@ -3,8 +3,8 @@
  * synced repo; each call takes a RepoRef naming the repo it operates on.
  *
  * fs/http are injected: the plugin passes Node's fs (desktop-only) and the
- * requestUrl-based client; tests pass the same fs plus isomorphic-git's
- * node http client against a local git server.
+ * streaming Node transport; the integration test passes the same pair
+ * against a local git http-backend.
  */
 import * as git from "isomorphic-git";
 import type { HttpClient } from "isomorphic-git";
@@ -161,10 +161,9 @@ export class GitEngine {
   }
 
   /**
-   * Shallow: requestUrl buffers the whole packfile in memory (see
-   * http.ts), so a full-history clone of a large or old repo can fail
-   * outright. This keeps enough history for fileLog's default view
-   * without downloading everything; later fetches still grow it.
+   * Shallow: full history of a large or old repo is a long download for
+   * history nobody asked for. This keeps enough for fileLog's default view
+   * without fetching everything; later fetches still grow it.
    */
   private static readonly CLONE_DEPTH = 50;
 
@@ -508,9 +507,28 @@ export class GitEngine {
     await git.fetch({ ...this.common(ref), remote: "origin", ref: ref.branch, singleBranch: true });
     fetched?.();
 
-    const local = await this.resolve(ref, `refs/heads/${ref.branch}`);
+    let local = await this.resolve(ref, `refs/heads/${ref.branch}`);
     const remote = await this.resolve(ref, `refs/remotes/origin/${ref.branch}`);
-    if (!local) throw new Error(`Local branch ${ref.branch} missing in ${ref.dir}`);
+    if (!local) {
+      // A clone interrupted between init and checkout leaves a repo with
+      // no local branch. It used to fail here on every pass forever; the
+      // fetch above has the commits, so finish what was started.
+      if (!remote) throw new Error(`Local branch ${ref.branch} missing in ${ref.dir}`);
+      log?.op("repair", `${ref.dir} — completing an interrupted clone`, { branch: ref.branch });
+      await git.writeRef({ fs, dir: ref.dir, gitdir: ref.gitdir, ref: `refs/heads/${ref.branch}`, value: remote });
+      await git.writeRef({
+        fs,
+        dir: ref.dir,
+        gitdir: ref.gitdir,
+        ref: "HEAD",
+        value: `refs/heads/${ref.branch}`,
+        symbolic: true,
+        force: true,
+      });
+      await git.checkout({ fs, dir: ref.dir, gitdir: ref.gitdir, ref: ref.branch, force: true });
+      local = remote;
+      result.pulled = true;
+    }
 
     if (remote === local) return result; // in step, nothing new either way
 
