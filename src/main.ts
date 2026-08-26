@@ -903,6 +903,10 @@ export default class CovaultPlugin extends Plugin {
    *  then keep it synced. The remote's own default branch is followed;
    *  a repo with no branches at all gets seeded from the folder. */
   async attachExistingLibrary(folderPath: string, url: string, branch: string): Promise<void> {
+    return this.sync.runExclusive(folderPath, folderPath, () => this.bindLibrary(folderPath, url, branch));
+  }
+
+  private async bindLibrary(folderPath: string, url: string, branch: string): Promise<void> {
     const dir = path.join(this.vaultBasePath(), folderPath);
     // Never take over a folder that already belongs to somewhere else —
     // adoptRemote would repoint its origin and overwrite its content.
@@ -942,7 +946,13 @@ export default class CovaultPlugin extends Plugin {
    * path can produce a merge conflict, which matters because setup often
    * happens before an AI provider is configured.
    */
+  /** Registered as a task so the panel shows it and no sync round starts
+   *  on the personal repo underneath it. */
   async setupMainKb(url: string, branch: string, mode: "create" | "adopt"): Promise<void> {
+    return this.sync.runExclusive("", "Personal knowledge base", () => this.buildMainKb(url, branch, mode));
+  }
+
+  private async buildMainKb(url: string, branch: string, mode: "create" | "adopt"): Promise<void> {
     const gitdir = this.mainGitDir();
     // A previous failed attempt may have left a half-built repo; it holds
     // nothing anyone depends on (mainRepo was never saved), so restart clean.

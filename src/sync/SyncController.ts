@@ -72,8 +72,9 @@ export class SyncController {
    * that is one index and one working tree.
    */
   private inFlight = new Map<string, Promise<void>>();
-  /** When each in-flight round began, so the panel can say how long. */
-  private started = new Map<string, number>();
+  /** What each in-flight round is and when it began, so the panel can name
+   *  it. Holds setup work too, not just sync rounds. */
+  private started = new Map<string, { at: number; label: string }>();
   /**
    * The pass currently sweeping every repo, if any.
    *
@@ -132,12 +133,42 @@ export class SyncController {
    */
   activeTasks(): { repoPath: string; label: string; startedAt: number }[] {
     return [...this.started.entries()]
-      .map(([repoPath, startedAt]) => ({
-        repoPath,
-        label: this.host.repos().find((r) => r.path === repoPath)?.label ?? repoPath,
-        startedAt,
-      }))
+      .map(([repoPath, { at, label }]) => ({ repoPath, label, startedAt: at }))
       .sort((a, b) => a.startedAt - b.startedAt);
+  }
+
+  /**
+   * Run non-sync work that owns a repo — setting up the personal knowledge
+   * base, adopting a library's contents — under the same per-repo lock and
+   * in the same task list.
+   *
+   * Both were invisible before: they go through the engine directly, so
+   * the panel showed nothing while they ran, and nothing stopped a sync
+   * round starting on the same repo underneath them.
+   */
+  async runExclusive<T>(repoPath: string, label: string, work: () => Promise<T>): Promise<T> {
+    if (this.inFlight.has(repoPath)) {
+      throw new Error(`"${label}" is already busy — wait for it to finish.`);
+    }
+    const done = this.log?.opTime("task", label, { repo: repoPath });
+    const round = work();
+    this.inFlight.set(
+      repoPath,
+      round.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    this.started.set(repoPath, { at: Date.now(), label });
+    this.host.onStateChange(this.states);
+    try {
+      return await round;
+    } finally {
+      this.inFlight.delete(repoPath);
+      this.started.delete(repoPath);
+      done?.();
+      this.host.onStateChange(this.states);
+    }
   }
 
   /** True while a full sweep is in progress. */
@@ -189,7 +220,7 @@ export class SyncController {
       this.host.onStateChange(this.states); // the panel's task list shrank
     });
     this.inFlight.set(repo.path, round);
-    this.started.set(repo.path, Date.now());
+    this.started.set(repo.path, { at: Date.now(), label: repo.label ?? repo.path });
     return round;
   }
 

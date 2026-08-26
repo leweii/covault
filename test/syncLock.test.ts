@@ -155,3 +155,57 @@ describe("what the panel can see", () => {
     expect(sync.isSweeping()).toBe(false);
   });
 })
+
+/**
+ * Setting up the personal knowledge base and adopting a library's contents
+ * go through the engine directly, not through a sync round. They used to
+ * be invisible in the panel and unprotected: a sweep could start on the
+ * same repo while one was running.
+ */
+describe("non-sync work holds the same lock", () => {
+  it("appears in the task list under its own label", async () => {
+    const { engine } = pausableEngine();
+    const sync = controller(engine, items("lib-a"));
+    let release!: () => void;
+    const task = sync.runExclusive("", "Personal knowledge base", () => new Promise<void>((r) => (release = r)));
+    expect(sync.activeTasks().map((t) => t.label)).toEqual(["Personal knowledge base"]);
+    release();
+    await task;
+    expect(sync.activeTasks()).toEqual([]);
+  });
+
+  it("keeps a sweep off the repo it owns", async () => {
+    const { engine, started, releaseAll } = pausableEngine();
+    const sync = controller(engine, items("lib-a", "lib-b"));
+    let release!: () => void;
+    const task = sync.runExclusive("lib-a", "lib-a", () => new Promise<void>((r) => (release = r)));
+    const pass = sync.syncAll("auto");
+    await vi.waitFor(() => expect(started).toContain("/vault/lib-b"));
+    expect(started.filter((s) => s.endsWith("lib-a"))).toHaveLength(0);
+    release();
+    releaseAll();
+    await Promise.all([task, pass]);
+  });
+
+  it("refuses to start twice on the same repo", async () => {
+    const { engine } = pausableEngine();
+    const sync = controller(engine, items("lib-a"));
+    let release!: () => void;
+    const first = sync.runExclusive("lib-a", "lib-a", () => new Promise<void>((r) => (release = r)));
+    await expect(sync.runExclusive("lib-a", "lib-a", async () => {})).rejects.toThrow(/already busy/);
+    release();
+    await first;
+  });
+
+  it("releases the lock when the work throws, and passes the error on", async () => {
+    const { engine } = pausableEngine();
+    const sync = controller(engine, items("lib-a"));
+    await expect(
+      sync.runExclusive("lib-a", "lib-a", async () => {
+        throw new Error("adopt failed");
+      }),
+    ).rejects.toThrow("adopt failed");
+    expect(sync.isSyncing("lib-a")).toBe(false);
+    expect(sync.activeTasks()).toEqual([]);
+  });
+})
