@@ -1171,8 +1171,14 @@
 .covault-panel-section-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 2px;
   padding: 2px 4px 6px;
+}
+
+/* The title absorbs the slack, so two buttons in a head sit together
+   instead of being pushed to opposite ends by space-between. */
+.covault-panel-section-head .covault-panel-section-title {
+  flex: 1;
 }
 
 .covault-panel-section-title {
