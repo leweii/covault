@@ -11,6 +11,7 @@ import { AppAuth } from "./auth/AppAuth";
 import { PROTOCOL_ACTION } from "./auth/constants";
 import { ManifestStore, type MainKbScope, type ManifestRepo } from "./covault/manifest";
 import { ensureIgnored } from "./covault/gitignore";
+import { ownerKeyForPath } from "./covault/ownership";
 import { sameRemote } from "./git/urls";
 import { FolderLinkedError } from "./covault/errors";
 import { writeKnowledgeSkill, SKILL_RELPATH } from "./covault/skill";
@@ -439,12 +440,13 @@ export default class CovaultPlugin extends Plugin {
   /** Which synced repo (library or main KB) owns this vault path? */
   repoItemForPath(vaultPath: string): SyncItem | null {
     const items = this.syncItems();
-    for (const item of items) {
-      if (item.path && (vaultPath === item.path || vaultPath.startsWith(`${item.path}/`))) return item;
-    }
-    const main = items.find((i) => i.path === "");
-    if (main && this.isSharedToMainKb(vaultPath)) return main;
-    return null;
+    const key = ownerKeyForPath(vaultPath, {
+      libraries: items.filter((i) => i.path).map((i) => i.path),
+      hasPersonal: items.some((i) => i.path === ""),
+      scope: this.mainKbScope(),
+      include: this.libraryManifest.load().include,
+    });
+    return key === null ? null : (items.find((i) => i.path === key) ?? null);
   }
 
   /** Open the resolver UI for the first repo with pending conflicts. */
