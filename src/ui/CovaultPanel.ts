@@ -348,14 +348,12 @@ export class CovaultPanel extends ItemView {
   }
 
   // ── Section 2: team libraries ──────────────────────────────
-  /**
-   * Sync just this repo. Disabled while any sync runs — a single sync
-   * shares the pass guard, so offering it then would only be refused.
-   */
+  /** Sync just this repo. Disabled only while *this* repo is syncing;
+   *  another library's sync is no reason to refuse. */
   private addSyncButton(row: HTMLElement, repoPath: string, label: string): void {
     const btn = row.createEl("button", { cls: "covault-panel-icon-btn", attr: { "aria-label": label } });
     setIcon(btn, "refresh-cw");
-    if (this.plugin.sync.state(repoPath).phase === "syncing") {
+    if (this.plugin.sync.isSyncing(repoPath)) {
       btn.addClass("is-syncing");
       btn.disabled = true;
     }

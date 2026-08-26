@@ -14,9 +14,9 @@ import { applyResolutions, extractHunks, getContextLines, parseConflict, type Hu
 
 /**
  * Last line of defence for one repo. The HTTP layer caps each request, but
- * a round is many requests plus local work, and a pass that never ends
- * silently swallows every later trigger (they see `running` and skip). A
- * repo that outruns this is reported and the pass moves on.
+ * a round is many requests plus local work, and a round that never ends
+ * holds its repo's lock forever — every later sync of it would be handed
+ * that same dead promise. A repo that outruns this is reported and let go.
  */
 const REPO_TIMEOUT_MS = 10 * 60_000;
 
@@ -62,7 +62,16 @@ export interface PendingConflict {
 export class SyncController {
   private states = new Map<string, RepoState>();
   private pending = new Map<string, PendingConflict>();
-  private running = false;
+  /**
+   * One entry per repo currently syncing, keyed by its SyncItem path.
+   *
+   * Per repo rather than one global lock: two libraries are separate
+   * working trees with separate git directories, so nothing is shared and
+   * making one wait for the other only made the panel's per-row button
+   * refuse to work. What must not overlap is the same repo with itself —
+   * that is one index and one working tree.
+   */
+  private inFlight = new Map<string, Promise<void>>();
 
   constructor(
     private engine: GitEngine,
@@ -97,27 +106,43 @@ export class SyncController {
     };
   }
 
-  /** Sync every configured library. Serialized; a second call while one
-   *  is running is a no-op (the running pass already covers it). */
+  /** True while this repo is mid-sync — what the panel disables on. */
+  isSyncing(repoPath: string): boolean {
+    return this.inFlight.has(repoPath);
+  }
+
+  /**
+   * Sync every configured repo, one after another.
+   *
+   * Sequential on purpose: fifteen simultaneous clones would thrash the
+   * disk and the network for no gain on a background pass. A repo already
+   * syncing on its own is skipped rather than queued — the round it is
+   * running is the round this pass would have given it.
+   */
   async syncAll(trigger: "manual" | "auto"): Promise<void> {
-    if (this.running) {
-      // Worth logging: a pass that overruns the auto interval silently
-      // swallows later triggers, which reads to the user as "stuck".
-      this.log?.op("pass", "skipped — a sync is already running", { trigger });
-      return;
-    }
-    this.running = true;
     const repos = this.host.repos();
     const done = this.log?.opTime("pass", "sync pass", { trigger, repos: repos.length });
     try {
       for (const repo of repos) {
-        await this.syncOne(repo, trigger);
+        if (this.inFlight.has(repo.path)) {
+          this.log?.op("pass", `skipped ${repo.label ?? repo.path} — already syncing`, { trigger });
+          continue;
+        }
+        await this.track(repo, trigger);
       }
     } finally {
       done?.();
-      this.running = false;
       this.host.onSyncPass?.();
     }
+  }
+
+  /** Register a repo as in flight for the duration of its round. */
+  private track(repo: SyncItem, trigger: "manual" | "auto"): Promise<void> {
+    const round = this.syncOne(repo, trigger).finally(() => {
+      this.inFlight.delete(repo.path);
+    });
+    this.inFlight.set(repo.path, round);
+    return round;
   }
 
   /**
@@ -126,27 +151,21 @@ export class SyncController {
    * it forever.
    */
   /**
-   * Sync one repo on its own, for the per-row button in the panel.
-   *
-   * Shares the pass guard: git work here is not isolated from a full pass
-   * (same working tree, same manifest), so overlapping the two would have
-   * them fighting. `path` is the SyncItem key — "" is the personal repo.
+   * Sync one repo on its own, for the per-row button in the panel. Runs
+   * alongside a pass or another repo; only the same repo twice is refused,
+   * and then by awaiting the round already going rather than starting a
+   * second one. `path` is the SyncItem key — "" is the personal repo.
    */
   async syncJust(repoPath: string): Promise<void> {
-    if (this.running) {
-      this.log?.op("pass", "single sync skipped — a sync is already running", { repoPath });
-      new Notice("Covault: a sync is already running — try again once it finishes.");
-      return;
-    }
+    const already = this.inFlight.get(repoPath);
+    if (already) return already;
     const repo = this.host.repos().find((r) => r.path === repoPath);
     if (!repo) return;
-    this.running = true;
     const done = this.log?.opTime("pass", "single sync", { repo: repo.label ?? repo.path });
     try {
-      await this.syncOne(repo, "manual");
+      await this.track(repo, "manual");
     } finally {
       done?.();
-      this.running = false;
       this.host.onSyncPass?.();
     }
   }
