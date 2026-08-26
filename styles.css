@@ -1483,11 +1483,13 @@
   margin: 0 0 8px;
 }
 
-/* Both tabs render one control row + one status line, and the body's
-   fixed height keeps the dialog from resizing on switch. The scope row
-   and the action button live in the footer, identical in both tabs. */
+/* The two tabs render the same shape — an optional organization row, one
+   control row, one status line — so a min-height keeps the dialog from
+   jumping on switch without capping it: a fixed height overlapped its own
+   rows the moment the organization picker appeared. The scope row and the
+   action button live in the footer, identical in both tabs. */
 .covault-setup-body {
-  height: 72px;
+  min-height: 72px;
   display: flex;
   flex-direction: column;
 }
