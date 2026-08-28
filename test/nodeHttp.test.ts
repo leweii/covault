@@ -71,6 +71,31 @@ describe("createNodeHttp", () => {
     expect(seen).toBe("0009done\n");
   });
 
+  /**
+   * The push-timeout regression: a large request body (a packfile, an LFS
+   * upload) used to be written whole, so the "no response" watchdog fired
+   * mid-upload — a slow uplink read as a dead server. Draining chunks are
+   * progress; a server sipping the body far past the idle window must not
+   * kill the request.
+   */
+  it("keeps a slow-draining upload alive past the idle window", async () => {
+    const url = await serve((req, res) => {
+      let received = 0;
+      req.on("data", (c: Buffer) => {
+        received += c.length;
+        // Sip: pause after every read so the client's socket backs up and
+        // its progress comes from drain events, not one buffered write.
+        req.pause();
+        setTimeout(() => req.resume(), IDLE / 4);
+      });
+      req.on("end", () => res.end(String(received)));
+    });
+    const client = createNodeHttp(undefined, IDLE);
+    const body = Buffer.alloc(8 * 1024 * 1024, 7); // >> socket buffers
+    const res = await client.request({ url, method: "POST", body: [body] });
+    expect(await drain(res.body as AsyncIterableIterator<Uint8Array>)).toBe(String(body.byteLength));
+  }, 30_000);
+
   it("gives up when a response never starts", async () => {
     const url = await serve(() => {
       /* accept the request, answer nothing */
