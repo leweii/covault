@@ -189,6 +189,52 @@ export class SyncController {
   }
 
   /**
+   * Convert every repo's already-tracked attachments to LFS pointers (see
+   * GitEngine.migrateAttachments), then push each through a normal sync
+   * round so merging and uploading follow the usual path. Busy and
+   * conflicted repos are skipped, not queued — rerunning the command later
+   * picks them up.
+   */
+  async migrateAttachments(): Promise<{ files: number; repos: number; skipped: string[] }> {
+    let files = 0;
+    let repos = 0;
+    const skipped: string[] = [];
+    for (const repo of this.host.repos()) {
+      const name = repo.label ?? repo.path;
+      if (this.inFlight.has(repo.path) || this.state(repo.path).phase === "conflict") {
+        skipped.push(name);
+        continue;
+      }
+      const ref = this.toRef(repo);
+      if (!(await this.engine.isRepo(ref))) continue;
+      try {
+        const converted = await this.runExclusive(repo.path, `Moving attachments in ${name}`, async () => {
+          const n = await this.engine.migrateAttachments(ref);
+          if (n > 0) {
+            await this.engine.syncToRemote(ref, {
+              commitMessage: describeChanges,
+              exclude: repo.exclude,
+              include: repo.include,
+            });
+          }
+          return n;
+        });
+        if (converted > 0) {
+          files += converted;
+          repos++;
+          this.setState(repo.path, { phase: "idle", lastSyncedAt: Date.now() });
+        }
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        this.setState(repo.path, { phase: "error", detail: message });
+        this.log?.op("repo", `${name} — attachment migration failed`, { error: e });
+        skipped.push(name);
+      }
+    }
+    return { files, repos, skipped };
+  }
+
+  /**
    * Sync every configured repo, one after another.
    *
    * Sequential on purpose: fifteen simultaneous clones would thrash the

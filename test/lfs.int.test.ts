@@ -139,6 +139,47 @@ describe("attachments ride Git LFS", () => {
     expect(remoteFile("picture.png")).toContain(POINTER_PREFIX);
   });
 
+  it("migrates attachments an older version committed as raw blobs", async () => {
+    // Seed through system git — exactly what pre-LFS Covault pushed.
+    const bareLegacy = path.join(root, "legacy.git");
+    execFileSync("git", ["init", "--bare", "-b", "main", bareLegacy]);
+    execFileSync("git", ["config", "http.receivepack", "true"], { cwd: bareLegacy });
+    const seed = path.join(root, "legacy-seed");
+    execFileSync("git", ["clone", bareLegacy, seed]);
+    const legacyBytes = crypto.randomBytes(2500);
+    fs.writeFileSync(path.join(seed, "note.md"), "# note\n");
+    fs.writeFileSync(path.join(seed, "old-scan.jpg"), legacyBytes);
+    execFileSync("git", ["add", "."], { cwd: seed });
+    execFileSync("git", ["-c", "user.name=s", "-c", "user.email=s@test.local", "commit", "-m", "raw era"], {
+      cwd: seed,
+    });
+    execFileSync("git", ["push", "origin", "main"], { cwd: seed });
+
+    const ref: RepoRef = { dir: path.join(root, "clientA-legacy"), url: `${server.url}/legacy.git`, branch: "main" };
+    await engineA.clone(ref); // the raw blob checks out as-is, nothing to smudge
+    expect(fs.readFileSync(path.join(ref.dir, "old-scan.jpg")).equals(legacyBytes)).toBe(true);
+
+    expect(await engineA.migrateAttachments(ref)).toBe(1);
+    const pushed = await engineA.syncToRemote(ref, { commitMessage: msg });
+    expect(pushed.pushed).toBe(true);
+
+    // The tip now holds a pointer, the bytes moved to the LFS store, and
+    // the working tree never noticed.
+    const pointer = execFileSync("git", ["cat-file", "-p", "main:old-scan.jpg"], { cwd: bareLegacy }).toString("utf8");
+    expect(pointer).toContain(POINTER_PREFIX);
+    const oid = /oid sha256:([0-9a-f]{64})/.exec(pointer)?.[1];
+    expect(fs.readFileSync(path.join(bareLegacy, "lfs-store", oid as string)).equals(legacyBytes)).toBe(true);
+    expect(fs.readFileSync(path.join(ref.dir, "old-scan.jpg")).equals(legacyBytes)).toBe(true);
+    expect(await engineA.localChanges(ref)).toEqual([]);
+    // Running it again finds nothing left to do.
+    expect(await engineA.migrateAttachments(ref)).toBe(0);
+
+    // A fresh client gets the original bytes back through the pointer.
+    const refB2: RepoRef = { dir: path.join(root, "clientB-legacy"), url: ref.url, branch: "main" };
+    await engineB.clone(refB2);
+    expect(fs.readFileSync(path.join(refB2.dir, "old-scan.jpg")).equals(legacyBytes)).toBe(true);
+  });
+
   it("shares a brand-new folder with attachments via initAndPush", async () => {
     const bareLib = path.join(root, "lib.git");
     execFileSync("git", ["init", "--bare", "-b", "main", bareLib]);

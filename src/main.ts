@@ -235,6 +235,11 @@ export default class CovaultPlugin extends Plugin {
       },
     });
     this.addCommand({
+      id: "migrate-attachments",
+      name: "Move existing attachments to Git LFS",
+      callback: () => void this.migrateAttachments(),
+    });
+    this.addCommand({
       id: "copy-debug-log",
       name: "Copy the diagnostic log",
       callback: () => void this.copyDebugLog(),
@@ -1092,6 +1097,22 @@ export default class CovaultPlugin extends Plugin {
       autoSync: this.settings.sync.auto,
       intervalMinutes: this.settings.sync.intervalMinutes,
     });
+  }
+
+  /**
+   * Move the attachment backlog to Git LFS: everything committed as raw
+   * bytes before LFS support existed. One pass over every repo; new
+   * attachments convert on their own during normal syncs.
+   */
+  private async migrateAttachments(): Promise<void> {
+    new Notice("Covault: checking libraries for attachments to move to LFS…");
+    const { files, repos, skipped } = await this.sync.migrateAttachments();
+    const outcome =
+      files > 0
+        ? `moved ${files} attachment(s) to Git LFS in ${repos} librar${repos === 1 ? "y" : "ies"}`
+        : "all attachments are already on Git LFS";
+    const skips = skipped.length > 0 ? ` Skipped (busy or failed): ${skipped.join(", ")}.` : "";
+    new Notice(`Covault: ${outcome}.${skips}`, 10_000);
   }
 
   /** Hand the collected log to the user — the point of collecting it. */

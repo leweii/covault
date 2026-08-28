@@ -441,6 +441,37 @@ export class GitEngine {
     done?.({ uploaded });
   }
 
+  /**
+   * One-off backlog migration: convert attachments that earlier versions
+   * committed as raw blobs into LFS pointers, in a single commit. Only the
+   * branch tip changes — history keeps the old blobs, because rewriting it
+   * would force-push over every teammate's clone. New and edited
+   * attachments convert on their own during normal syncs; this exists for
+   * what was already tracked. Commits only — the caller runs a normal sync
+   * round afterwards so pushing (and any merge) follows the usual path.
+   * Returns how many files were converted.
+   */
+  async migrateAttachments(ref: RepoRef): Promise<number> {
+    const { fs } = this.deps;
+    const head = await this.resolve(ref, "HEAD");
+    if (!head) return 0;
+    const raw: LocalChange[] = [];
+    for (const filepath of (await git.listFiles({ fs, dir: ref.dir, gitdir: ref.gitdir })).filter(isLfsPath)) {
+      if (await this.readPointerAt(ref, head, filepath)) continue; // already a pointer
+      try {
+        await fs.promises.access(`${ref.dir}/${filepath}`);
+      } catch {
+        continue; // deleted locally — the next sync owns that story
+      }
+      raw.push({ filepath, kind: "modified" });
+    }
+    if (raw.length === 0) return 0;
+    const done = this.deps.log?.opTime("lfs", `${ref.dir} — migrate attachments`, { files: raw.length });
+    await this.commitAll(ref, `Move ${raw.length} attachment(s) to Git LFS`, raw);
+    done?.();
+    return raw.length;
+  }
+
   /** An object's bytes: the cache, else a working-tree file that still matches. */
   private async lfsObjectBytes(ref: RepoRef, oid: string, filepaths: string[]): Promise<Buffer | null> {
     const { fs } = this.deps;
