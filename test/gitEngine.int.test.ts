@@ -107,7 +107,7 @@ describe("GitEngine against a real smart-HTTP remote", () => {
 
   it("reports up-to-date when nothing changed anywhere", async () => {
     const result = await engineB.syncToRemote(refB, { commitMessage: msg });
-    expect(result).toEqual({ committed: [], pulled: false, pushed: false, conflictFilepaths: [] });
+    expect(result).toEqual({ committed: [], pulled: false, pushed: false, conflictFilepaths: [], lfsPending: 0 });
   });
 
   it("merges diverged non-overlapping edits and pushes the merge", async () => {

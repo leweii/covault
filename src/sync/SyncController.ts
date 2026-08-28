@@ -211,11 +211,22 @@ export class SyncController {
         const converted = await this.runExclusive(repo.path, `Moving attachments in ${name}`, async () => {
           const n = await this.engine.migrateAttachments(ref);
           if (n > 0) {
-            await this.engine.syncToRemote(ref, {
-              commitMessage: describeChanges,
-              exclude: repo.exclude,
-              include: repo.include,
-            });
+            // Budgeted rounds until the backlog is shipped (see syncOne):
+            // uploads are durable, so each pass resumes where the last left.
+            let lastPending = Infinity;
+            for (;;) {
+              const result = await this.engine.syncToRemote(ref, {
+                commitMessage: describeChanges,
+                exclude: repo.exclude,
+                include: repo.include,
+              });
+              if (result.lfsPending === 0) break;
+              if (result.lfsPending >= lastPending) {
+                throw new Error(`attachment uploads stopped making progress (${result.lfsPending} left)`);
+              }
+              lastPending = result.lfsPending;
+              this.log?.op("repo", `${name} — migration continuing`, { pending: result.lfsPending });
+            }
           }
           return n;
         });
@@ -321,13 +332,28 @@ export class SyncController {
     const done = this.log?.opTime("repo", name, { branch: ref.branch, trigger });
     let expiry: ReturnType<typeof setTimeout> | undefined;
     try {
-      await Promise.race([
-        this.syncRepo(ref, repo, trigger, name),
-        new Promise<never>((_resolve, reject) => {
-          const tooLong = `took longer than ${REPO_TIMEOUT_MS / 60_000} minutes and was given up on`;
-          expiry = setTimeout(() => reject(new Error(tooLong)), REPO_TIMEOUT_MS);
-        }),
-      ]);
+      // An attachment backlog is worked through in budgeted rounds, each
+      // with a fresh watchdog: the ceiling exists to catch a *stalled*
+      // round, and a round that just shipped 256 MB isn't stalled. The
+      // loop insists on progress — a pending count that stops shrinking
+      // is a stall after all.
+      let lastPending = Infinity;
+      for (;;) {
+        const pending = await Promise.race([
+          this.syncRepo(ref, repo, trigger, name),
+          new Promise<never>((_resolve, reject) => {
+            const tooLong = `took longer than ${REPO_TIMEOUT_MS / 60_000} minutes and was given up on`;
+            expiry = setTimeout(() => reject(new Error(tooLong)), REPO_TIMEOUT_MS);
+          }),
+        ]);
+        if (expiry) clearTimeout(expiry);
+        if (pending === 0) break;
+        if (pending >= lastPending) {
+          throw new Error(`attachment uploads stopped making progress (${pending} left)`);
+        }
+        lastPending = pending;
+        this.log?.op("repo", `${name} — attachments still uploading, next round`, { pending });
+      }
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       this.setState(repo.path, { phase: "error", detail: message });
@@ -341,12 +367,13 @@ export class SyncController {
     }
   }
 
-  /** One repo's round. Throws on failure; syncOne owns the reporting. */
-  private async syncRepo(ref: RepoRef, repo: SyncItem, trigger: "manual" | "auto", name: string): Promise<void> {
+  /** One repo's round. Throws on failure; syncOne owns the reporting.
+   *  Returns the number of LFS objects still to upload (0 = round done). */
+  private async syncRepo(ref: RepoRef, repo: SyncItem, trigger: "manual" | "auto", name: string): Promise<number> {
     if (!(await this.engine.isRepo(ref))) {
       if (repo.noAutoClone) {
         this.setState(repo.path, { phase: "error", detail: "Needs set up again (repo state missing)" });
-        return;
+        return 0;
       }
       // An empty library (created on GitHub but never pushed to) has
       // nothing to clone — seed it from the vault folder instead.
@@ -357,7 +384,7 @@ export class SyncController {
       }
       this.setState(repo.path, { phase: "idle", lastSyncedAt: Date.now() });
       if (trigger === "manual") new Notice(`Covault: "${name}" is ready.`);
-      return;
+      return 0;
     }
 
     const result = await this.engine.syncToRemote(ref, {
@@ -376,7 +403,7 @@ export class SyncController {
           `Covault: you and a teammate edited the same note(s) in "${name}" — ` +
             `the AI merged ${result.conflictFilepaths.length} of them automatically.`,
         );
-        return;
+        return 0;
       }
 
       this.pending.set(repo.path, { item: repo, filepaths: result.conflictFilepaths });
@@ -389,7 +416,16 @@ export class SyncController {
           `run "Covault: Resolve conflicts" to sort them out.`,
         10_000,
       );
-      return;
+      return 0;
+    }
+
+    if (result.lfsPending > 0) {
+      // Mid-backlog: the round shipped its budget and deferred the push.
+      // Stay in "syncing" — syncOne immediately runs the next round.
+      if (trigger === "manual") {
+        new Notice(`Covault: "${name}" is uploading attachments — ${result.lfsPending} to go…`);
+      }
+      return result.lfsPending;
     }
 
     this.pending.delete(repo.path);
@@ -402,6 +438,7 @@ export class SyncController {
     if (trigger === "manual") {
       new Notice(`Covault: "${name}" ${summarize(result)}.`);
     }
+    return 0;
   }
 
   /**

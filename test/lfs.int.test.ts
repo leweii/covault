@@ -99,7 +99,7 @@ describe("attachments ride Git LFS", () => {
   it("stays quiet afterwards — the materialized file is not a change", async () => {
     expect(await engineA.localChanges(refA)).toEqual([]);
     const result = await engineA.syncToRemote(refA, { commitMessage: msg });
-    expect(result).toEqual({ committed: [], pulled: false, pushed: false, conflictFilepaths: [] });
+    expect(result).toEqual({ committed: [], pulled: false, pushed: false, conflictFilepaths: [], lfsPending: 0 });
   });
 
   it("materializes the original bytes on a second client", async () => {
@@ -178,6 +178,56 @@ describe("attachments ride Git LFS", () => {
     const refB2: RepoRef = { dir: path.join(root, "clientB-legacy"), url: ref.url, branch: "main" };
     await engineB.clone(refB2);
     expect(fs.readFileSync(path.join(refB2.dir, "old-scan.jpg")).equals(legacyBytes)).toBe(true);
+  });
+
+  it("works through a backlog in budgeted rounds, deferring the push", async () => {
+    const bareBig = path.join(root, "backlog.git");
+    execFileSync("git", ["init", "--bare", "-b", "main", bareBig]);
+    execFileSync("git", ["config", "http.receivepack", "true"], { cwd: bareBig });
+
+    const dir = path.join(root, "clientA-backlog");
+    fs.mkdirSync(dir, { recursive: true });
+    const originals: Buffer[] = [];
+    for (let i = 0; i < 5; i++) {
+      const bytes = crypto.randomBytes(1200);
+      originals.push(bytes);
+      fs.writeFileSync(path.join(dir, `photo-${i}.png`), bytes);
+    }
+    const ref: RepoRef = { dir, url: `${server.url}/backlog.git`, branch: "main" };
+    await engineA.initAndPush(ref, "seed"); // unbudgeted path still ships everything
+
+    // Now a second wave, synced with a budget so small every round ships
+    // one object and defers the push.
+    const wave: Buffer[] = [];
+    for (let i = 0; i < 3; i++) {
+      const bytes = crypto.randomBytes(1500);
+      wave.push(bytes);
+      fs.writeFileSync(path.join(dir, `scan-${i}.jpg`), bytes);
+    }
+    const first = await engineA.syncToRemote(ref, { commitMessage: msg, lfsBudgetBytes: 1 });
+    expect(first.pushed).toBe(false);
+    expect(first.lfsPending).toBeGreaterThan(0);
+    // The commit exists locally; the remote must not see its pointers yet.
+    expect(() => execFileSync("git", ["cat-file", "-p", "main:scan-0.jpg"], { cwd: bareBig })).toThrow();
+
+    // Rounds compose: pending shrinks until a round finally pushes.
+    let pending = first.lfsPending;
+    for (let round = 0; round < 10 && pending > 0; round++) {
+      const next = await engineA.syncToRemote(ref, { commitMessage: msg, lfsBudgetBytes: 1 });
+      expect(next.lfsPending).toBeLessThan(pending);
+      pending = next.lfsPending;
+      if (pending === 0) expect(next.pushed).toBe(true);
+    }
+    expect(pending).toBe(0);
+    expect(execFileSync("git", ["cat-file", "-p", "main:scan-2.jpg"], { cwd: bareBig }).toString("utf8")).toContain(
+      POINTER_PREFIX,
+    );
+
+    // And a fresh clone materializes both waves.
+    const refB3: RepoRef = { dir: path.join(root, "clientB-backlog"), url: ref.url, branch: "main" };
+    await engineB.clone(refB3);
+    expect(fs.readFileSync(path.join(refB3.dir, "photo-4.png")).equals(originals[4] as Buffer)).toBe(true);
+    expect(fs.readFileSync(path.join(refB3.dir, "scan-1.jpg")).equals(wave[1] as Buffer)).toBe(true);
   });
 
   it("shares a brand-new folder with attachments via initAndPush", async () => {

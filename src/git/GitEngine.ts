@@ -79,6 +79,13 @@ export interface SyncResult {
   /** Non-empty means the merge stopped on these files (conflict markers
    *  are in the working tree; resolution is the agent's job — M4). */
   conflictFilepaths: string[];
+  /**
+   * LFS objects still to upload when the round's budget ran out. The push
+   * was deferred (a pushed pointer must always be resolvable); uploads
+   * already made are durable on the server, so the caller just runs
+   * another round — each one bounded — until this reaches zero.
+   */
+  lfsPending: number;
 }
 
 /** "notes/plan.md" → "notes/plan (local copy 2026-08-13 17-42).md" — the
@@ -388,18 +395,39 @@ export class GitEngine {
   }
 
   /**
-   * Ship every LFS object the branch tip references before its commits do
-   * — push-before-upload would publish pointers no one can resolve. One
-   * batch tells us what the server lacks; objects we can't source locally
-   * (a pointer minted on another device) are skipped, since the device
-   * that minted them uploads before it pushes.
+   * How much attachment data one sync round ships before deferring the
+   * push to the next round. Unbounded uploads are what made a 2 GB backlog
+   * fatal: the round outlived its watchdog and was killed, forever.
    */
-  private async uploadLfs(ref: RepoRef): Promise<void> {
+  private static readonly LFS_ROUND_BUDGET_BYTES = 256 * 1024 * 1024;
+
+  /**
+   * Objects per batch request. Small on purpose: GitHub's pre-signed
+   * upload URLs expire in ~15 minutes, so hrefs must be minted just
+   * before use — asking for a thousand up front meant the tail of the
+   * queue was guaranteed dead (HTTP 403) by the time it was reached.
+   */
+  private static readonly LFS_UPLOAD_CHUNK = 50;
+
+  /** Parallel uploads inside a chunk — a folder of screenshots is
+   *  latency-bound, not bandwidth-bound. */
+  private static readonly LFS_UPLOAD_CONCURRENCY = 4;
+
+  /**
+   * Ship LFS objects the branch tip references before its commits do —
+   * push-before-upload would publish pointers no one can resolve. Works
+   * through the backlog in small chunks (fresh hrefs each time) up to
+   * `budgetBytes`, then reports what remains; every uploaded object is
+   * durable on the server, so rounds compose. Objects we can't source
+   * locally (a pointer minted on another device) are skipped, since the
+   * device that minted them uploads before it pushes.
+   */
+  private async uploadLfs(ref: RepoRef, budgetBytes = Infinity): Promise<number> {
     const { fs } = this.deps;
     const tip = await this.resolve(ref, `refs/heads/${ref.branch}`);
-    if (!tip) return;
+    if (!tip) return 0;
     const tracked = (await git.listFiles({ fs, dir: ref.dir, gitdir: ref.gitdir, ref: tip })).filter(isLfsPath);
-    if (tracked.length === 0) return;
+    if (tracked.length === 0) return 0;
 
     const pointers = new Map<string, { size: number; filepaths: string[] }>();
     for (const filepath of tracked) {
@@ -410,35 +438,60 @@ export class GitEngine {
       pointers.set(pointer.oid, entry);
     }
     const unknown = [...pointers].filter(([oid]) => !this.onServer.has(`${ref.url}#${oid}`));
-    if (unknown.length === 0) return;
+    if (unknown.length === 0) return 0;
 
-    const done = this.deps.log?.opTime("lfs", `${ref.dir} — upload attachments`, { objects: unknown.length });
-    const objects = await this.lfs.batch(
-      ref.url,
-      ref.branch,
-      "upload",
-      unknown.map(([oid, m]) => ({ oid, size: m.size })),
-    );
-    let uploaded = 0;
-    for (const object of objects) {
-      const entry = pointers.get(object.oid);
-      if (!entry) continue;
-      if (!object.actions?.upload) {
-        if (!object.error) this.onServer.add(`${ref.url}#${object.oid}`);
-        continue;
-      }
-      const data = await this.lfsObjectBytes(ref, object.oid, entry.filepaths);
-      if (!data) {
-        this.deps.log?.op("lfs", `no local bytes for ${object.oid.slice(0, 8)}… — skipped`, {
-          filepath: entry.filepaths[0],
-        });
-        continue;
-      }
-      await this.lfs.upload(ref.url, object, data);
-      this.onServer.add(`${ref.url}#${object.oid}`);
-      uploaded++;
+    // Plan the round up front: objects are admitted until their combined
+    // size crosses the budget (always at least one, so rounds provably
+    // make progress). Deciding before the transfer, not during, keeps a
+    // chunk of large files from blowing far through the ceiling.
+    const planned: typeof unknown = [];
+    let plannedBytes = 0;
+    for (const entry of unknown) {
+      if (planned.length > 0 && plannedBytes >= budgetBytes) break;
+      planned.push(entry);
+      plannedBytes += entry[1].size;
     }
-    done?.({ uploaded });
+    const pending = unknown.length - planned.length;
+
+    const done = this.deps.log?.opTime("lfs", `${ref.dir} — upload attachments`, {
+      objects: unknown.length,
+      planned: planned.length,
+    });
+    let uploaded = 0;
+    for (let i = 0; i < planned.length; i += GitEngine.LFS_UPLOAD_CHUNK) {
+      const slice = planned.slice(i, i + GitEngine.LFS_UPLOAD_CHUNK);
+      const queue = await this.lfs.batch(
+        ref.url,
+        ref.branch,
+        "upload",
+        slice.map(([oid, m]) => ({ oid, size: m.size })),
+      );
+      const workers = Array.from({ length: GitEngine.LFS_UPLOAD_CONCURRENCY }, async () => {
+        for (;;) {
+          const object = queue.shift();
+          if (!object) return;
+          const entry = pointers.get(object.oid);
+          if (!entry) continue;
+          if (!object.actions?.upload) {
+            if (!object.error) this.onServer.add(`${ref.url}#${object.oid}`);
+            continue;
+          }
+          const data = await this.lfsObjectBytes(ref, object.oid, entry.filepaths);
+          if (!data) {
+            this.deps.log?.op("lfs", `no local bytes for ${object.oid.slice(0, 8)}… — skipped`, {
+              filepath: entry.filepaths[0],
+            });
+            continue;
+          }
+          await this.lfs.upload(ref.url, object, data);
+          this.onServer.add(`${ref.url}#${object.oid}`);
+          uploaded++;
+        }
+      });
+      await Promise.all(workers);
+    }
+    done?.({ uploaded, pending });
+    return pending;
   }
 
   /**
@@ -906,10 +959,18 @@ export class GitEngine {
     }
   }
 
-  async push(ref: RepoRef): Promise<void> {
-    // Attachment bytes go first: a pointer must never be visible to a
-    // teammate before its content is downloadable.
-    await this.uploadLfs(ref);
+  /**
+   * Upload attachments, then push. Attachment bytes go first: a pointer
+   * must never be visible to a teammate before its content is
+   * downloadable — which also means a round whose upload budget ran out
+   * defers the push entirely and reports how many objects remain.
+   */
+  async push(ref: RepoRef, opts: { uploadBudgetBytes?: number } = {}): Promise<number> {
+    const pending = await this.uploadLfs(ref, opts.uploadBudgetBytes ?? Infinity);
+    if (pending > 0) {
+      this.deps.log?.op("lfs", `${ref.dir} — push deferred, attachments still uploading`, { pending });
+      return pending;
+    }
     const done = this.deps.log?.opTime("push", ref.dir, { branch: ref.branch });
     const result = await git.push({
       ...this.common(ref),
@@ -918,6 +979,7 @@ export class GitEngine {
     });
     done?.({ ok: result.ok, error: result.error });
     if (!result.ok) throw new Error(`Push to ${ref.url} failed: ${result.error ?? "unknown error"}`);
+    return 0;
   }
 
   /**
@@ -930,9 +992,16 @@ export class GitEngine {
    */
   async syncToRemote(
     ref: RepoRef,
-    opts: { commitMessage: (changes: LocalChange[]) => string; exclude?: string[]; include?: string[] },
+    opts: {
+      commitMessage: (changes: LocalChange[]) => string;
+      exclude?: string[];
+      include?: string[];
+      /** Per-round attachment upload budget; tests shrink it. */
+      lfsBudgetBytes?: number;
+    },
   ): Promise<SyncResult> {
-    const result: SyncResult = { committed: [], pulled: false, pushed: false, conflictFilepaths: [] };
+    const lfsBudget = opts.lfsBudgetBytes ?? GitEngine.LFS_ROUND_BUDGET_BYTES;
+    const result: SyncResult = { committed: [], pulled: false, pushed: false, conflictFilepaths: [], lfsPending: 0 };
     const { fs } = this.deps;
 
     // Repair pass: an attachment download that failed in an earlier round
@@ -995,8 +1064,8 @@ export class GitEngine {
 
     if (!remote || (await git.isDescendent({ fs, dir: ref.dir, gitdir: ref.gitdir, oid: local, ancestor: remote, depth: -1 }))) {
       // Local is strictly ahead (or the remote branch doesn't exist yet).
-      await this.push(ref);
-      result.pushed = true;
+      result.lfsPending = await this.push(ref, { uploadBudgetBytes: lfsBudget });
+      result.pushed = result.lfsPending === 0;
       return result;
     }
 
@@ -1066,8 +1135,10 @@ export class GitEngine {
     await this.smudge(ref);
     mergeDone?.({ merged: true });
     result.pulled = true;
-    await this.push(ref);
-    result.pushed = true;
+    // A deferred push here is safe: the merge commit stays local, the next
+    // round sees "local strictly ahead" and keeps uploading from there.
+    result.lfsPending = await this.push(ref, { uploadBudgetBytes: lfsBudget });
+    result.pushed = result.lfsPending === 0;
     return result;
   }
 }
