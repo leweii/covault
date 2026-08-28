@@ -11,6 +11,17 @@ import type { HttpClient } from "isomorphic-git";
 import type { TokenProvider } from "../auth/TokenProvider";
 import type { DebugLog } from "../debug/logger";
 import { ownerFromUrl } from "./urls";
+import {
+  LfsClient,
+  type LfsPointer,
+  POINTER_MAX_BYTES,
+  formatPointer,
+  gitattributesLines,
+  isLfsPath,
+  parsePointer,
+  sha256Bytes,
+  sha256File,
+} from "./lfs";
 
 export interface RepoRef {
   /** Absolute path of the working directory on disk. */
@@ -103,7 +114,24 @@ function hasConflictMarkers(content: string): boolean {
 const ALWAYS_EXCLUDED = [".trash", ".covault/main.git", ".covault/skills", ".covault/logs"];
 
 export class GitEngine {
-  constructor(private deps: GitEngineDeps) {}
+  private lfs: LfsClient;
+  /**
+   * sha256 of working-tree attachments, keyed by absolute path and guarded
+   * by (size, mtime). Pointer equivalence needs the content hash on every
+   * status scan; without the guard each scan would re-read every attachment.
+   */
+  private contentSha = new Map<string, { size: number; mtimeMs: number; oid: string }>();
+  /**
+   * LFS objects a remote is known to hold ("url#oid"), seeded by successful
+   * batches, uploads and downloads — lets a steady-state push skip the LFS
+   * round-trip entirely. In-memory only: losing it costs one extra batch
+   * request, never correctness (the server re-reports what it has).
+   */
+  private onServer = new Set<string>();
+
+  constructor(private deps: GitEngineDeps) {
+    this.lfs = new LfsClient({ http: deps.http, tokens: deps.tokens, log: deps.log });
+  }
 
   private auth(ref: RepoRef) {
     return {
@@ -124,6 +152,308 @@ export class GitEngine {
       gitdir: ref.gitdir,
       ...this.auth(ref),
     };
+  }
+
+  // ── Attachments (Git LFS) ────────────────────────────────────────────
+  //
+  // isomorphic-git has no clean/smudge filters, so the engine does the
+  // conversion at every boundary: stage() turns attachments into pointers
+  // on the way into the index, smudge() turns pointers back into bytes
+  // after anything that writes the working tree from git, and push()
+  // uploads objects before the commits referencing them become visible —
+  // the repo never holds a pointer whose content isn't already resolvable.
+
+  private gitdirOf(ref: RepoRef): string {
+    return ref.gitdir ?? `${ref.dir}/.git`;
+  }
+
+  /** git-lfs's own cache layout, so a checkout by real git-lfs shares it. */
+  private lfsCachePath(ref: RepoRef, oid: string): string {
+    return `${this.gitdirOf(ref)}/lfs/objects/${oid.slice(0, 2)}/${oid.slice(2, 4)}/${oid}`;
+  }
+
+  /** Content hash of a working-tree file, or null when it's missing. */
+  private async workFileSha(ref: RepoRef, filepath: string): Promise<LfsPointer | null> {
+    const { fs } = this.deps;
+    const absolute = `${ref.dir}/${filepath}`;
+    let stat: { size: number; mtimeMs: number };
+    try {
+      stat = await fs.promises.stat(absolute);
+    } catch {
+      return null;
+    }
+    const hit = this.contentSha.get(absolute);
+    if (hit && hit.size === stat.size && hit.mtimeMs === stat.mtimeMs) return { oid: hit.oid, size: hit.size };
+    const hashed = await sha256File(fs, absolute);
+    this.contentSha.set(absolute, { size: hashed.size, mtimeMs: stat.mtimeMs, oid: hashed.oid });
+    return hashed;
+  }
+
+  /** Remember a file we just wrote, so the next scan doesn't re-hash it. */
+  private async noteSha(absolute: string, oid: string): Promise<void> {
+    try {
+      const stat = await this.deps.fs.promises.stat(absolute);
+      this.contentSha.set(absolute, { size: stat.size, mtimeMs: stat.mtimeMs, oid });
+    } catch {
+      // the file vanished under us — nothing to remember
+    }
+  }
+
+  /** The LFS pointer a commit holds for this path, or null (absent / raw blob). */
+  private async readPointerAt(ref: RepoRef, commitOid: string, filepath: string): Promise<LfsPointer | null> {
+    const blob = await this.readBlobAt(ref, commitOid, filepath);
+    if (!blob || blob.byteLength > POINTER_MAX_BYTES) return null;
+    return parsePointer(new TextDecoder().decode(blob));
+  }
+
+  private async readBlobAt(ref: RepoRef, commitOid: string, filepath: string): Promise<Uint8Array | null> {
+    try {
+      const { blob } = await git.readBlob({ fs: this.deps.fs, dir: ref.dir, gitdir: ref.gitdir, oid: commitOid, filepath });
+      return blob;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Stage one added/modified file, converting attachments to LFS pointers.
+   *
+   * git.add hashes whatever the working tree holds, which for an attachment
+   * is the pixels themselves — exactly what must stay out of the repo. So
+   * attachments go in sideways: hash the content, keep a copy in the LFS
+   * cache (it's the upload source), and put a pointer blob at the path via
+   * updateIndex. A working-tree file that already *is* pointer text (a
+   * never-materialized file, or a resolved attachment conflict) is staged
+   * as-is — its content is the pointer.
+   */
+  private async stage(ref: RepoRef, filepath: string): Promise<void> {
+    const { fs } = this.deps;
+    const common = { fs, dir: ref.dir, gitdir: ref.gitdir };
+    if (!isLfsPath(filepath)) {
+      await git.add({ ...common, filepath });
+      return;
+    }
+    const absolute = `${ref.dir}/${filepath}`;
+    const stat = await fs.promises.stat(absolute);
+    if (stat.size <= POINTER_MAX_BYTES && parsePointer(await fs.promises.readFile(absolute, "utf8"))) {
+      await git.add({ ...common, filepath });
+      return;
+    }
+    const pointer = (await this.workFileSha(ref, filepath))!;
+    const cachePath = this.lfsCachePath(ref, pointer.oid);
+    try {
+      await fs.promises.access(cachePath);
+    } catch {
+      await fs.promises.mkdir(dirnameOf(cachePath), { recursive: true });
+      await fs.promises.copyFile(absolute, cachePath);
+    }
+    const blobOid = await git.writeBlob({
+      fs,
+      dir: ref.dir,
+      gitdir: ref.gitdir,
+      blob: new TextEncoder().encode(formatPointer(pointer)),
+    });
+    await git.updateIndex({ ...common, filepath, oid: blobOid, add: true });
+  }
+
+  private static readonly GITATTRIBUTES_MARK = "# Covault: attachments are stored with Git LFS";
+
+  /**
+   * Make the LFS rule visible to plain git + git-lfs users. Covault itself
+   * never reads .gitattributes (stage() is the rule); this is interop, so
+   * a teammate's CLI clone treats the same extensions the same way.
+   * Returns true when the file changed and needs staging.
+   */
+  private async ensureGitattributes(ref: RepoRef): Promise<boolean> {
+    const { fs } = this.deps;
+    const absolute = `${ref.dir}/.gitattributes`;
+    let existing = "";
+    try {
+      existing = await fs.promises.readFile(absolute, "utf8");
+    } catch {
+      // none yet
+    }
+    if (existing.includes(GitEngine.GITATTRIBUTES_MARK)) return false;
+    const block = [GitEngine.GITATTRIBUTES_MARK, ...gitattributesLines()].join("\n") + "\n";
+    await fs.promises.writeFile(absolute, existing ? `${existing.replace(/\n*$/, "\n")}\n${block}` : block);
+    return true;
+  }
+
+  /**
+   * Materialize LFS pointers in the working tree: cache first, then one
+   * batch download for the rest. Runs after anything that writes the tree
+   * from git, and once per sync round as a repair pass (a download that
+   * failed last time must not strand pointer text in the vault forever).
+   * A missing local file is a deletion in progress, not smudge's business.
+   */
+  private async smudge(ref: RepoRef): Promise<void> {
+    const { fs } = this.deps;
+    const candidates = (await git.listFiles({ fs, dir: ref.dir, gitdir: ref.gitdir })).filter(isLfsPath);
+    if (candidates.length === 0) return;
+
+    const wanted: { filepath: string; pointer: LfsPointer }[] = [];
+    for (const filepath of candidates) {
+      const absolute = `${ref.dir}/${filepath}`;
+      let stat: { size: number };
+      try {
+        stat = await fs.promises.stat(absolute);
+      } catch {
+        continue;
+      }
+      if (stat.size > POINTER_MAX_BYTES) continue; // already content
+      const pointer = parsePointer(await fs.promises.readFile(absolute, "utf8"));
+      if (pointer) wanted.push({ filepath, pointer });
+    }
+    if (wanted.length === 0) return;
+
+    const missing = new Map<string, { size: number; filepaths: string[] }>();
+    for (const { filepath, pointer } of wanted) {
+      const absolute = `${ref.dir}/${filepath}`;
+      try {
+        await fs.promises.copyFile(this.lfsCachePath(ref, pointer.oid), absolute);
+        await this.noteSha(absolute, pointer.oid);
+      } catch {
+        const entry = missing.get(pointer.oid) ?? { size: pointer.size, filepaths: [] };
+        entry.filepaths.push(filepath);
+        missing.set(pointer.oid, entry);
+      }
+    }
+    if (missing.size === 0) return;
+
+    const done = this.deps.log?.opTime("lfs", `${ref.dir} — download attachments`, { objects: missing.size });
+    const objects = await this.lfs.batch(
+      ref.url,
+      ref.branch,
+      "download",
+      [...missing].map(([oid, m]) => ({ oid, size: m.size })),
+    );
+    const failed: string[] = [];
+    for (const object of objects) {
+      const entry = missing.get(object.oid);
+      if (!entry) continue;
+      let data: Buffer;
+      try {
+        data = await this.lfs.download(object);
+      } catch (e) {
+        this.deps.log?.op("lfs", `download failed for ${entry.filepaths[0] ?? object.oid}`, { error: e });
+        failed.push(...entry.filepaths);
+        continue;
+      }
+      this.onServer.add(`${ref.url}#${object.oid}`);
+      const cachePath = this.lfsCachePath(ref, object.oid);
+      await fs.promises.mkdir(dirnameOf(cachePath), { recursive: true });
+      await fs.promises.writeFile(cachePath, data);
+      for (const filepath of entry.filepaths) {
+        const absolute = `${ref.dir}/${filepath}`;
+        await fs.promises.copyFile(cachePath, absolute);
+        await this.noteSha(absolute, object.oid);
+      }
+    }
+    done?.({ failed: failed.length });
+    if (failed.length > 0) {
+      throw new Error(`Couldn't download ${failed.length} attachment(s) (first: ${failed[0]}) — will retry next sync.`);
+    }
+  }
+
+  /**
+   * The reverse of smudge: put pointer text back over attachments whose
+   * bytes still match their pointer. isomorphic-git's checkout compares
+   * the working tree to the index, so a materialized attachment looks like
+   * a local edit and blocks every pull — this runs right before git writes
+   * the tree (fast-forward, merge) and smudge() re-materializes right
+   * after. A genuinely edited attachment is left alone: it was committed
+   * earlier in the round, or it is a mid-round race checkout should stop on.
+   */
+  private async dematerialize(ref: RepoRef): Promise<void> {
+    const { fs } = this.deps;
+    const head = await this.resolve(ref, "HEAD");
+    if (!head) return;
+    for (const filepath of (await git.listFiles({ fs, dir: ref.dir, gitdir: ref.gitdir })).filter(isLfsPath)) {
+      const pointer = await this.readPointerAt(ref, head, filepath);
+      if (!pointer) continue;
+      const work = await this.workFileSha(ref, filepath);
+      if (!work || work.oid !== pointer.oid) continue;
+      // Replacing the only copy would be destructive — make sure the cache
+      // holds the bytes first (it should already, but this is the backstop).
+      const absolute = `${ref.dir}/${filepath}`;
+      const cachePath = this.lfsCachePath(ref, pointer.oid);
+      try {
+        await fs.promises.access(cachePath);
+      } catch {
+        await fs.promises.mkdir(dirnameOf(cachePath), { recursive: true });
+        await fs.promises.copyFile(absolute, cachePath);
+      }
+      await fs.promises.writeFile(absolute, formatPointer(pointer));
+    }
+  }
+
+  /**
+   * Ship every LFS object the branch tip references before its commits do
+   * — push-before-upload would publish pointers no one can resolve. One
+   * batch tells us what the server lacks; objects we can't source locally
+   * (a pointer minted on another device) are skipped, since the device
+   * that minted them uploads before it pushes.
+   */
+  private async uploadLfs(ref: RepoRef): Promise<void> {
+    const { fs } = this.deps;
+    const tip = await this.resolve(ref, `refs/heads/${ref.branch}`);
+    if (!tip) return;
+    const tracked = (await git.listFiles({ fs, dir: ref.dir, gitdir: ref.gitdir, ref: tip })).filter(isLfsPath);
+    if (tracked.length === 0) return;
+
+    const pointers = new Map<string, { size: number; filepaths: string[] }>();
+    for (const filepath of tracked) {
+      const pointer = await this.readPointerAt(ref, tip, filepath);
+      if (!pointer) continue; // a raw pre-LFS blob — travels inside the pack as before
+      const entry = pointers.get(pointer.oid) ?? { size: pointer.size, filepaths: [] };
+      entry.filepaths.push(filepath);
+      pointers.set(pointer.oid, entry);
+    }
+    const unknown = [...pointers].filter(([oid]) => !this.onServer.has(`${ref.url}#${oid}`));
+    if (unknown.length === 0) return;
+
+    const done = this.deps.log?.opTime("lfs", `${ref.dir} — upload attachments`, { objects: unknown.length });
+    const objects = await this.lfs.batch(
+      ref.url,
+      ref.branch,
+      "upload",
+      unknown.map(([oid, m]) => ({ oid, size: m.size })),
+    );
+    let uploaded = 0;
+    for (const object of objects) {
+      const entry = pointers.get(object.oid);
+      if (!entry) continue;
+      if (!object.actions?.upload) {
+        if (!object.error) this.onServer.add(`${ref.url}#${object.oid}`);
+        continue;
+      }
+      const data = await this.lfsObjectBytes(ref, object.oid, entry.filepaths);
+      if (!data) {
+        this.deps.log?.op("lfs", `no local bytes for ${object.oid.slice(0, 8)}… — skipped`, {
+          filepath: entry.filepaths[0],
+        });
+        continue;
+      }
+      await this.lfs.upload(ref.url, object, data);
+      this.onServer.add(`${ref.url}#${object.oid}`);
+      uploaded++;
+    }
+    done?.({ uploaded });
+  }
+
+  /** An object's bytes: the cache, else a working-tree file that still matches. */
+  private async lfsObjectBytes(ref: RepoRef, oid: string, filepaths: string[]): Promise<Buffer | null> {
+    const { fs } = this.deps;
+    try {
+      return await fs.promises.readFile(this.lfsCachePath(ref, oid));
+    } catch {
+      // not cached — fall through to the working tree
+    }
+    for (const filepath of filepaths) {
+      const sha = await this.workFileSha(ref, filepath);
+      if (sha?.oid === oid) return fs.promises.readFile(`${ref.dir}/${filepath}`);
+    }
+    return null;
   }
 
   /**
@@ -183,6 +513,7 @@ export class GitEngine {
       singleBranch: true,
       depth: GitEngine.FIRST_FETCH_DEPTH,
     });
+    await this.smudge(ref);
     done?.();
   }
 
@@ -260,6 +591,26 @@ export class GitEngine {
     const backedUp: string[] = [];
     for (const filepath of await git.listFiles({ fs, dir: ref.dir, gitdir: ref.gitdir, ref: remote })) {
       const absolute = `${ref.dir}/${filepath}`;
+      if (isLfsPath(filepath)) {
+        // Attachments compare by content hash (the remote side is usually a
+        // pointer) and back up with a byte-safe copy — a utf8 round trip
+        // would corrupt the pixels the backup exists to preserve.
+        const local = await this.workFileSha(ref, filepath);
+        if (!local) continue; // not present locally — the checkout just creates it
+        const incoming = await this.readPointerAt(ref, remote, filepath);
+        let same = incoming?.oid === local.oid;
+        if (!incoming) {
+          const raw = await this.readBlobAt(ref, remote, filepath); // a raw pre-LFS blob
+          same = raw !== null && sha256Bytes(raw) === local.oid;
+        }
+        if (same) continue;
+        const backupPath = backupNameFor(filepath);
+        await fs.promises.mkdir(dirnameOf(`${ref.dir}/${backupPath}`), { recursive: true });
+        await fs.promises.copyFile(absolute, `${ref.dir}/${backupPath}`);
+        backedUp.push(backupPath);
+        opts.onBackup?.(backupPath);
+        continue;
+      }
       let local: string;
       try {
         local = await fs.promises.readFile(absolute, "utf8");
@@ -284,6 +635,7 @@ export class GitEngine {
       force: true,
     });
     await git.checkout({ fs, dir: ref.dir, gitdir: ref.gitdir, ref: ref.branch, force: true });
+    await this.smudge(ref);
     done?.({ backedUp: backedUp.length });
     return backedUp;
   }
@@ -310,6 +662,40 @@ export class GitEngine {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Work the remote doesn't have: uncommitted changes in the tree, or
+   * commits the remote branch lacks. Deleting a folder that holds either
+   * loses the only copy, whatever the remove dialog promises about the
+   * team's copy being safe. Unreadable state counts as unpushed — not
+   * being able to tell is no license to delete.
+   */
+  async hasUnpushedWork(ref: RepoRef): Promise<boolean> {
+    const { fs } = this.deps;
+    try {
+      if (!(await this.isRepo(ref))) {
+        // Never became a repo (or an interrupted clone): nothing was ever
+        // pushed from here, so any content is local-only.
+        let entries: string[];
+        try {
+          entries = (await fs.promises.readdir(ref.dir)) as string[];
+        } catch {
+          return false; // no folder — nothing to lose
+        }
+        return entries.some((name) => name !== ".git");
+      }
+      if ((await this.localChanges(ref)).length > 0) return true;
+      const local = await this.resolve(ref, `refs/heads/${ref.branch}`);
+      if (!local) return true; // HEAD is on some other branch — can't vouch for it
+      const remote = await this.resolve(ref, `refs/remotes/origin/${ref.branch}`);
+      if (remote === local) return false;
+      if (!remote) return true; // committed, never pushed
+      // Pushed iff the remote already contains the local head.
+      return !(await git.isDescendent({ fs, dir: ref.dir, gitdir: ref.gitdir, oid: remote, ancestor: local, depth: -1 }));
+    } catch {
+      return true;
     }
   }
 
@@ -354,7 +740,21 @@ export class GitEngine {
         kind: head === 0 ? "added" : workdir === 0 ? "deleted" : "modified",
       });
     }
-    return [...changes, ...(await this.trackedUnder(ref, opts.exclude ?? []))];
+    // A materialized attachment always differs from its pointer blob, so
+    // statusMatrix reports every smudged file as modified forever. It only
+    // counts as a change when the *content* no longer matches the pointer.
+    const headOid = changes.some((c) => c.kind === "modified" && isLfsPath(c.filepath))
+      ? await this.resolve(ref, "HEAD")
+      : null;
+    const real: LocalChange[] = [];
+    for (const change of changes) {
+      if (headOid && change.kind === "modified" && isLfsPath(change.filepath)) {
+        const pointer = await this.readPointerAt(ref, headOid, change.filepath);
+        if (pointer && (await this.workFileSha(ref, change.filepath))?.oid === pointer.oid) continue;
+      }
+      real.push(change);
+    }
+    return [...real, ...(await this.trackedUnder(ref, opts.exclude ?? []))];
   }
 
   /** Tracked files sitting under a now-excluded prefix, as deletions. */
@@ -417,7 +817,7 @@ export class GitEngine {
     const remote = await this.resolve(ref, `refs/remotes/origin/${ref.branch}`);
     if (!local || !remote) throw new Error("Merge state is gone — sync again first.");
     for (const filepath of filepaths) {
-      await git.add({ fs, dir: ref.dir, gitdir: ref.gitdir, filepath });
+      await this.stage(ref, filepath);
     }
     await git.commit({
       fs,
@@ -428,6 +828,8 @@ export class GitEngine {
       author: this.deps.author(),
     });
     await this.push(ref);
+    // A resolved attachment conflict leaves pointer text in the tree.
+    await this.smudge(ref);
     done?.();
   }
 
@@ -437,6 +839,7 @@ export class GitEngine {
   async discardMerge(ref: RepoRef): Promise<void> {
     this.deps.log?.op("merge-discard", ref.dir);
     await git.checkout({ fs: this.deps.fs, dir: ref.dir, gitdir: ref.gitdir, ref: ref.branch, force: true });
+    await this.smudge(ref); // the checkout restored pointers over materialized attachments
   }
 
   /** Stage every change and commit. Returns the new commit oid. */
@@ -451,8 +854,12 @@ export class GitEngine {
       if (change.kind === "deleted") {
         await git.remove({ fs, dir: ref.dir, gitdir: ref.gitdir, filepath: change.filepath });
       } else {
-        await git.add({ fs, dir: ref.dir, gitdir: ref.gitdir, filepath: change.filepath });
+        await this.stage(ref, change.filepath);
       }
+    }
+    // The first attachment in a repo brings the LFS rule along for CLI users.
+    if (changes.some((c) => c.kind !== "deleted" && isLfsPath(c.filepath)) && (await this.ensureGitattributes(ref))) {
+      await git.add({ fs, dir: ref.dir, gitdir: ref.gitdir, filepath: ".gitattributes" });
     }
     const oid = await git.commit({ fs, dir: ref.dir, gitdir: ref.gitdir, message, author: this.deps.author() });
     done?.({ oid: oid.slice(0, 8) });
@@ -469,6 +876,9 @@ export class GitEngine {
   }
 
   async push(ref: RepoRef): Promise<void> {
+    // Attachment bytes go first: a pointer must never be visible to a
+    // teammate before its content is downloadable.
+    await this.uploadLfs(ref);
     const done = this.deps.log?.opTime("push", ref.dir, { branch: ref.branch });
     const result = await git.push({
       ...this.common(ref),
@@ -494,6 +904,11 @@ export class GitEngine {
     const result: SyncResult = { committed: [], pulled: false, pushed: false, conflictFilepaths: [] };
     const { fs } = this.deps;
 
+    // Repair pass: an attachment download that failed in an earlier round
+    // (or a discarded merge on a closed vault) leaves pointer text on disk;
+    // retry it every round rather than only after the next pull.
+    await this.smudge(ref);
+
     const log = this.deps.log;
     const changes = await this.localChanges(ref, { exclude: opts.exclude, include: opts.include });
     log?.log("sync", `${ref.dir} — local scan`, { branch: ref.branch, changes: changes.length });
@@ -501,9 +916,11 @@ export class GitEngine {
     // Never commit conflict markers. Files left over from an unresolved
     // merge (or found after a restart wiped the in-memory conflict list)
     // re-enter the conflict pipeline instead of being pushed as "edits".
+    // Attachments are exempt: they're binary, and their conflicts never
+    // leave markers (see the merge handler below).
     const marked: string[] = [];
     for (const change of changes) {
-      if (change.kind === "deleted") continue;
+      if (change.kind === "deleted" || isLfsPath(change.filepath)) continue;
       if (hasConflictMarkers(await this.readWorkFile(ref, change.filepath))) marked.push(change.filepath);
     }
     if (marked.length > 0) {
@@ -538,6 +955,7 @@ export class GitEngine {
         force: true,
       });
       await git.checkout({ fs, dir: ref.dir, gitdir: ref.gitdir, ref: ref.branch, force: true });
+      await this.smudge(ref);
       local = remote;
       result.pulled = true;
     }
@@ -554,14 +972,17 @@ export class GitEngine {
     if (await git.isDescendent({ fs, dir: ref.dir, gitdir: ref.gitdir, oid: remote, ancestor: local, depth: -1 })) {
       // Remote is strictly ahead — fast-forward (fetches again internally; cheap, already current).
       const ffDone = this.deps.log?.opTime("fast-forward", ref.dir, { branch: ref.branch });
+      await this.dematerialize(ref);
       await git.fastForward({ ...this.common(ref), ref: ref.branch, singleBranch: true });
       ffDone?.();
+      await this.smudge(ref);
       result.pulled = true;
       return result;
     }
 
     // Diverged: merge the remote into the local branch.
     const mergeDone = this.deps.log?.opTime("merge", ref.dir, { branch: ref.branch });
+    await this.dematerialize(ref); // the post-merge checkout must see a quiet tree
     try {
       await git.merge({
         fs,
@@ -574,8 +995,34 @@ export class GitEngine {
       });
     } catch (e) {
       if (e instanceof git.Errors.MergeConflictError) {
-        result.conflictFilepaths = e.data.filepaths;
-        mergeDone?.({ conflicts: e.data.filepaths.length });
+        // Pixels don't merge. A conflicted attachment keeps this device's
+        // version (the teammate's stays in history); only notes go on to
+        // the AI/manual pipeline. Resolutions are staged now, so the merge
+        // commit — whoever completes it — includes them.
+        const attachments = e.data.filepaths.filter(isLfsPath);
+        const notes = e.data.filepaths.filter((f) => !isLfsPath(f));
+        if (attachments.length > 0) {
+          const remoteTip = await this.resolve(ref, `refs/remotes/origin/${ref.branch}`);
+          for (const filepath of attachments) {
+            // Bytes, not text: the blob is usually pointer text, but a
+            // pre-LFS raw binary must survive the round trip too.
+            const mine = await this.readBlobAt(ref, local, filepath);
+            const theirs = remoteTip ? await this.readBlobAt(ref, remoteTip, filepath) : null;
+            const keep = mine ?? theirs; // deleted here + changed there → the change wins
+            if (keep === null) continue;
+            await fs.promises.writeFile(`${ref.dir}/${filepath}`, keep);
+            await this.stage(ref, filepath);
+          }
+          if (notes.length === 0) {
+            mergeDone?.({ conflicts: attachments.length, autoResolved: true });
+            await this.completeMerge(ref, attachments, `merge: kept this device's attachment(s)`);
+            result.pulled = true;
+            result.pushed = true;
+            return result;
+          }
+        }
+        result.conflictFilepaths = notes;
+        mergeDone?.({ conflicts: e.data.filepaths.length, attachments: attachments.length });
         return result;
       }
       throw e;
@@ -585,6 +1032,7 @@ export class GitEngine {
     // working directory. Non-forced, so an edit that landed mid-sync
     // aborts materialization and is picked up next round.
     await git.checkout({ fs, dir: ref.dir, gitdir: ref.gitdir, ref: ref.branch });
+    await this.smudge(ref);
     mergeDone?.({ merged: true });
     result.pulled = true;
     await this.push(ref);

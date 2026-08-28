@@ -1,0 +1,161 @@
+/**
+ * Attachments end-to-end against a real smart-HTTP remote with an LFS
+ * store (see gitHttpServer.ts): the engine converts attachments to
+ * pointers on commit, uploads the bytes before pushing, a second client
+ * materializes the original bytes, the working tree stays quiet after a
+ * sync (pointer equivalence), and a conflicted attachment resolves itself
+ * by keeping the local version.
+ */
+import { execFileSync } from "child_process";
+import * as crypto from "crypto";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createNodeHttp } from "../src/git/nodeHttp";
+import { GitEngine, type RepoRef } from "../src/git/GitEngine";
+import { PatTokenProvider } from "../src/auth/TokenProvider";
+import { startGitServer, type GitServer } from "./gitHttpServer";
+
+let root: string;
+let server: GitServer;
+let bare: string;
+let engineA: GitEngine;
+let engineB: GitEngine;
+let refA: RepoRef;
+let refB: RepoRef;
+
+const msg = (changes: { filepath: string }[]) => `Update ${changes.length} file(s)`;
+const POINTER_PREFIX = "version https://git-lfs.github.com/spec/v1";
+
+function makeEngine(name: string): GitEngine {
+  return new GitEngine({
+    fs,
+    http: createNodeHttp(),
+    tokens: new PatTokenProvider(() => ""),
+    author: () => ({ name, email: `${name}@test.local` }),
+    configDir: () => ".obsidian",
+  });
+}
+
+/** What the remote repo itself holds at a path (via system git). */
+function remoteFile(filepath: string): string {
+  return execFileSync("git", ["cat-file", "-p", `main:${filepath}`], { cwd: bare }).toString("utf8");
+}
+
+beforeAll(async () => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), "covault-lfs-"));
+
+  bare = path.join(root, "kb.git");
+  execFileSync("git", ["init", "--bare", "-b", "main", bare]);
+  execFileSync("git", ["config", "http.receivepack", "true"], { cwd: bare });
+  const seed = path.join(root, "seed");
+  execFileSync("git", ["clone", bare, seed]);
+  fs.writeFileSync(path.join(seed, "README.md"), "# KB\n");
+  execFileSync("git", ["add", "."], { cwd: seed });
+  execFileSync("git", ["-c", "user.name=seed", "-c", "user.email=seed@test.local", "commit", "-m", "seed"], {
+    cwd: seed,
+  });
+  execFileSync("git", ["push", "origin", "main"], { cwd: seed });
+
+  server = await startGitServer(root);
+  const url = `${server.url}/kb.git`;
+  refA = { dir: path.join(root, "clientA"), url, branch: "main" };
+  refB = { dir: path.join(root, "clientB"), url, branch: "main" };
+  engineA = makeEngine("alice");
+  engineB = makeEngine("bob");
+});
+
+afterAll(async () => {
+  await server?.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+describe("attachments ride Git LFS", () => {
+  const original = crypto.randomBytes(2048);
+
+  it("commits a pointer, ships the bytes to the LFS store, adds the CLI rule", async () => {
+    await engineA.clone(refA);
+    fs.writeFileSync(path.join(refA.dir, "picture.png"), original);
+
+    const result = await engineA.syncToRemote(refA, { commitMessage: msg });
+    expect(result.committed.map((c) => c.filepath)).toContain("picture.png");
+    expect(result.pushed).toBe(true);
+
+    // The repo holds a pointer, not pixels…
+    const pointer = remoteFile("picture.png");
+    expect(pointer).toContain(POINTER_PREFIX);
+    expect(pointer).toContain("size 2048");
+    // …the pixels live in the LFS store…
+    const oid = /oid sha256:([0-9a-f]{64})/.exec(pointer)?.[1];
+    expect(oid).toBeDefined();
+    expect(fs.readFileSync(path.join(bare, "lfs-store", oid as string)).equals(original)).toBe(true);
+    // …and plain git + git-lfs users get the same rule.
+    expect(remoteFile(".gitattributes")).toContain("*.png filter=lfs diff=lfs merge=lfs -text");
+    // The local working tree still holds the real bytes.
+    expect(fs.readFileSync(path.join(refA.dir, "picture.png")).equals(original)).toBe(true);
+  });
+
+  it("stays quiet afterwards — the materialized file is not a change", async () => {
+    expect(await engineA.localChanges(refA)).toEqual([]);
+    const result = await engineA.syncToRemote(refA, { commitMessage: msg });
+    expect(result).toEqual({ committed: [], pulled: false, pushed: false, conflictFilepaths: [] });
+  });
+
+  it("materializes the original bytes on a second client", async () => {
+    await engineB.clone(refB);
+    expect(fs.readFileSync(path.join(refB.dir, "picture.png")).equals(original)).toBe(true);
+    expect(await engineB.localChanges(refB)).toEqual([]);
+  });
+
+  it("propagates an edit to the attachment", async () => {
+    const edited = crypto.randomBytes(4096);
+    fs.writeFileSync(path.join(refA.dir, "picture.png"), edited);
+    const pushed = await engineA.syncToRemote(refA, { commitMessage: msg });
+    expect(pushed.committed.map((c) => c.filepath)).toEqual(["picture.png"]);
+
+    const pulled = await engineB.syncToRemote(refB, { commitMessage: msg });
+    expect(pulled.pulled).toBe(true);
+    expect(fs.readFileSync(path.join(refB.dir, "picture.png")).equals(edited)).toBe(true);
+  });
+
+  it("resolves a conflicted attachment by keeping the local version", async () => {
+    const fromAlice = crypto.randomBytes(1500);
+    const fromBob = crypto.randomBytes(1600);
+    fs.writeFileSync(path.join(refA.dir, "picture.png"), fromAlice);
+    await engineA.syncToRemote(refA, { commitMessage: msg });
+
+    // Bob edits without having pulled Alice's version: a true conflict.
+    fs.writeFileSync(path.join(refB.dir, "picture.png"), fromBob);
+    const result = await engineB.syncToRemote(refB, { commitMessage: msg });
+    expect(result.conflictFilepaths).toEqual([]); // never reaches the AI/manual pipeline
+    expect(result.pushed).toBe(true);
+    expect(fs.readFileSync(path.join(refB.dir, "picture.png")).equals(fromBob)).toBe(true);
+
+    // Alice picks up the merge — Bob's version won, hers is in history.
+    const follow = await engineA.syncToRemote(refA, { commitMessage: msg });
+    expect(follow.pulled).toBe(true);
+    expect(fs.readFileSync(path.join(refA.dir, "picture.png")).equals(fromBob)).toBe(true);
+    expect(remoteFile("picture.png")).toContain(POINTER_PREFIX);
+  });
+
+  it("shares a brand-new folder with attachments via initAndPush", async () => {
+    const bareLib = path.join(root, "lib.git");
+    execFileSync("git", ["init", "--bare", "-b", "main", bareLib]);
+    execFileSync("git", ["config", "http.receivepack", "true"], { cwd: bareLib });
+
+    const dir = path.join(root, "clientA-lib");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "guide.md"), "# Guide\n");
+    const slides = crypto.randomBytes(3000);
+    fs.writeFileSync(path.join(dir, "slides.pdf"), slides);
+
+    const refLib: RepoRef = { dir, url: `${server.url}/lib.git`, branch: "main" };
+    await engineA.initAndPush(refLib, "Share library");
+
+    const pointer = execFileSync("git", ["cat-file", "-p", "main:slides.pdf"], { cwd: bareLib }).toString("utf8");
+    expect(pointer).toContain(POINTER_PREFIX);
+    const oid = /oid sha256:([0-9a-f]{64})/.exec(pointer)?.[1];
+    expect(fs.readFileSync(path.join(bareLib, "lfs-store", oid as string)).equals(slides)).toBe(true);
+  });
+});

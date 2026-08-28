@@ -70,6 +70,29 @@ vault/                        ← 主 repo（个人知识库，可选同步到�
 - 已知坑：statusMatrix 会把嵌套子库内文件报成 new（issue #761）——status 扫描必须按 manifest 排除子库路径；
   clone 指定 commit 有怪癖（#1160），我们跟踪分支所以不受影响。
 
+### 4.1 附件：Git LFS（2026-08-28 定稿）
+
+二进制附件不进 git 历史：仓库里只存 LFS 指针（130 字节文本），字节走 LFS batch API
+存到远端的 LFS 存储（现为 GitHub LFS，协议开放、后端可换成自建）。格式采用标准
+git-lfs 指针 + 托管 `.gitattributes` 块，CLI 上装了 git-lfs 的同事看到完全一致的行为。
+
+isomorphic-git 没有 clean/smudge filter，转换在 GitEngine 的每个内容出入口手工完成
+（`src/git/lfs.ts` 提供指针格式/哈希/batch 客户端）：
+
+- **clean（入 index）**：`stage()` 对附件扩展名（extension-based，与 .gitattributes 可表达性对齐）
+  算 sha256 → 字节存 `gitdir/lfs/objects/`（与 git-lfs 同布局）→ `writeBlob` 指针 + `updateIndex({oid})`。
+- **smudge（出工作区）**：clone/adopt/fast-forward/merge/discard 之后 + 每轮同步开头的修复扫描,
+  指针文件先查本地缓存、缺的走一次 batch 下载(sha256 校验)。
+- **上传先于 push**：`push()` 先把分支 tip 引用的对象 batch 上传——仓库里永远不会出现
+  无法解析的死指针。内容寻址天然去重，重复分享零上传。
+- **status 静默**：物化后的附件与 HEAD 指针永远"不同"，localChanges 用指针等价
+  （sha256 + mtime 缓存）过滤;checkout 类操作前先 `dematerialize()` 还原成指针避免
+  CheckoutConflictError，事后再 smudge。
+- **冲突**：附件冲突不进 LLM/手工管道，自动保留本地版本（对方版本在历史里），
+  仅笔记冲突继续走原管道。
+- 计费：org 为 Team/Enterprise 时 GitHub LFS 免费额度 250 GiB 存储 + 250 GiB/月带宽，
+  org 需绑卡设 budget（无支付方式时超额直接锁读写）。
+
 ## 5. 同步与提交策略
 
 后台定时循环（可配置间隔），对主 repo 和每个子库独立执行：
