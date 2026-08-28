@@ -1,5 +1,7 @@
 # Covault GitHub App 注册清单
 
+> 首次上线时的 App 注册记录。完整的安装配置文档（GitHub 侧 + 后端 + 本地）见 [SETUP.md](SETUP.md)。
+
 Connect 流程的代码（插件 + zhiyu-sync 后端）已全部就绪，只差真实的 App 凭证。
 按下面步骤操作后填入两处配置即可上线。
 
