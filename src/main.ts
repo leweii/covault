@@ -26,6 +26,7 @@ import { FileHistoryModal } from "./ui/FileHistoryModal";
 import { CovaultPanel, COVAULT_VIEW_TYPE } from "./ui/CovaultPanel";
 import { AskView, COVAULT_ASK_VIEW_TYPE } from "./ui/AskView";
 import { AskEngine } from "./llm/ask";
+import { describeEndpoint } from "./llm/reachability";
 import { makeReadTool, makeRunCommandTool, makeSearchTool, type AskTool } from "./llm/agentTools";
 import { makeEditTools } from "./llm/editTools";
 import { McpManager } from "./llm/mcp";
@@ -62,6 +63,10 @@ export default class CovaultPlugin extends Plugin {
   private settingsTab: CovaultSettingTab | null = null;
   private statusBarEl!: HTMLElement;
   private syncIntervalId: number | null = null;
+  /** Libraries mid-removal. Disabling the panel's button isn't enough: any
+   *  sync tick re-renders the panel with a fresh, enabled button, and a
+   *  removal can spend minutes awaiting an in-flight round. */
+  private removingLibraries = new Set<string>();
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -119,6 +124,8 @@ export default class CovaultPlugin extends Plugin {
       models: this.models,
       getSelection: () => this.settings.llm,
       hasKey: (provider) => this.hasModelAccess(provider),
+      onTransport: (line, failed) => (failed ? this.debugLog.op("llm", line) : this.debugLog.log("llm", line)),
+      diagnose: describeEndpoint,
     });
 
     // Probed lazily on the first question, then cached: the agent is told
@@ -138,6 +145,8 @@ export default class CovaultPlugin extends Plugin {
       models: this.models,
       getSelection: () => this.settings.llm,
       hasKey: (provider) => this.hasModelAccess(provider),
+      onTransport: (line, failed) => (failed ? this.debugLog.op("llm", line) : this.debugLog.log("llm", line)),
+      diagnose: describeEndpoint,
     });
 
     this.sync = new SyncController(
@@ -782,6 +791,12 @@ export default class CovaultPlugin extends Plugin {
         }
       },
       cliManifest: () => this.cliInventory.manifest(),
+      // A failure is recorded whether or not debug mode was on — it is the
+      // only record of why a question couldn't reach the model.
+      onTransport: (line, failed) =>
+        failed ? this.debugLog.op("llm", line) : this.debugLog.log("llm", line),
+      // Second look at a failed request, outside the renderer's CORS rules.
+      diagnose: describeEndpoint,
     });
   }
 
@@ -853,25 +868,67 @@ export default class CovaultPlugin extends Plugin {
 
   /** Detach a library: drop it from the manifest AND delete the folder's
    *  git state, so the folder is an ordinary folder again (re-sharing it
-   *  later must not trip over a stale link). The notes stay on disk; the
-   *  .git is only removed when it really is this library's. */
-  removeLibrary(repoPath: string): void {
-    const repo = this.libraryManifest.load().repos.find((r) => r.path === repoPath);
-    this.libraryManifest.remove(repoPath);
-    this.sharedRepos(); // refresh .gitignore
-    if (repo) {
-      void this.engine
-        .existingOrigin({ dir: path.join(this.vaultBasePath(), repoPath), url: repo.url, branch: repo.branch })
-        .then((origin) => {
-          if (origin && sameRemote(origin, repo.url)) this.unlinkFolder(repoPath);
-        });
+   *  later must not trip over a stale link). The notes stay on disk unless
+   *  `deleteFiles` says otherwise; the .git is only removed when it really
+   *  is this library's. `deletedFolder` reports whether the delete actually
+   *  happened — it is refused when the folder holds work GitHub never got,
+   *  because the dialog promised the team's copy covers everything. */
+  async removeLibrary(repoPath: string, opts: { deleteFiles?: boolean } = {}): Promise<{ deletedFolder: boolean }> {
+    if (this.removingLibraries.has(repoPath)) return { deletedFolder: false };
+    this.removingLibraries.add(repoPath);
+    try {
+      const repo = this.libraryManifest.load().repos.find((r) => r.path === repoPath);
+      this.libraryManifest.remove(repoPath);
+      this.sharedRepos(); // refresh .gitignore
+      // Out of the manifest already, so this either awaits the round still in
+      // flight or returns at once — never starts a sync of a gone library.
+      await this.sync.syncJust(repoPath);
+      // That round may have ended in error or conflict — forget it, or the
+      // status bar keeps reporting a library that no longer exists.
+      this.sync.forget(repoPath);
+      const ref = repo
+        ? { dir: path.join(this.vaultBasePath(), repoPath), url: repo.url, branch: repo.branch }
+        : null;
+      if (opts.deleteFiles) {
+        const keep = ref !== null && (await this.engine.hasUnpushedWork(ref));
+        if (!keep) await this.deleteVaultFolder(repoPath);
+        return { deletedFolder: !keep };
+      }
+      if (ref && repo) {
+        const origin = await this.engine.existingOrigin(ref).catch(() => null);
+        if (origin && sameRemote(origin, repo.url)) this.unlinkFolder(repoPath);
+      }
+      return { deletedFolder: false };
+    } finally {
+      this.removingLibraries.delete(repoPath);
+      this.refreshSettingsUI();
     }
-    this.refreshSettingsUI();
   }
 
   /** Delete a folder's git link (its .git directory). Notes are untouched. */
   unlinkFolder(folderPath: string): void {
     fs.rmSync(path.join(this.vaultBasePath(), folderPath, ".git"), { recursive: true, force: true });
+  }
+
+  /**
+   * Delete a vault folder and everything under it.
+   *
+   * Obsidian first, so the notes follow the user's "deleted files" setting
+   * (system trash, vault trash, or gone) and the vault index keeps up. The
+   * fs sweep after it is for what Obsidian does not index — the .git
+   * directory, chiefly — and is a no-op when the trash already took the
+   * whole folder.
+   */
+  private async deleteVaultFolder(folderPath: string): Promise<void> {
+    const abs = path.join(this.vaultBasePath(), folderPath);
+    // The .git never rides into the trash: with the vault-trash setting,
+    // trashFile moves the whole folder under .trash/, which would leave a
+    // live repo sitting there — and restoring the notes from the trash
+    // would restore the stale link with them.
+    fs.rmSync(path.join(abs, ".git"), { recursive: true, force: true });
+    const folder = this.app.vault.getAbstractFileByPath(folderPath);
+    if (folder) await this.app.fileManager.trashFile(folder);
+    fs.rmSync(abs, { recursive: true, force: true });
   }
 
   /** Create a brand-new shared library repo in `org` backed by a fresh

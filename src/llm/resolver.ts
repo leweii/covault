@@ -4,6 +4,8 @@
  * (provider/model/key from settings) instead of hand-rolled providers.
  */
 import { contentText, type MutableModels } from "@earendil-works/pi-ai";
+import { explainAskError } from "./ask";
+import { createTransportProbe, describeError, type DiagnoseFn, type TransportProbe } from "./transport";
 
 export interface AISuggestionRequest {
   filePath?: string;
@@ -128,10 +130,25 @@ export interface ResolverDeps {
   models: MutableModels;
   getSelection: () => { provider: string; model: string };
   hasKey: (provider: string) => boolean;
+  /** One line per model HTTP request, for the debug log (see transport.ts). */
+  onTransport?: (line: string, failed: boolean) => void;
+  /** Second look at a failed request, outside the renderer's CORS rules. */
+  diagnose?: DiagnoseFn;
 }
 
 export class ConflictResolver {
-  constructor(private deps: ResolverDeps) {}
+  /** Same instrumented HTTP layer as Ask — without it a connection failure
+   *  here surfaces as the SDK's bare "Connection error.", which the
+   *  ConflictModal shows the user verbatim. */
+  private probe: TransportProbe;
+
+  constructor(private deps: ResolverDeps) {
+    this.probe = createTransportProbe(
+      (line, failed) => this.deps.onTransport?.(line, failed),
+      undefined,
+      (url) => this.deps.diagnose?.(url) ?? Promise.resolve(null),
+    );
+  }
 
   isEnabled(): boolean {
     const { provider, model } = this.deps.getSelection();
@@ -143,10 +160,20 @@ export class ConflictResolver {
     const model = this.deps.models.getModel(provider, modelId);
     if (!model) throw new Error(`Model ${provider}/${modelId} is not available — pick one in Settings.`);
 
-    const reply = await this.deps.models.completeSimple(model, {
-      systemPrompt: SYSTEM_PROMPT,
-      messages: [{ role: "user", content: buildPrompt(req), timestamp: Date.now() }],
-    });
+    this.probe.reset();
+    let reply;
+    try {
+      reply = await this.deps.models.completeSimple(
+        model,
+        {
+          systemPrompt: SYSTEM_PROMPT,
+          messages: [{ role: "user", content: buildPrompt(req), timestamp: Date.now() }],
+        },
+        { fetch: this.probe.fetch },
+      );
+    } catch (e) {
+      throw new Error(explainAskError(describeError(e), this.probe.lastFailure));
+    }
 
     const parsed = parseAIResponse(contentText(reply.content));
     const usage = reply.usage;

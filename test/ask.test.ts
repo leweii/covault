@@ -229,6 +229,66 @@ describe("AskEngine", () => {
     expect(fs.existsSync(path.join(vault, "..", "evil.md"))).toBe(false);
   });
 
+  /**
+   * Reproduces the layering that made a failed request unactionable: pi-ai
+   * turns a thrown fetch into an `error` event carrying only
+   * `error.message`, and the Anthropic SDK's message is "Connection error."
+   * The engine must still name the cause, which it can only do because it
+   * supplied the fetch.
+   */
+  it("names why a request never reached the model", async () => {
+    const models = {
+      getModel: () => ({ id: "fake", api: "fake", provider: "fake", input: ["text"] }),
+      streamSimple: (_m: unknown, _c: unknown, options: { fetch?: typeof globalThis.fetch }) => {
+        const stream = createAssistantMessageEventStream();
+        void (async () => {
+          const message: AssistantMessage = {
+            role: "assistant",
+            content: [],
+            api: "fake" as never,
+            provider: "fake",
+            model: "fake",
+            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } } as never,
+            stopReason: "error",
+            timestamp: 0,
+          };
+          try {
+            await options.fetch!("https://api.anthropic.com/v1/messages");
+          } catch {
+            // Exactly what pi-ai does: the cause is dropped here.
+            message.errorMessage = "Connection error.";
+          }
+          stream.push({ type: "error", reason: "error", error: message } as never);
+          stream.end();
+        })();
+        return stream;
+      },
+    } as unknown as MutableModels;
+
+    const lines: string[] = [];
+    const ask = new AskEngine({
+      models,
+      getSelection: () => ({ provider: "fake", model: "fake" }),
+      hasKey: () => true,
+      requireApproval: () => true,
+      tools: async () => [],
+      libraryMap: () => null,
+      onTransport: (line) => lines.push(line),
+    });
+
+    // The renderer's fetch is what fails on a machine behind a proxy.
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw new Error("fetch failed", { cause: new Error("unable to verify the first certificate") });
+    }) as typeof globalThis.fetch;
+    try {
+      await expect(ask.ask("anything")).rejects.toThrow(/first certificate/);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    expect(lines.some((l) => l.includes("FAILED api.anthropic.com/v1/messages"))).toBe(true);
+  });
+
   it("keeps the conversation until reset", async () => {
     const ask = engine(scriptedModels([[{ type: "text", text: "answer" }]]));
     await ask.ask("q1");

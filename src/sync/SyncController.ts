@@ -102,6 +102,18 @@ export class SyncController {
     this.pending.delete(repoPath);
   }
 
+  /**
+   * Drop everything remembered about a repo — for a library being removed.
+   * A stale error or conflict entry would otherwise hold the status bar on
+   * "sync issue" or "needs attention" (and offer the conflict modal) for a
+   * repo that no longer exists, until the plugin reloads.
+   */
+  forget(repoPath: string): void {
+    const hadState = this.states.delete(repoPath);
+    const hadPending = this.pending.delete(repoPath);
+    if (hadState || hadPending) this.host.onStateChange(this.states);
+  }
+
   state(repoPath: string): RepoState {
     return this.states.get(repoPath) ?? { phase: "idle" };
   }
@@ -202,6 +214,13 @@ export class SyncController {
       for (const repo of repos) {
         if (this.inFlight.has(repo.path)) {
           this.log?.op("pass", `skipped ${repo.label ?? repo.path} — already syncing`, { trigger });
+          continue;
+        }
+        // The snapshot goes stale while the sweep runs: a library removed
+        // mid-pass must not be synced from it — its folder was just deleted
+        // or unlinked, and !isRepo would clone it right back.
+        if (!this.host.repos().some((r) => r.path === repo.path)) {
+          this.log?.op("pass", `skipped ${repo.label ?? repo.path} — removed while the sweep ran`, { trigger });
           continue;
         }
         await this.track(repo, trigger);

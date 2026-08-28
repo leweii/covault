@@ -8,6 +8,8 @@
  */
 import { contentText, type MutableModels } from "@earendil-works/pi-ai";
 import type { LibraryFacts } from "../covault/skill";
+import { explainAskError } from "./ask";
+import { createTransportProbe, describeError, type DiagnoseFn, type TransportProbe } from "./transport";
 
 const SYSTEM_PROMPT = `You describe knowledge libraries for a routing index used by AI assistants.
 
@@ -43,10 +45,24 @@ export interface DescriberDeps {
   models: MutableModels;
   getSelection: () => { provider: string; model: string };
   hasKey: (provider: string) => boolean;
+  /** One line per model HTTP request, for the debug log (see transport.ts). */
+  onTransport?: (line: string, failed: boolean) => void;
+  /** Second look at a failed request, outside the renderer's CORS rules. */
+  diagnose?: DiagnoseFn;
 }
 
 export class LibraryDescriber {
-  constructor(private deps: DescriberDeps) {}
+  /** Same instrumented HTTP layer as Ask, so a failure here leaves a
+   *  debug-log line and a cause instead of a silent empty description. */
+  private probe: TransportProbe;
+
+  constructor(private deps: DescriberDeps) {
+    this.probe = createTransportProbe(
+      (line, failed) => this.deps.onTransport?.(line, failed),
+      undefined,
+      (url) => this.deps.diagnose?.(url) ?? Promise.resolve(null),
+    );
+  }
 
   isEnabled(): boolean {
     const { provider, model } = this.deps.getSelection();
@@ -60,10 +76,20 @@ export class LibraryDescriber {
     const model = this.deps.models.getModel(provider, modelId);
     if (!model) return null;
 
-    const reply = await this.deps.models.completeSimple(model, {
-      systemPrompt: SYSTEM_PROMPT,
-      messages: [{ role: "user", content: buildDescribePrompt(facts), timestamp: Date.now() }],
-    });
+    this.probe.reset();
+    let reply;
+    try {
+      reply = await this.deps.models.completeSimple(
+        model,
+        {
+          systemPrompt: SYSTEM_PROMPT,
+          messages: [{ role: "user", content: buildDescribePrompt(facts), timestamp: Date.now() }],
+        },
+        { fetch: this.probe.fetch },
+      );
+    } catch (e) {
+      throw new Error(explainAskError(describeError(e), this.probe.lastFailure));
+    }
     const line = sanitizeDescription(contentText(reply.content));
     return line || null;
   }

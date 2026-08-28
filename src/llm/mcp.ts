@@ -14,6 +14,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { TSchema } from "typebox";
 import type { AskTool } from "./agentTools";
+import { describeError } from "./transport";
 import { LoopbackAuthReceiver, McpAuthStore, McpOAuthProvider, serverForState } from "./mcpOAuth";
 
 export interface McpServerConfig {
@@ -53,7 +54,10 @@ export class SignInRequired extends Error {
  * their two overwhelmingly common causes both have a concrete fix.
  */
 export function explainMcpError(error: unknown, server: McpServerConfig): string {
-  const raw = error instanceof Error ? error.message : String(error);
+  // The cause chain, not just the top message: "fetch failed" carries its
+  // diagnosis (ENOTFOUND, ECONNREFUSED…) one level down, and the regexes
+  // below can only match what they can see.
+  const raw = describeError(error);
   if (/\b401\b|unauthorized|invalid_token/i.test(raw)) {
     return "needs sign-in — a browser window should have opened; finish there, then ask again.";
   }

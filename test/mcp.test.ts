@@ -58,6 +58,14 @@ describe("explainMcpError", () => {
   it("passes an unrecognized failure through rather than inventing a cause", () => {
     expect(explainMcpError(new Error("socket hang up"), http)).toBe("socket hang up");
   });
+
+  it("reads the cause chain — 'fetch failed' alone diagnoses nothing", () => {
+    const http = { name: "docs", url: "https://mcp.example.com" };
+    const error = new Error("fetch failed", {
+      cause: Object.assign(new Error("getaddrinfo ENOTFOUND mcp.example.com"), { code: "ENOTFOUND" }),
+    });
+    expect(explainMcpError(error, http)).toContain("ENOTFOUND mcp.example.com");
+  });
 });
 
 describe("McpAuthStore", () => {

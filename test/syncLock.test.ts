@@ -87,6 +87,20 @@ describe("per-repo sync locking", () => {
     expect(sync.state("lib-a")).toMatchObject({ phase: "error", detail: "network gone" });
   });
 
+  it("a sweep skips a repo removed while it ran — never re-cloning a deleted library", async () => {
+    const { engine, started, releaseAll } = pausableEngine();
+    const repos = items("lib-a", "lib-b");
+    const sync = controller(engine, repos);
+    const pass = sync.syncAll("auto");
+    // While lib-a's round is blocked, the user removes lib-b: the sweep's
+    // snapshot still lists it, but syncing it now would clone it back.
+    await vi.waitFor(() => expect(started).toEqual(["/vault/lib-a"]));
+    repos.splice(1, 1);
+    releaseAll();
+    await pass;
+    expect(started).toEqual(["/vault/lib-a"]);
+  });
+
   it("a full pass skips a repo that is already syncing on its own", async () => {
     const { engine, started, releaseAll } = pausableEngine();
     const sync = controller(engine, items("lib-a", "lib-b"));
@@ -155,6 +169,27 @@ describe("what the panel can see", () => {
     expect(sync.isSweeping()).toBe(false);
   });
 })
+
+/**
+ * Removing a library must take its remembered state with it: a stale error
+ * or conflict entry held the status bar on "sync issue" / "needs attention"
+ * (and kept offering the conflict modal) for a repo that no longer existed.
+ */
+describe("forget", () => {
+  it("drops a removed repo's state and pending conflicts", async () => {
+    const engine = {
+      isRepo: async () => true,
+      syncToRemote: async () => ({ committed: [], pulled: false, pushed: false, conflictFilepaths: ["a.md"] }),
+    } as unknown as GitEngine;
+    const sync = controller(engine, items("lib-a"));
+    await sync.syncJust("lib-a");
+    expect(sync.state("lib-a").phase).toBe("conflict");
+    expect(sync.pendingConflicts()).toHaveLength(1);
+    sync.forget("lib-a");
+    expect(sync.state("lib-a").phase).toBe("idle");
+    expect(sync.pendingConflicts()).toEqual([]);
+  });
+});
 
 /**
  * Setting up the personal knowledge base and adopting a library's contents

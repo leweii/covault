@@ -492,7 +492,15 @@ export class CovaultSettingTab extends PluginSettingTab {
         const repo = repos[index];
         if (!repo) return;
         // The folder and its notes stay on disk — only the link goes.
-        this.plugin.removeLibrary(repo.path);
+        // Unlinking waits on any sync round in flight, so the row goes
+        // first and a failure gets its own line.
+        this.plugin.removeLibrary(repo.path).then(
+          () => this.update(),
+          (e: unknown) => {
+            new Notice(`Covault: couldn't finish removing "${repo.path}" — ${(e as Error).message}`);
+            this.update();
+          },
+        );
         this.update();
       },
       addItem: {

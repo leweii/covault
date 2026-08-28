@@ -485,4 +485,50 @@ describe("GitEngine against a real smart-HTTP remote", () => {
     const changes = await engineA.localChanges(refA);
     expect(changes).toEqual([]);
   });
+
+  /**
+   * The "delete the local folder too" checkbox promises the team's copy on
+   * GitHub covers everything; hasUnpushedWork is what keeps that promise
+   * honest when sync has been failing and local work exists nowhere else.
+   */
+  describe("hasUnpushedWork", () => {
+    let ref: RepoRef;
+
+    beforeAll(async () => {
+      const bare = path.join(root, "unpushed-kb.git");
+      execFileSync("git", ["init", "--bare", "-b", "main", bare]);
+      execFileSync("git", ["config", "http.receivepack", "true"], { cwd: bare });
+      const folder = path.join(root, "vault-unpushed");
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, "note.md"), "# note\n");
+      ref = { dir: folder, url: `${server.url}/unpushed-kb.git`, branch: "main" };
+      await engineA.initAndPush(ref, "seed");
+    });
+
+    it("is false when everything reached the remote", async () => {
+      expect(await engineA.hasUnpushedWork(ref)).toBe(false);
+    });
+
+    it("sees an uncommitted edit", async () => {
+      fs.writeFileSync(path.join(ref.dir, "draft.md"), "# only here\n");
+      expect(await engineA.hasUnpushedWork(ref)).toBe(true);
+    });
+
+    it("sees a committed-but-unpushed edit", async () => {
+      await engineA.commitAll(ref, "local only", await engineA.localChanges(ref));
+      expect(await engineA.hasUnpushedWork(ref)).toBe(true);
+      // …and a push clears it.
+      await engineA.push(ref);
+      expect(await engineA.hasUnpushedWork(ref)).toBe(false);
+    });
+
+    it("treats a never-linked folder's content as unpushed, an empty or missing one as safe", async () => {
+      const plain: RepoRef = { dir: path.join(root, "never-linked"), url: ref.url, branch: "main" };
+      expect(await engineA.hasUnpushedWork(plain)).toBe(false); // no folder
+      fs.mkdirSync(plain.dir, { recursive: true });
+      expect(await engineA.hasUnpushedWork(plain)).toBe(false); // empty
+      fs.writeFileSync(path.join(plain.dir, "note.md"), "# never synced\n");
+      expect(await engineA.hasUnpushedWork(plain)).toBe(true);
+    });
+  });
 });

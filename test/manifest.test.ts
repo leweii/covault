@@ -108,6 +108,9 @@ describe("ensureIgnored", () => {
     expect(content).toContain("/teams/a-kb/");
     expect(content).toContain("/teams/b-kb/");
     expect(content).toContain("/.covault/skills/");
+    // Deleted library folders land in the vault trash; a vault-root repo
+    // another tool syncs must not pick their contents back up.
+    expect(content).toContain("/.trash/");
   });
 
   it("preserves user content and updates only its own block, idempotently", () => {

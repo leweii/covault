@@ -23,6 +23,7 @@ import {
   type MutableModels,
 } from "@earendil-works/pi-ai";
 import type { ApprovalRequest, AskTool } from "./agentTools";
+import { createTransportProbe, describeError, type DiagnoseFn, type TransportProbe } from "./transport";
 
 /** Runaway guard: one question should never burn more turns than this. */
 const MAX_TURNS = 16;
@@ -69,6 +70,12 @@ export interface AskDeps {
    *  nothing to advertise. Resolved per question, so a tool installed
    *  mid-session shows up after a refresh. */
   cliManifest?: () => Promise<string | null>;
+  /** One line per model HTTP request, for the debug log. `failed` marks the
+   *  ones worth recording even when debug mode is off. */
+  onTransport?: (line: string, failed: boolean) => void;
+  /** Asks the endpoint what it really said when a request failed; see
+   *  transport.ts. Without it a CORS-hidden status stays hidden. */
+  diagnose?: DiagnoseFn;
 }
 
 /**
@@ -94,14 +101,35 @@ export function withoutImageData(messages: Message[]): Message[] {
   });
 }
 
+/**
+ * The failure the agent reported, plus what the transport actually saw.
+ *
+ * "Connection error." on its own tells the user nothing they can act on;
+ * the probe's line names the proxy, the certificate or the refused host.
+ * Only appended when the transport genuinely failed, so a rejected API key
+ * or a model-side error keeps reading as itself.
+ */
+export function explainAskError(reported: string, transportFailure: string | null): string {
+  if (!transportFailure) return reported;
+  if (reported.includes(transportFailure)) return reported;
+  return `${reported.replace(/\.$/, "")} — the request never reached the model: ${transportFailure}`;
+}
+
 export class AskEngine {
   private agent: Agent | null = null;
   private byName = new Map<string, AskTool>();
   private cb: AskCallbacks = {};
   /** Transcript restored from a saved session, applied on next ask. */
   private pendingHistory: Message[] | null = null;
+  private probe: TransportProbe;
 
-  constructor(private deps: AskDeps) {}
+  constructor(private deps: AskDeps) {
+    this.probe = createTransportProbe(
+      (line, failed) => this.deps.onTransport?.(line, failed),
+      undefined,
+      (url) => this.deps.diagnose?.(url) ?? Promise.resolve(null),
+    );
+  }
 
   isEnabled(): boolean {
     const { provider, model } = this.deps.getSelection();
@@ -156,7 +184,16 @@ export class AskEngine {
 
   private buildAgent(): Agent {
     const agent = new Agent({
-      streamFn: (model, context, options) => this.deps.models.streamSimple(model, context, options),
+      // Our own fetch goes in so a failed request keeps its cause; see
+      // transport.ts. streamSimple can also throw outright (missing key),
+      // which the agent loop would report without context.
+      streamFn: (model, context, options) => {
+        try {
+          return this.deps.models.streamSimple(model, context, { ...options, fetch: this.probe.fetch });
+        } catch (e) {
+          throw new Error(describeError(e));
+        }
+      },
       beforeToolCall: async (ctx) => {
         const tool = this.byName.get(ctx.toolCall.name);
         let request: ApprovalRequest | null | undefined;
@@ -247,12 +284,13 @@ export class AskEngine {
     const onAbort = () => agent.abort();
     cb.signal?.addEventListener("abort", onAbort);
 
+    this.probe.reset();
     try {
       await agent.prompt(question, images);
       const error = agent.state.errorMessage;
       if (cb.signal?.aborted) throw new Error("Cancelled.");
       if (turns > MAX_TURNS) throw new Error("The model kept working without answering — try a more specific question.");
-      if (error) throw new Error(error);
+      if (error) throw new Error(explainAskError(error, this.probe.lastFailure));
       if (!finalText) throw new Error("The model returned no answer — try again.");
       return { text: finalText, toolCalls, costUsd };
     } finally {

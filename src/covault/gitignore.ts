@@ -25,6 +25,9 @@ export function ensureIgnored(vaultBase: string, repoPaths: string[]): void {
   const entries = [
     ...repoPaths.map((p) => `/${p.replace(/\/+$/, "")}/`),
     "/.covault/main.git/",
+    // Obsidian's vault trash: deleted library folders land here, and their
+    // contents must not resurface in a vault-root repo another tool syncs.
+    "/.trash/",
     // Derived data, regenerated per device — synced nowhere, by anything.
     "/.covault/skills/",
     // Local diagnostics: this machine's problem, and potentially large.

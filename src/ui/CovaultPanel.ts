@@ -77,14 +77,10 @@ export class CovaultPanel extends ItemView {
     const scroll = root.createDiv("covault-panel-scroll");
 
     // ── Header ────────────────────────────────────────────────
+    // No sync-everything button up here: the sections carry their own, and
+    // a global sweep next to them mostly invited accidental full sweeps.
     const header = scroll.createDiv("covault-panel-header");
     header.createSpan({ cls: "covault-panel-title", text: "Covault" });
-    const syncBtn = header.createEl("button", {
-      cls: "covault-panel-icon-btn",
-      attr: { "aria-label": "Sync now" },
-    });
-    setIcon(syncBtn, "refresh-cw");
-    syncBtn.onclick = () => void this.plugin.sync.syncAll("manual");
 
     this.renderActiveTasks(scroll);
 
@@ -472,15 +468,38 @@ export class CovaultPanel extends ItemView {
       const remove = row.createEl("button", { cls: "covault-panel-icon-btn", attr: { "aria-label": "Remove library" } });
       setIcon(remove, "x");
       remove.onclick = async () => {
-        const ok = await ConfirmModal.ask(this.app, {
+        const answer = await ConfirmModal.askWithOption(this.app, {
           title: "Remove library",
-          message: `Stop syncing "${repo.path}"? The folder and its notes stay on disk.`,
+          message: `Stop syncing "${repo.path}"? By default the folder and its notes stay on disk.`,
           cta: "Remove",
+          option: {
+            label: "Delete the local folder too",
+            desc: `Removes "${repo.path}" and everything in it from this vault. Your team's copy on GitHub is untouched.`,
+          },
         });
-        if (!ok) return;
-        this.plugin.removeLibrary(repo.path);
-        new Notice(`Covault: "${repo.path}" is no longer synced.`);
-        this.render();
+        if (!answer.ok) return;
+        // Removing can wait on a sync round already in flight — the button
+        // must not accept a second click meanwhile, and the user should
+        // know why nothing seems to happen.
+        remove.disabled = true;
+        if (this.plugin.sync.isSyncing(repo.path)) {
+          new Notice(`Covault: finishing the sync of "${repo.path}" first…`);
+        }
+        try {
+          const result = await this.plugin.removeLibrary(repo.path, { deleteFiles: answer.option });
+          new Notice(
+            answer.option
+              ? result.deletedFolder
+                ? `Covault: "${repo.path}" is no longer synced, and its local folder is gone.`
+                : `Covault: "${repo.path}" is no longer synced — but its folder was kept: it holds changes that never reached GitHub.`
+              : `Covault: "${repo.path}" is no longer synced.`,
+            answer.option && !result.deletedFolder ? 10_000 : undefined,
+          );
+        } catch (e) {
+          new Notice(`Covault: couldn't remove "${repo.path}" — ${(e as Error).message}`);
+        } finally {
+          this.render();
+        }
       };
     }
   }
