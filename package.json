@@ -1,6 +1,6 @@
 {
   "name": "covault",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "Team knowledge base client for Obsidian — manifest-driven multi-repo sync with an LLM agent handling all git semantics.",
   "main": "main.js",
   "scripts": {
