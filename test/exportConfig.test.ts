@@ -10,7 +10,6 @@ function settings(): CovaultSettings {
     deviceId: "DEVICE_SECRET",
     githubApp: { connections: [{ sessionId: "SESSION_SECRET", login: "jakob", installations: [] }] },
     llmKeys: { anthropic: "sk-SECRET" },
-    baseOrg: "ct-kb",
     author: { name: "Jakob", email: "j@x.com" },
     llm: { provider: "anthropic", model: "claude-sonnet-5" },
     ask: {
@@ -35,8 +34,9 @@ const manifest: CovaultManifest = {
 describe("buildConfigExport", () => {
   it("carries every setting a teammate needs to reproduce the setup", () => {
     const out = JSON.parse(JSON.stringify(buildConfigExport(settings(), manifest)));
-    expect(out.covaultExport).toBe(2);
-    expect(out.settings.baseOrg).toBe("ct-kb");
+    expect(out.covaultExport).toBe(3);
+    // No organization travels with a setup: it is picked per library.
+    expect(out.settings).not.toHaveProperty("baseOrg");
     expect(out.settings.llm).toEqual({ provider: "anthropic", model: "claude-sonnet-5" });
     expect(out.settings.ask.requireApproval).toBe(false);
     expect(out.settings.personalKb.url).toContain("personal-kb-jakob");
@@ -81,7 +81,7 @@ describe("the export leaves personal identity out", () => {
 describe("parseConfigImport", () => {
   it("accepts a current export", () => {
     const text = JSON.stringify(buildConfigExport(settings(), manifest));
-    expect(parseConfigImport(text).covaultExport).toBe(2);
+    expect(parseConfigImport(text).covaultExport).toBe(3);
   });
 
   it("rejects text that isn't JSON", () => {
@@ -112,16 +112,15 @@ describe("planConfigImport", () => {
 
   it("lists each field that would change, with both values", () => {
     const plan = planConfigImport(blank(), empty, file());
-    const org = plan.changes.find((c) => c.key === "baseOrg");
-    expect(org).toMatchObject({ from: "(empty)", to: "ct-kb", value: "ct-kb" });
-    expect(plan.changes.find((c) => c.key === "llmModel")?.to).toBe("claude-sonnet-5");
+    const model = plan.changes.find((c) => c.key === "llmModel");
+    expect(model).toMatchObject({ from: "(empty)", to: "claude-sonnet-5", value: "claude-sonnet-5" });
     expect(plan.changes.find((c) => c.key === "askApprove")).toMatchObject({ from: "true", to: "false" });
   });
 
   it("says nothing about fields that already match", () => {
-    const same = { ...blank(), baseOrg: "ct-kb" };
+    const same = { ...blank(), llm: { provider: "anthropic", model: "claude-sonnet-5" } };
     const plan = planConfigImport(same, empty, file());
-    expect(plan.changes.find((c) => c.key === "baseOrg")).toBeUndefined();
+    expect(plan.changes.find((c) => c.key === "llmModel")).toBeUndefined();
   });
 
   it("adds only libraries this vault doesn't have", () => {
@@ -165,11 +164,11 @@ describe("planConfigImport", () => {
 
   it("survives a file with junk where the sections should be", () => {
     const plan = planConfigImport(blank(), empty, {
-      covaultExport: 2,
-      settings: { baseOrg: 42, llm: "nope", sync: null },
+      covaultExport: 3,
+      settings: { llm: "nope", sync: null },
       libraries: [null, "x", { path: "ok" }, { path: "p", url: "u" }],
     });
-    expect(plan.changes.find((c) => c.key === "baseOrg")).toBeUndefined();
+    expect(plan.changes.find((c) => c.key === "llmProvider")).toBeUndefined();
     expect(plan.newLibraries).toEqual([{ path: "p", url: "u", branch: "main" }]);
   });
 });

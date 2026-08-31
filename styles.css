@@ -1517,6 +1517,12 @@
   width: 240px;
 }
 
+/* A pasted GitHub link needs more room than a name does. */
+.covault-wide-input {
+  width: 100%;
+  min-width: 260px;
+}
+
 .covault-setup-status {
   font-size: 0.82em;
   color: var(--text-muted);

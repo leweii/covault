@@ -14,9 +14,10 @@
 import type { CovaultSettings } from "../settings";
 import type { CovaultManifest, ManifestRepo } from "./manifest";
 
-/** 2 dropped `settings.author` — a v1 file may still carry it, and import
- *  ignores it either way. */
-export const EXPORT_VERSION = 2;
+/** 2 dropped `settings.author`; 3 dropped `settings.baseOrg` (there is no
+ *  stored organization any more — it is chosen per library). An older file may
+ *  still carry either; import ignores both. */
+export const EXPORT_VERSION = 3;
 
 const REDACTED = "«redacted»";
 
@@ -52,7 +53,6 @@ export function buildConfigExport(settings: CovaultSettings, manifest: CovaultMa
     covaultExport: EXPORT_VERSION,
     settings: {
       authMethod: settings.authMethod,
-      baseOrg: settings.baseOrg,
       // No author here on purpose: the commit identity is who you are, not
       // how the vault is set up, and it is re-derived from the GitHub
       // login on sign-in anyway.
@@ -87,7 +87,6 @@ export function buildConfigExport(settings: CovaultSettings, manifest: CovaultMa
  *  - `personalKbScope.include` — paths in the exporter's vault, not yours.
  */
 export type ImportKey =
-  | "baseOrg"
   | "llmProvider"
   | "llmModel"
   | "syncAuto"
@@ -180,7 +179,6 @@ export function planConfigImport(
     changes.push({ key, label, from: String(from) || "(empty)", to: String(to) || "(empty)", value: to });
   };
 
-  add("baseOrg", "Organization", current.baseOrg, asString(settings.baseOrg));
   add("llmProvider", "AI provider", current.llm.provider, asString(llm.provider));
   add("llmModel", "AI model", current.llm.model, asString(llm.model));
   add("syncAuto", "Automatic sync", current.sync.auto, asBool(sync.auto));

@@ -84,8 +84,6 @@ export interface CovaultSettings {
    *  operations log. Off by default: only useful while chasing a bug. */
   debugMode: boolean;
 
-  /** The org every knowledge repo (shared libraries + personal KBs) lives in. */
-  baseOrg: string;
   /** Personal knowledge base: the vault root synced to a personal repo. */
   mainRepo: { url: string; branch: string } | null;
 }
@@ -104,7 +102,6 @@ export const DEFAULT_SETTINGS: CovaultSettings = {
   ask: { requireApproval: true, mcpServers: "", cliHints: "" },
   announceToAgents: true,
   debugMode: false,
-  baseOrg: "",
   mainRepo: null,
 };
 

@@ -32,8 +32,9 @@ export class MainKbModal extends Modal {
   private bodyEl!: HTMLElement;
   private footerEl!: HTMLElement;
   private kbScope: MainKbScope; // not `scope`: Modal.scope is the keymap scope
-  /** Which org to look in. Starts at the base org but is switchable —
-   *  a personal KB doesn't have to live where the team libraries do. */
+  /** Which org to look in. Starts at the first reachable one and is
+   *  switchable — a personal KB doesn't have to live where the team
+   *  libraries do. */
   private org: string;
   private ctaBtn: HTMLButtonElement | null = null;
 
@@ -45,7 +46,7 @@ export class MainKbModal extends Modal {
     const login = plugin.settings.githubApp.connections[0]?.login ?? "";
     this.name = `personal-kb-${login.toLowerCase()}`;
     this.kbScope = plugin.mainKbScope();
-    this.org = plugin.settings.baseOrg;
+    this.org = plugin.accessibleOrgs()[0] ?? "";
     // Start from the warm cache so the dropdown is filled immediately.
     this.repos = plugin.cachedReposIn(this.org);
     if (this.repos) this.selected = pickDefault(this.repos);
@@ -57,8 +58,8 @@ export class MainKbModal extends Modal {
     const { contentEl } = this;
     contentEl.empty();
 
-    if (!this.plugin.settings.baseOrg) {
-      contentEl.createEl("p", { text: "Choose a base organization first (Settings → Covault → GitHub)." });
+    if (this.plugin.settings.githubApp.connections.length === 0) {
+      contentEl.createEl("p", { text: "Connect to GitHub first (Settings → Covault)." });
       return;
     }
 
@@ -88,6 +89,8 @@ export class MainKbModal extends Modal {
     // Refresh in the background: the cache may predate something the user
     // created elsewhere.
     void this.plugin.fetchAccessibleRepos().then(() => {
+      // A cold cache at open time means no org was known yet.
+      if (!this.org) this.org = this.plugin.accessibleOrgs()[0] ?? "";
       this.repos = this.plugin.cachedReposIn(this.org);
       if (!this.selected && this.repos) this.selected = pickDefault(this.repos);
       this.renderBody();

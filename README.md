@@ -16,9 +16,8 @@ Built for teams where most members are **not** engineers: the UI speaks knowledg
 
 1. Enable the plugin (desktop only).
 2. Settings → Covault → **Connect** to GitHub (one click in the browser; a personal access token also works).
-3. Pick your team's **base organization**.
-4. Add a shared library, or set up your personal knowledge base.
-5. Optionally configure an AI provider (Anthropic, OpenAI, DeepSeek, Google, and 20+ more) for conflict handling and summaries.
+3. Add a shared library (pick the organization in the dialog), or set up your personal knowledge base.
+4. Optionally configure an AI provider (Anthropic, OpenAI, DeepSeek, Google, and 20+ more) for conflict handling and summaries.
 
 ## Security notes
 

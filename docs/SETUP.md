@@ -176,19 +176,24 @@ Client ID 是公开信息(出现在授权 URL 里),可以安全入库。
 > **PAT 兜底(高级)**:Sign in with 切到 `Personal Access Token`,粘一个有 repo 权限的
 > `ghp_…` / `github_pat_…`。PAT 模式下加库要手工粘仓库地址,没有组织下拉。仅在 App 不可用时用。
 
-### 4.3 选知识库组织
-
-**Knowledge base organization** 下拉里选公司 org。共享库和个人知识库都建在这里。
-
-### 4.4 提交身份
+### 4.3 提交身份
 
 **Name** / **Email**:同事在历史里看到的作者信息。留空则从 GitHub login 推导。
 
-### 4.5 加入团队知识库
+### 4.4 加入团队知识库
 
 - 设置页 **Shared libraries → Add a library…**,或命令面板 `Covault: Add a shared library`。
-- 三步:选组织 → 选仓库(或「Create a new library」)→ 选它在 vault 里的位置。
-- **把已有文件夹分享成新库**:右键文件夹 → **Share as knowledge library** → 选组织 + 命名(默认 private)。插件建 repo、首推、写入库清单。
+- 三步:**选组织**(每次都要手动选,没有默认组织)→ 选仓库(或「Create a new library」)→ 选它在 vault 里的位置。
+- 组织下拉里的 **Other… (paste a link)** 用于列表里没有的库:选它以后只需粘一个 GitHub 链接(如 `https://github.com/ct-kb/platform-kb`),组织和库名从链接里解析。
+
+### 4.5 分享文件夹
+
+右键任意文件夹 → **Share…**,弹窗里两个目的地:
+
+- **My knowledge base**(默认):这个文件夹开始同步到你自己的个人知识库,同事拿不到。个人知识库还没建的话,这里直接引导你去建。
+- **A new team library**:在 org 下建一个新库并上传这个文件夹。**组织必须手动选**,再填库名(默认 private)。
+
+单个笔记右键只有 **Share to my knowledge base**(一个笔记成不了一个库)。
 
 ### 4.6 个人知识库(可选,默认不开)
 
@@ -232,8 +237,8 @@ OS 用户配置目录:macOS `~/Library/Application Support/`、Windows `%APPDATA
 
 - 老机器点 **Copy to clipboard**(命令面板同名命令也行),把 JSON 发给自己/同事。
 - 新机器点 **Import…**,确认要写入的字段。
-- 导出的:base org、AI provider/model、同步设置、Ask 设置、库清单、个人库范围。
-- **不导出/不导入的**:API key、PAT、后端 session、deviceId、提交身份(name/email)、别人的个人库地址、登录方式。MCP 配置里的 env 值会被打码,打码过的不会被导入。
+- 导出的:AI provider/model、同步设置、Ask 设置、库清单、个人库范围。
+- **不导出/不导入的**:API key、PAT、后端 session、deviceId、提交身份(name/email)、别人的个人库地址、登录方式、组织(每个库自己选)。MCP 配置里的 env 值会被打码,打码过的不会被导入。
 
 所以新机器上仍需自己做的三件事:**Connect 一次、填 API key、填 name/email**。
 
@@ -257,7 +262,7 @@ OS 用户配置目录:macOS `~/Library/Application Support/`、Windows `%APPDATA
 - [ ] 设置页显示 `Connected as @<login>`,组织列表包含公司 org
 - [ ] Add a library 能列出 org 仓库,加一个库能 clone 下来
 - [ ] 改一个笔记 → 等一轮同步 → GitHub 上看到提交(自己的库直推 / 别人的库出现 PR)
-- [ ] 右键文件夹 Share as knowledge library → org 下出现新 repo,内容完整
+- [ ] 右键文件夹 Share… → 默认「My knowledge base」能分享成功;切到「A new team library」选 org 后,org 下出现新 repo,内容完整
 - [ ] 两台机器同时改同一段 → 冲突被 AI 合并,或浮出三栏界面能选/能改
 - [ ] 贴一张图片 → 推上去 → 另一台机器同步后能正常显示(GitHub 上显示 Stored with Git LFS)
 - [ ] 存量库跑过 Move existing attachments to Git LFS

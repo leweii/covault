@@ -1,18 +1,32 @@
 import { Modal, Notice, Setting, type App } from "obsidian";
-import type CovaultPlugin from "../main";
 import { createOrgRepo, RepoExistsError } from "../git/githubApi";
+import { repoNameFromUrl } from "../git/urls";
+import type CovaultPlugin from "../main";
 import { ConfirmModal } from "./ConfirmModal";
+import { MainKbModal } from "./MainKbModal";
+
+type Dest = "personal" | "team";
 
 /**
- * "Share this folder as a knowledge library": pick the organization,
- * name the library, and Covault creates the repo, uploads the folder,
- * and starts keeping it in sync. No git vocabulary.
+ * "Share this folder" — two destinations behind one dialog.
+ *
+ * Your own knowledge base is the default and the common case: nothing to
+ * decide, one confirmation, the folder starts syncing to your personal
+ * repo. A new team library is the deliberate act, so it asks for the
+ * organization every time — there is no stored default organization to
+ * fall back on, because "which team owns this" is not a property of the
+ * vault. No git vocabulary either way.
  */
 export class ShareFolderModal extends Modal {
+  private dest: Dest = "personal";
   private org = "";
   private repoName: string;
   private isPrivate = true;
   private busy = false;
+  private orgs: string[] = [];
+  private tabButtons: HTMLButtonElement[] = [];
+  private bodyEl!: HTMLElement;
+  private footerEl!: HTMLElement;
 
   constructor(
     app: App,
@@ -24,44 +38,157 @@ export class ShareFolderModal extends Modal {
   }
 
   onOpen(): void {
+    this.modalEl.addClass("covault-setup-modal");
     this.titleEl.setText(`Share "${this.folderPath}"`);
     const { contentEl } = this;
+    contentEl.empty();
 
-    const orgs = this.plugin.settings.githubApp.connections
-      .flatMap((c) => c.installations)
-      .map((i) => i.accountLogin);
-
-    if (orgs.length === 0) {
+    this.orgs = [
+      ...new Set(this.plugin.settings.githubApp.connections.flatMap((c) => c.installations).map((i) => i.accountLogin)),
+    ];
+    if (this.orgs.length === 0 && !this.plugin.settings.mainRepo) {
       contentEl.createEl("p", {
         text: "Connect to GitHub first (Settings → Covault), and install the app on your organization.",
       });
       return;
     }
-    this.org = orgs[0] ?? "";
 
-    new Setting(contentEl)
+    // Personal first unless this folder is already covered there.
+    const state = this.personalState();
+    this.dest = state === "ready" || state === "needsSetup" ? "personal" : "team";
+
+    const tabs = contentEl.createDiv("covault-tabs");
+    const tab = (label: string, dest: Dest) => {
+      const btn = tabs.createEl("button", {
+        text: label,
+        cls: "covault-tab" + (this.dest === dest ? " is-active" : ""),
+      });
+      btn.onclick = () => {
+        if (this.dest === dest || this.busy) return;
+        this.dest = dest;
+        for (const b of this.tabButtons) b.toggleClass("is-active", b === btn);
+        this.renderBody();
+      };
+      this.tabButtons.push(btn);
+    };
+    tab("My knowledge base", "personal");
+    tab("A new team library", "team");
+
+    this.bodyEl = contentEl.createDiv("covault-setup-body");
+    this.footerEl = contentEl.createDiv("covault-setup-footer");
+    this.renderBody();
+  }
+
+  /** Why the personal path may not be available for this folder. */
+  private personalState(): "ready" | "needsSetup" | "alreadyShared" | "wholeVault" {
+    if (!this.plugin.settings.mainRepo) return "needsSetup";
+    if (this.plugin.mainKbScope() === "vault") return "wholeVault";
+    if (this.plugin.isSharedToMainKb(this.folderPath)) return "alreadyShared";
+    return "ready";
+  }
+
+  private renderBody(): void {
+    this.bodyEl.empty();
+    this.footerEl.empty();
+    const cta = this.dest === "personal" ? this.renderPersonal() : this.renderTeam();
+    new Setting(this.footerEl).setClass("covault-setup-actions").addButton((btn) => {
+      btn.setButtonText(cta.label).setCta().onClick(cta.onClick);
+      btn.setDisabled(!cta.enabled || this.busy);
+    });
+  }
+
+  private note(text: string): void {
+    this.bodyEl.createDiv("covault-setup-status", (el) => el.setText(text));
+  }
+
+  private renderPersonal(): { label: string; enabled: boolean; onClick: () => void } {
+    const mainRepo = this.plugin.settings.mainRepo;
+    switch (this.personalState()) {
+      case "needsSetup":
+        this.note("Your knowledge base isn't set up yet — that takes one dialog, then this folder can go in.");
+        return {
+          label: "Set it up…",
+          enabled: true,
+          onClick: () => {
+            this.close();
+            new MainKbModal(this.app, this.plugin).open();
+          },
+        };
+      case "wholeVault":
+        this.note(
+          `Everything in this vault already backs up to ${this.repoLabel(mainRepo?.url)} — ` +
+            `this folder is included, nothing to do.`,
+        );
+        return { label: "Already backed up", enabled: false, onClick: () => {} };
+      case "alreadyShared":
+        this.note(`"${this.folderPath}" already syncs to ${this.repoLabel(mainRepo?.url)}.`);
+        return { label: "Already shared", enabled: false, onClick: () => {} };
+      default:
+        this.note(
+          `"${this.folderPath}" will sync to ${this.repoLabel(mainRepo?.url)}, your own knowledge base. ` +
+            `Nothing else in your vault is affected, and no teammate gets it.`,
+        );
+        return {
+          label: "Share",
+          enabled: true,
+          onClick: () => {
+            this.plugin.markSharedToMainKb(this.folderPath);
+            new Notice(`Covault: "${this.folderPath}" now syncs to your knowledge base.`);
+            this.close();
+          },
+        };
+    }
+  }
+
+  private repoLabel(url: string | undefined): string {
+    if (!url) return "your knowledge base";
+    try {
+      return repoNameFromUrl(url);
+    } catch {
+      return "your knowledge base";
+    }
+  }
+
+  private renderTeam(): { label: string; enabled: boolean; onClick: () => void } {
+    if (this.orgs.length === 0) {
+      this.note("Install Covault on an organization first (Settings → Covault → Install on GitHub).");
+      return { label: "Share", enabled: false, onClick: () => {} };
+    }
+
+    this.note("Creates a new library in the organization and uploads this folder. Teammates can then add it.");
+
+    new Setting(this.bodyEl)
       .setName("Organization")
       .setDesc("Where teammates will find this library.")
       .addDropdown((dd) => {
-        for (const o of orgs) dd.addOption(o, o);
-        dd.setValue(this.org).onChange((v) => (this.org = v));
+        dd.addOption("", "— choose —");
+        for (const o of this.orgs) dd.addOption(o, o);
+        dd.setValue(this.org).onChange((v) => {
+          this.org = v;
+          this.renderBody(); // the button waits on this answer
+        });
       });
 
-    new Setting(contentEl)
+    new Setting(this.bodyEl)
       .setName("Library name")
-      .addText((t) => t.setValue(this.repoName).onChange((v) => (this.repoName = v.trim())));
+      .addText((t) =>
+        t.setValue(this.repoName).onChange((v) => {
+          const had = !!this.repoName;
+          this.repoName = v.trim();
+          if (had !== !!this.repoName) this.renderBody();
+        }),
+      );
 
-    new Setting(contentEl)
+    new Setting(this.bodyEl)
       .setName("Private")
       .setDesc("Only members of the organization can see it.")
       .addToggle((t) => t.setValue(this.isPrivate).onChange((v) => (this.isPrivate = v)));
 
-    new Setting(contentEl).addButton((btn) =>
-      btn
-        .setButtonText("Share")
-        .setCta()
-        .onClick(() => void this.submit(btn.buttonEl)),
-    );
+    return {
+      label: "Share",
+      enabled: !!this.org && !!this.repoName,
+      onClick: () => void this.submitTeam(),
+    };
   }
 
   /**
@@ -73,11 +200,10 @@ export class ShareFolderModal extends Modal {
    * once nothing is left to ask does the dialog close and the network work
    * (repo contents, first sync: tens of seconds) continue behind it.
    */
-  private async submit(buttonEl: HTMLButtonElement): Promise<void> {
+  private async submitTeam(): Promise<void> {
     if (this.busy || !this.org || !this.repoName) return;
     this.busy = true;
-    buttonEl.disabled = true;
-    buttonEl.setText("Checking…");
+    this.renderBody();
     const target = `${this.org}/${this.repoName}`;
 
     let url: string | null;
@@ -87,13 +213,15 @@ export class ShareFolderModal extends Modal {
     } catch (e) {
       console.error("[covault] share folder failed:", e);
       new Notice(`Covault: couldn't share "${this.folderPath}" — ${(e as Error).message}`, 12_000);
-      this.reset(buttonEl);
+      this.busy = false;
+      this.renderBody();
       return;
     }
     if (!url) {
       // The user declined one of the questions — leave the dialog up so
       // they can change the name or the organization instead.
-      this.reset(buttonEl);
+      this.busy = false;
+      this.renderBody();
       return;
     }
 
@@ -106,12 +234,6 @@ export class ShareFolderModal extends Modal {
       console.error("[covault] share folder failed:", e);
       new Notice(`Covault: couldn't share "${this.folderPath}" — ${(e as Error).message}`, 12_000);
     }
-  }
-
-  private reset(buttonEl: HTMLButtonElement): void {
-    this.busy = false;
-    buttonEl.disabled = false;
-    buttonEl.setText("Share");
   }
 
   /** Create the repo, or get permission to reuse one that already exists. */

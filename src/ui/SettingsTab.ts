@@ -62,8 +62,6 @@ export class CovaultSettingTab extends PluginSettingTab {
     switch (key) {
       case "mainKbScope":
         return this.plugin.mainKbScope();
-      case "baseOrg":
-        return s.baseOrg;
       case "authorName":
         return s.author.name;
       case "authorEmail":
@@ -103,9 +101,6 @@ export class CovaultSettingTab extends PluginSettingTab {
       case "mainKbScope":
         await this.plugin.setMainKbScope(value === "vault" ? "vault" : "marked");
         return;
-      case "baseOrg":
-        s.baseOrg = String(value);
-        break;
       case "authorName":
         s.author.name = String(value).trim();
         break;
@@ -189,10 +184,6 @@ export class CovaultSettingTab extends PluginSettingTab {
     const s = this.plugin.settings;
     const connections = s.githubApp.connections;
     const orgOptions = [...new Set(connections.flatMap((c) => c.installations.map((i) => i.accountLogin)))];
-    if (!s.baseOrg && orgOptions.length === 1) {
-      s.baseOrg = orgOptions[0] ?? "";
-      void this.plugin.saveSettings();
-    }
     const login = connections[0]?.login;
     const hasInstallations = orgOptions.length > 0;
 
@@ -279,16 +270,6 @@ export class CovaultSettingTab extends PluginSettingTab {
           },
         };
       }),
-      {
-        name: "Knowledge base organization",
-        desc: "Shared libraries and personal knowledge bases all live in this organization.",
-        visible: () => this.plugin.settings.authMethod === "githubApp" && orgOptions.length > 0,
-        control: {
-          type: "dropdown",
-          key: "baseOrg",
-          options: Object.fromEntries([["", "— choose —"], ...orgOptions.map((o) => [o, o])]),
-        },
-      },
       {
         name: "Name",
         desc: "Shown to teammates as the author of your changes.",
