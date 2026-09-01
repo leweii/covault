@@ -147,7 +147,7 @@ export function makeRunCommandTool(
       return new Promise((resolve) => {
         const child = exec(
           command,
-          { cwd: cwd(), env: env?.() as NodeJS.ProcessEnv | undefined, timeout: COMMAND_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 },
+          { cwd: cwd(), env: env?.(), timeout: COMMAND_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 },
           (error, stdout, stderr) => {
             let text = [stdout, stderr].filter(Boolean).join("\n--- stderr ---\n").trim();
             if (text.length > MAX_OUTPUT_CHARS) text = `${text.slice(0, MAX_OUTPUT_CHARS)}\n…(truncated)`;

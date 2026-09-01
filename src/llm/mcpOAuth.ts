@@ -30,6 +30,7 @@ import type {
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import { appConfigDir } from "../config/secretStore";
+import { setTimeout as setNodeTimeout } from "node:timers";
 
 /**
  * Fixed, because the redirect URI is baked into the dynamic client
@@ -115,7 +116,10 @@ export class LoopbackAuthReceiver {
       });
       server.listen(this.port, "127.0.0.1", () => {
         this.server = server;
-        const timer = setTimeout(() => {
+        // A Node timer, like the server it guards: this deadline belongs
+        // to the loopback node:http listener, and unrefs so an abandoned
+        // sign-in cannot hold the process open.
+        const timer = setNodeTimeout(() => {
           if (this.server === server) {
             this.settle((p) => p.reject(new Error("The sign-in wasn't finished in time — start it again.")));
           }

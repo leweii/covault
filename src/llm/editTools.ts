@@ -12,7 +12,6 @@
  *    undo button, File History shows the change.
  */
 import * as fs from "fs";
-import * as path from "path";
 import { createTwoFilesPatch } from "diff";
 import { createEditTool, createWriteTool, type ExecutionToolContext } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
@@ -91,7 +90,7 @@ export function makeEditTools(deps: EditToolDeps): AskTool[] {
       try {
         const result = await inner.edit.execute("ask", args as never, signal, undefined, context);
         deps.onMutation();
-        return { text: contentText(result.content as never) || "Edited." };
+        return { text: contentText(result.content) || "Edited." };
       } catch (e) {
         return { text: (e as Error).message, isError: true };
       }
@@ -119,7 +118,7 @@ export function makeEditTools(deps: EditToolDeps): AskTool[] {
       try {
         const result = await inner.write.execute("ask", args as never, signal, undefined, context);
         deps.onMutation();
-        return { text: contentText(result.content as never) || "Written." };
+        return { text: contentText(result.content) || "Written." };
       } catch (e) {
         return { text: (e as Error).message, isError: true };
       }

@@ -31,6 +31,9 @@ export interface SharedRepoSetting {
   branch: string;
 }
 
+/** Ask's home: its own OS window, or a pane inside Obsidian. */
+export type AskOpenIn = "window" | "split";
+
 export interface CovaultSettings {
   authMethod: AuthMethod;
   /** PAT fallback mode (secret). */
@@ -82,6 +85,12 @@ export interface CovaultSettings {
      *  text. Device-local taste, so it is deliberately not part of an
      *  exported configuration. */
     composerHeight: number;
+    /** Where opening Ask puts it: "window" is a popout parked on the right
+     *  of the screen, "split" is a pane beside the note. Which one is
+     *  right depends on the screen in front of you — one monitor and the
+     *  split wins, two and the window does — so like composerHeight this
+     *  is per-device and stays out of an exported configuration. */
+    openIn: AskOpenIn;
   };
 
   /** Maintain AGENTS.md/CLAUDE.md blocks + an Agent Skill so AI coding
@@ -107,7 +116,7 @@ export const DEFAULT_SETTINGS: CovaultSettings = {
   sync: { auto: true, intervalMinutes: 10 },
   repos: [],
   author: { name: "", email: "" },
-  ask: { requireApproval: true, mcpServers: "", cliHints: "", composerHeight: 0 },
+  ask: { requireApproval: true, mcpServers: "", cliHints: "", composerHeight: 0, openIn: "window" },
   announceToAgents: true,
   debugMode: false,
   mainRepo: null,

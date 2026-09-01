@@ -1,5 +1,6 @@
 /**
- * Ask view: a chat with the vault's knowledge, right in the sidebar.
+ * Ask view: a chat with the vault's knowledge, in a tab or a window of
+ * its own.
  * The AskEngine (plugin-side) does the model + tool loop; this view
  * renders conversations, streams status while the agent works, and makes
  * every [[citation]] a real, clickable vault link.
@@ -134,20 +135,20 @@ export class AskView extends ItemView {
     (this.leaf as Partial<{ updateHeader(): void }>).updateHeader?.();
   }
 
-  /** Both entry points to a second conversation live here rather than in
-   *  the header: the sidebar has no tab of its own to right-click, and
-   *  this is the menu it does have. */
+  /** Where the window variant lives, since the header's plus is the tab
+   *  one. Also the only route for a popped-out Ask, which has no tab strip
+   *  of its own to right-click. */
   onPaneMenu(menu: Menu, source: string): void {
     super.onPaneMenu(menu, source);
     menu.addItem((item) =>
       item
-        .setTitle("Ask in a new tab")
-        .setIcon("columns-2")
-        .onClick(() => void this.plugin.openAskTab(this.leaf)),
+        .setTitle("New chat in a new window")
+        .setIcon("plus")
+        .onClick(() => void this.plugin.openAskWindow()),
     );
     menu.addItem((item) =>
       item
-        .setTitle("Open in its own window")
+        .setTitle("Move this chat to its own window")
         .setIcon("picture-in-picture-2")
         .onClick(() => {
           this.app.workspace.moveLeafToPopout(this.leaf);
@@ -176,15 +177,16 @@ export class AskView extends ItemView {
     };
     head.createSpan({ cls: "covault-ask-title", text: "Ask your knowledge base" });
     const headActions = head.createDiv("covault-ask-head-actions");
-    const tabBtn = headActions.createEl("button", {
+    // One action, and it never touches this conversation: a new chat is a
+    // new tab beside this one, so what you are reading — or are still
+    // waiting on — stays exactly where it is. Same window, because a chat
+    // started from here belongs with the chats it was started from.
+    const newBtn = headActions.createEl("button", {
       cls: "covault-panel-icon-btn",
-      attr: { "aria-label": "Ask in a new tab — runs alongside this one" },
+      attr: { "aria-label": "New chat in a new tab" },
     });
-    setIcon(tabBtn, "columns-2");
-    tabBtn.onclick = () => void this.plugin.openAskTab(this.leaf);
-    const newBtn = headActions.createEl("button", { cls: "covault-panel-icon-btn", attr: { "aria-label": "New chat" } });
     setIcon(newBtn, "plus");
-    newBtn.onclick = () => this.startNewChat();
+    newBtn.onclick = () => void this.plugin.openAskTab(this.leaf);
 
     // A wrapper, because a button positioned inside a scrolling box
     // scrolls away with the content it is meant to escape.

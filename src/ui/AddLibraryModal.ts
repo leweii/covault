@@ -269,7 +269,6 @@ export class AddLibraryModal extends Modal {
 
   private async submit(buttonEl: HTMLButtonElement): Promise<void> {
     if (this.busy || !this.folder) return;
-    const s = this.plugin.settings;
     this.busy = true;
     buttonEl.disabled = true;
     buttonEl.setText("Adding…");

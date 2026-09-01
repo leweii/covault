@@ -36,7 +36,7 @@ export function redactMcpConfig(json: string): string {
     if (!server || typeof server !== "object") return server;
     const s = server as Record<string, unknown>;
     if (s.env && typeof s.env === "object") {
-      s.env = Object.fromEntries(Object.keys(s.env as object).map((k) => [k, REDACTED]));
+      s.env = Object.fromEntries(Object.keys(s.env).map((k) => [k, REDACTED]));
     }
     return s;
   };

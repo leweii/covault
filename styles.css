@@ -1424,14 +1424,15 @@
 .covault-ask-list {
   flex: 1;
   overflow-y: auto;
-  /* Narrow gutter: this is a 350px sidebar, not a document. */
+  /* Narrow gutter: even in its own window this is a chat column, not a
+     document page. */
   padding: 12px 8px;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  /* Obsidian disables selection app-wide and content areas opt back in;
-     a sidebar view has to do it itself. Answers quote real facts from the
-     notes, so they have to be copyable. */
+  /* Obsidian disables selection app-wide and only content areas opt back
+     in; a plugin view has to do it itself. Answers quote real facts from
+     the notes, so they have to be copyable. */
   user-select: text;
   -webkit-user-select: text;
   cursor: text;
@@ -1577,7 +1578,7 @@
   margin: 7px 0;
 }
 
-/* Rendered markdown in a sidebar. Obsidian's defaults are sized for a
+/* Rendered markdown in a chat column. Obsidian's defaults are sized for a
    document column: a 2em list indent and full heading margins spent a
    fifth of every wrapped line on empty space, and nesting compounded it. */
 .covault-ask-md :is(ul, ol) {

@@ -85,7 +85,10 @@ export function createTransportProbe(
   base?: FetchFunction,
   diagnose?: DiagnoseFn,
 ): TransportProbe {
-  const send: FetchFunction = base ?? ((...args) => globalThis.fetch(...args));
+  // requestUrl is Obsidian's advice for network calls, but it buffers the
+  // whole response — this transport carries streamed model output, so the
+  // window's own fetch is the only thing that can back it.
+  const send: FetchFunction = base ?? ((...args) => window.fetch(...args));
   const probe: TransportProbe = {
     lastFailure: null,
     reset() {

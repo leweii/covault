@@ -21,6 +21,7 @@ import * as http from "http";
 import * as https from "https";
 import type { GitHttpRequest, GitHttpResponse, HttpClient } from "isomorphic-git";
 import type { DebugLog } from "./../debug/logger";
+import { setTimeout as setNodeTimeout, clearTimeout as clearNodeTimeout } from "node:timers";
 
 /**
  * How long a transfer may make no progress at all. Not a total budget: a
@@ -57,14 +58,17 @@ export function createNodeHttp(log?: DebugLog, idleMs: number = IDLE_TIMEOUT_MS)
          * data had arrived long before — surfacing as a stall on whatever
          * still held the iterator.
          */
+        // Node timers, imported rather than ambient: this transport runs
+        // on node:http, and unref is what stops a pending stall timer from
+        // holding the process open — a DOM timer id has no such thing.
         let timer: NodeJS.Timeout | undefined;
         const disarm = () => {
-          if (timer) clearTimeout(timer);
+          if (timer) clearNodeTimeout(timer);
           timer = undefined;
         };
         const arm = (onStall: () => void, ms = idleMs) => {
           disarm();
-          timer = setTimeout(onStall, ms);
+          timer = setNodeTimeout(onStall, ms);
           timer.unref?.();
         };
 

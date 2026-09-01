@@ -75,7 +75,7 @@ async function encode(
   target: { mimeType: string; quality?: number; edge?: number },
 ): Promise<Blob | null> {
   const { width, height } = scaledSize(bitmap.width, bitmap.height, target.edge ?? MAX_EDGE);
-  const canvas = document.createElement("canvas");
+  const canvas = createEl("canvas");
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext("2d");

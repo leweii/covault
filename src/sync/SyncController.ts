@@ -11,6 +11,7 @@ import type { ManifestRepo } from "../covault/manifest";
 import type { ConflictResolver } from "../llm/resolver";
 import type { DebugLog } from "../debug/logger";
 import { applyResolutions, extractHunks, getContextLines, parseConflict, type HunkResolution } from "./ConflictParser";
+import { setTimeout as setNodeTimeout, clearTimeout as clearNodeTimeout } from "node:timers";
 
 /**
  * Last line of defence for one repo. The HTTP layer caps each request, but
@@ -330,7 +331,10 @@ export class SyncController {
     const name = repo.label ?? repo.path;
     this.setState(repo.path, { phase: "syncing" });
     const done = this.log?.opTime("repo", name, { branch: ref.branch, trigger });
-    let expiry: ReturnType<typeof setTimeout> | undefined;
+    // Node timers, not window ones: no view owns this deadline — the sync
+    // loop outlives every panel and popout — and the controller is
+    // unit-tested headless, where there is no window to reach for.
+    let expiry: NodeJS.Timeout | undefined;
     try {
       // An attachment backlog is worked through in budgeted rounds, each
       // with a fresh watchdog: the ceiling exists to catch a *stalled*
@@ -343,10 +347,10 @@ export class SyncController {
           this.syncRepo(ref, repo, trigger, name),
           new Promise<never>((_resolve, reject) => {
             const tooLong = `took longer than ${REPO_TIMEOUT_MS / 60_000} minutes and was given up on`;
-            expiry = setTimeout(() => reject(new Error(tooLong)), REPO_TIMEOUT_MS);
+            expiry = setNodeTimeout(() => reject(new Error(tooLong)), REPO_TIMEOUT_MS);
           }),
         ]);
-        if (expiry) clearTimeout(expiry);
+        if (expiry) clearNodeTimeout(expiry);
         if (pending === 0) break;
         if (pending >= lastPending) {
           throw new Error(`attachment uploads stopped making progress (${pending} left)`);
@@ -362,7 +366,7 @@ export class SyncController {
       this.log?.op("repo", `${name} — failed`, { error: e, stack: e instanceof Error ? e.stack : undefined });
       if (trigger === "manual") new Notice(`Covault: couldn't sync "${name}" — ${message}`);
     } finally {
-      if (expiry) clearTimeout(expiry);
+      if (expiry) clearNodeTimeout(expiry);
       done?.();
     }
   }

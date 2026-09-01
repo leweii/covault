@@ -19,6 +19,7 @@ import { spawn } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { setTimeout as setNodeTimeout } from "node:timers";
 
 export interface BackgroundJob {
   /** Short handle the model uses to refer to the job ("bg1"). */
@@ -119,7 +120,7 @@ export class BackgroundJobs {
     try {
       const child = spawn(command, {
         cwd: this.deps.cwd(),
-        env: this.deps.env?.() as NodeJS.ProcessEnv | undefined,
+        env: this.deps.env?.(),
         shell: true,
         detached: true,
         stdio: ["ignore", fd, fd],
@@ -156,7 +157,9 @@ export class BackgroundJobs {
     const pid = this.pids.get(id);
     if (!job || job.status !== "running" || pid === undefined) return false;
     killGroup(pid, "SIGTERM");
-    setTimeout(() => {
+    // A Node timer, like the process it is grace period for, and unreffed
+    // so a job stopped at shutdown does not keep anything alive waiting.
+    setNodeTimeout(() => {
       if (this.jobs.get(id)?.status === "running") killGroup(pid, "SIGKILL");
     }, KILL_GRACE_MS).unref?.();
     return true;

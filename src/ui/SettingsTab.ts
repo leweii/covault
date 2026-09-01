@@ -1,5 +1,6 @@
 import {
   Notice,
+  Platform,
   PluginSettingTab,
   type App,
   type Setting,
@@ -101,6 +102,8 @@ export class CovaultSettingTab extends PluginSettingTab {
         return s.ask.requireApproval;
       case "askMcp":
         return s.ask.mcpServers;
+      case "askOpenIn":
+        return s.ask.openIn;
       case "syncAuto":
         return s.sync.auto;
       case "syncInterval":
@@ -148,6 +151,9 @@ export class CovaultSettingTab extends PluginSettingTab {
         return;
       case "askApprove":
         s.ask.requireApproval = Boolean(value);
+        break;
+      case "askOpenIn":
+        s.ask.openIn = value === "split" ? "split" : "window";
         break;
       case "askMcp":
         s.ask.mcpServers = String(value);
@@ -280,7 +286,7 @@ export class CovaultSettingTab extends PluginSettingTab {
             setting.addButton((btn) =>
               btn
                 .setButtonText("Disconnect")
-                .setWarning()
+                .setDestructive()
                 .onClick(async () => {
                   await this.plugin.appAuth.disconnect(conn.login);
                   this.update();
@@ -404,7 +410,7 @@ export class CovaultSettingTab extends PluginSettingTab {
           setting.addButton((btn) =>
             btn
               .setButtonText("Disconnect")
-              .setWarning()
+              .setDestructive()
               .onClick(async () => {
                 // Local notes and history stay; only the link is removed.
                 this.plugin.settings.mainRepo = null;
@@ -609,6 +615,21 @@ export class CovaultSettingTab extends PluginSettingTab {
           name: "Ask before the agent acts",
           aliases: ["approve", "permissions", "skip permissions", "dangerous", "shell", "cli"],
           control: { type: "toggle", key: "askApprove" },
+        },
+        {
+          name: "Open conversations in",
+          aliases: ["window", "popout", "split", "pane", "tab", "layout", "position"],
+          // Hidden on mobile, where there is no second window to open and
+          // a split is the only thing this could mean.
+          visible: () => Platform.isDesktopApp,
+          control: {
+            type: "dropdown",
+            key: "askOpenIn",
+            options: {
+              window: "Their own window",
+              split: "A pane beside the note",
+            },
+          },
         },
       ],
     };

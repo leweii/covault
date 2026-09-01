@@ -22,7 +22,6 @@ import {
   type ImageContent,
   type Message,
   type MutableModels,
-  type AssistantMessage,
 } from "@earendil-works/pi-ai";
 import type { ApprovalRequest, AskTool } from "./agentTools";
 import { describeJob, type BackgroundJob, type BackgroundJobs } from "./backgroundJobs";
@@ -372,8 +371,7 @@ export class AskEngine {
         case "message_end": {
           const m = event.message;
           if (m.role === "assistant") {
-            const done = m as AssistantMessage;
-            const text = contentText(done.content).trim();
+            const text = contentText(m.content).trim();
             if (text) finalText = text;
           }
           break;

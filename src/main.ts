@@ -1,4 +1,13 @@
-import { apiVersion, FileSystemAdapter, Notice, Plugin, TFile, TFolder, type WorkspaceLeaf } from "obsidian";
+import {
+  apiVersion,
+  FileSystemAdapter,
+  Notice,
+  Plugin,
+  TFile,
+  TFolder,
+  type WorkspaceLeaf,
+  type WorkspaceWindowInitData,
+} from "obsidian";
 import * as fs from "fs";
 import * as path from "path";
 import type { MutableModels } from "@earendil-works/pi-ai";
@@ -873,29 +882,107 @@ export default class CovaultPlugin extends Plugin {
    * into the main one.
    */
   async openAskTab(from?: WorkspaceLeaf): Promise<void> {
-    const open = this.app.workspace.getLeavesOfType(COVAULT_ASK_VIEW_TYPE);
-    if (open.length >= CovaultPlugin.MAX_ASK_VIEWS) {
-      new Notice(
-        `Covault: ${CovaultPlugin.MAX_ASK_VIEWS} Ask conversations at once is the limit — close one first.`,
-      );
-      return;
-    }
+    if (!this.askRoomLeft()) return;
     if (from) this.app.workspace.setActiveLeaf(from, { focus: true });
     const leaf = this.app.workspace.getLeaf("tab");
     await leaf.setViewState({ type: COVAULT_ASK_VIEW_TYPE, active: true });
     await this.app.workspace.revealLeaf(leaf);
   }
 
+  /**
+   * A conversation in a window of its own, parked against the right edge
+   * of the screen.
+   *
+   * The default home, and the pane menu's explicit "new window". Parked on
+   * the right edge because that is where the sidebar split it replaces
+   * used to be — same place on screen, without stealing width from the
+   * note. Popouts are desktop-only, so mobile gets a tab instead.
+   */
+  async openAskWindow(): Promise<void> {
+    if (!this.askRoomLeft()) return;
+    let leaf: WorkspaceLeaf;
+    try {
+      leaf = this.app.workspace.openPopoutLeaf(CovaultPlugin.rightEdgeWindow());
+    } catch {
+      await this.openAskTab(this.app.workspace.getActiveViewOfType(AskView)?.leaf);
+      return;
+    }
+    await leaf.setViewState({ type: COVAULT_ASK_VIEW_TYPE, active: true });
+    await this.app.workspace.revealLeaf(leaf);
+  }
+
+  /**
+   * Geometry for that window: a column on the right, full working height.
+   *
+   * Screen metrics are per-display and the numbers Electron wants are
+   * global desktop coordinates, so availLeft/availTop — Chromium's, not in
+   * the DOM typings — are what keep this on the monitor Obsidian is on
+   * rather than the primary one.
+   */
+  private static rightEdgeWindow(): WorkspaceWindowInitData {
+    const s = window.screen as Screen & { availLeft?: number; availTop?: number };
+    const width = Math.min(720, Math.max(420, Math.round(s.availWidth * 0.35)));
+    return {
+      x: (s.availLeft ?? 0) + s.availWidth - width,
+      y: s.availTop ?? 0,
+      size: { width, height: s.availHeight },
+    };
+  }
+
+  /** False, with the reason said out loud, once the ceiling is reached. */
+  private askRoomLeft(): boolean {
+    const open = this.app.workspace.getLeavesOfType(COVAULT_ASK_VIEW_TYPE);
+    if (open.length < CovaultPlugin.MAX_ASK_VIEWS) return true;
+    new Notice(
+      `Covault: ${CovaultPlugin.MAX_ASK_VIEWS} Ask conversations at once is the limit — close one first.`,
+    );
+    return false;
+  }
+
+  /**
+   * A new conversation wherever the user said new conversations go.
+   *
+   * Not in the sidebar either way: a sidebar pane is 350px of borrowed
+   * width and the conversation was the thing being squeezed. Beyond that
+   * the choice is a screen-shaped one, not a right answer — so it is a
+   * setting, and both entry points honour it.
+   */
+  async openAskWhereConfigured(): Promise<void> {
+    if (this.settings.ask.openIn === "split") await this.openAskSplit();
+    else await this.openAskWindow();
+  }
+
+  /**
+   * Ask as a pane beside the note, Obsidian's own "split right".
+   *
+   * The anchoring matters: getLeaf("split") splits whatever leaf is
+   * active, and the button that lands here is in the sidebar — splitting
+   * that would wedge the chat into the dock, which is the layout this
+   * whole change moved away from. So point the split at the main area
+   * first, without stealing focus from what the user was reading.
+   */
+  async openAskSplit(): Promise<void> {
+    if (!this.askRoomLeft()) return;
+    const main = this.app.workspace.getMostRecentLeaf(this.app.workspace.rootSplit);
+    if (main) this.app.workspace.setActiveLeaf(main, { focus: false });
+    const leaf = this.app.workspace.getLeaf("split", "vertical");
+    await leaf.setViewState({ type: COVAULT_ASK_VIEW_TYPE, active: true });
+    await this.app.workspace.revealLeaf(leaf);
+  }
+
+  /**
+   * Open Ask, or go to the one already open.
+   *
+   * Reveal-first is deliberate — this is the "open Ask" button, so a
+   * second press should find the conversation, not start a rival to it.
+   */
   async activateAskView(): Promise<void> {
     const existing = this.app.workspace.getLeavesOfType(COVAULT_ASK_VIEW_TYPE)[0];
     if (existing) {
       await this.app.workspace.revealLeaf(existing);
       return;
     }
-    const leaf = this.app.workspace.getRightLeaf(false);
-    if (!leaf) return;
-    await leaf.setViewState({ type: COVAULT_ASK_VIEW_TYPE, active: true });
-    await this.app.workspace.revealLeaf(leaf);
+    await this.openAskWhereConfigured();
   }
 
   /** Backfill: describe every library that doesn't have a line yet. */

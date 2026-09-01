@@ -14,7 +14,6 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
-import type { TSchema } from "typebox";
 import type { AskTool } from "./agentTools";
 import { describeError } from "./transport";
 import { LoopbackAuthReceiver, McpAuthStore, McpOAuthProvider, serverForState } from "./mcpOAuth";
@@ -150,7 +149,7 @@ export function parseMcpConfig(json: string): McpServerConfig[] {
     }
   } else if (table && typeof table === "object") {
     for (const [name, cfg] of Object.entries(table)) {
-      if (cfg && typeof cfg === "object") entries.push({ name, ...(cfg as object) } as McpServerConfig);
+      if (cfg && typeof cfg === "object") entries.push({ name, ...cfg });
     }
   }
   return entries.filter((s) => s.command || s.url);
@@ -197,7 +196,7 @@ export class McpManager {
 
   /** Stop waiting on a sign-in nobody is going to finish. */
   cancelAuth(): void {
-    this.receiver.close();
+    void this.receiver.close();
   }
 
   /**
@@ -310,7 +309,7 @@ export class McpManager {
         await this.finishBrowserAuth(server.name, transport, pending);
       } finally {
         this.awaitingAuth.delete(server.name);
-        this.receiver.close();
+        void this.receiver.close();
       }
       const authed = new Client({ name: "covault", version: "1.0.0" });
       await authed.connect(new StreamableHTTPClientTransport(url, { authProvider: provider }));
@@ -390,7 +389,7 @@ export class McpManager {
           out.push({
             name: fullName,
             description: `[${server.name}] ${tool.description ?? tool.name}`,
-            parameters: (tool.inputSchema ?? { type: "object", properties: {} }) as unknown as TSchema,
+            parameters: tool.inputSchema ?? { type: "object", properties: {} },
             statusFor: () => `${server.name}: ${tool.name}…`,
             needsApproval: () => ({ action: `${server.name}: ${tool.name}` }),
             execute: async (args) => {
@@ -418,7 +417,7 @@ export class McpManager {
 
   async dispose(): Promise<void> {
     // A listener left bound would hold the port past plugin unload.
-    this.receiver.close();
+    void this.receiver.close();
     for (const [, client] of this.clients) {
       try {
         await client.close();

@@ -316,15 +316,21 @@ describe("AskEngine", () => {
       onTransport: (line) => lines.push(line),
     });
 
-    // The renderer's fetch is what fails on a machine behind a proxy.
-    const realFetch = globalThis.fetch;
-    globalThis.fetch = (async () => {
-      throw new Error("fetch failed", { cause: new Error("unable to verify the first certificate") });
-    }) as typeof globalThis.fetch;
+    // The renderer's fetch is what fails on a machine behind a proxy, and
+    // window.fetch is what the transport reaches for — so that is what has
+    // to fail here. No window exists in this environment; stand one up.
+    const host = globalThis as { window?: { fetch: unknown } };
+    const realWindow = host.window;
+    host.window = {
+      fetch: async () => {
+        throw new Error("fetch failed", { cause: new Error("unable to verify the first certificate") });
+      },
+    };
     try {
       await expect(ask.ask("anything")).rejects.toThrow(/first certificate/);
     } finally {
-      globalThis.fetch = realFetch;
+      if (realWindow) host.window = realWindow;
+      else delete host.window;
     }
     expect(lines.some((l) => l.includes("FAILED api.anthropic.com/v1/messages"))).toBe(true);
   });

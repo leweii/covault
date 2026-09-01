@@ -161,7 +161,7 @@ export const defaultProbeHost: CliProbeHost = {
   },
   sh: (command, env, timeoutMs) =>
     new Promise((resolve) => {
-      exec(command, { env: env as NodeJS.ProcessEnv, timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (_error, stdout) =>
+      exec(command, { env, timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (_error, stdout) =>
         resolve(stdout ?? ""),
       );
     }),

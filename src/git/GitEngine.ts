@@ -739,7 +739,7 @@ export class GitEngine {
    *  someone cloned into the vault must not have its remote hijacked. */
   async existingOrigin(ref: RepoRef): Promise<string | null> {
     try {
-      const url = await git.getConfig({
+      const url: unknown = await git.getConfig({
         fs: this.deps.fs,
         dir: ref.dir,
         gitdir: ref.gitdir,
@@ -775,7 +775,7 @@ export class GitEngine {
         // pushed from here, so any content is local-only.
         let entries: string[];
         try {
-          entries = (await fs.promises.readdir(ref.dir)) as string[];
+          entries = await fs.promises.readdir(ref.dir);
         } catch {
           return false; // no folder — nothing to lose
         }
