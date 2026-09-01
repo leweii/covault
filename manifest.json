@@ -1,7 +1,7 @@
 {
   "id": "covault",
   "name": "Covault",
-  "version": "0.2.13",
+  "version": "0.2.14",
   "minAppVersion": "1.13.0",
   "description": "Team knowledge base client \u2014 share, consume, and evolve your company's knowledge through silently synced shared folders. An LLM agent handles all the git plumbing so you never have to.",
   "author": "Jakob",
