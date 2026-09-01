@@ -1,33 +1,34 @@
 /**
  * Adapter layer: thin, well-known files that tell coding agents working
  * in this vault that team knowledge libraries exist and where the full
- * map is (the kernel index, .covault/skills/team-knowledge.md).
+ * map is (the generated team-knowledge skill, skill.ts).
  *
  *   AGENTS.md   — the cross-vendor agent-instructions standard
  *   CLAUDE.md   — Claude Code
- *   .claude/skills/team-knowledge/SKILL.md — the Agent Skills mechanism
+ *
+ * The skill itself is written by skill.ts, into the standard skill
+ * folders; these two files are for the agents that read instructions
+ * before they read skills.
  *
  * INVARIANT: everything here is a pure function of the manifest repos.
  * These files live at the vault root and may sync with the personal KB;
  * only deterministic output keeps two devices from producing different
  * bytes and merge-conflicting on every sync. Anything device- or
  * time-dependent (note counts, README excerpts, dates) belongs in the
- * kernel index, never here.
+ * generated skill, never here.
  *
  * AGENTS.md/CLAUDE.md may hold the user's own instructions — we own only
- * a fenced block (same pattern as the managed .gitignore block). The
- * SKILL.md file is entirely ours.
+ * a fenced block (same pattern as the managed .gitignore block).
  */
 import * as fs from "fs";
 import * as path from "path";
 import type { ManifestRepo } from "./manifest";
 import { repoNameFromUrl } from "../git/urls";
-import { SKILL_RELPATH } from "./skill";
+import { SKILL_TARGETS } from "./skill";
 
 const START = "<!-- >>> covault managed — do not edit between markers <<< -->";
 const END = "<!-- <<< covault managed >>> -->";
 
-const SKILL_DIR_RELPATH = ".claude/skills/team-knowledge";
 /** Vault-root files that receive the managed block. */
 const BLOCK_TARGETS = ["AGENTS.md", "CLAUDE.md"];
 
@@ -52,36 +53,14 @@ export function buildAgentBlock(repos: ManifestRepo[]): string {
     "",
     ...libs.map(libraryLine),
     "",
-    `Before answering any question these topics touch, read \`${SKILL_RELPATH}\` —`,
-    "the full, always-fresh map of every library (entry points, structure,",
-    "summaries) — then consult the matching library folder. The libraries",
-    "are the source of truth.",
+    "Before answering any question these topics touch, read the team-knowledge",
+    "skill — the full, always-fresh map of every library (entry points,",
+    "structure, summaries) — then consult the matching library folder. The",
+    "libraries are the source of truth. The same skill is written once per",
+    "agent convention:",
+    "",
+    ...SKILL_TARGETS.map((t) => `- \`${t}\``),
     END,
-  ].join("\n");
-}
-
-/** The Agent Skills file. Pure function of the repos. */
-export function buildSkillFile(repos: ManifestRepo[]): string {
-  const libs = sorted(repos);
-  const names = libs.map((r) => repoNameFromUrl(r.url));
-  return [
-    "---",
-    "name: team-knowledge",
-    `description: Routes questions to the team knowledge libraries in this vault (${names.join(", ")}). Use whenever a question touches these teams or topics.`,
-    "---",
-    "",
-    `Read \`${SKILL_RELPATH}\` for the full library map — per-library entry`,
-    "points, folder structure, and summaries, regenerated after every sync.",
-    "Then answer from the matching library folder:",
-    "",
-    "1. Start from the library's README or the entry notes the map lists.",
-    "2. Otherwise scan file names and headings of its `*.md` files.",
-    "3. When notes disagree, prefer the most recently modified one.",
-    "",
-    "Libraries:",
-    "",
-    ...libs.map(libraryLine),
-    "",
   ].join("\n");
 }
 
@@ -140,32 +119,10 @@ export function writeAdapters(vaultBase: string, repos: ManifestRepo[]): boolean
   for (const target of BLOCK_TARGETS) {
     changed = applyManagedBlock(path.join(vaultBase, target), block) || changed;
   }
-
-  const skillFile = path.join(vaultBase, SKILL_DIR_RELPATH, "SKILL.md");
-  const next = buildSkillFile(repos);
-  let current: string | null = null;
-  try {
-    current = fs.readFileSync(skillFile, "utf8");
-  } catch {
-    /* first run */
-  }
-  if (current !== next) {
-    fs.mkdirSync(path.dirname(skillFile), { recursive: true });
-    fs.writeFileSync(skillFile, next);
-    changed = true;
-  }
   return changed;
 }
 
 /** Remove everything the adapter layer owns (toggle off / no libraries). */
 export function removeAdapters(vaultBase: string): void {
   for (const target of BLOCK_TARGETS) removeManagedBlock(path.join(vaultBase, target));
-  fs.rmSync(path.join(vaultBase, SKILL_DIR_RELPATH), { recursive: true, force: true });
-  // Leave .claude/skills (and .claude) alone unless we emptied it.
-  try {
-    fs.rmdirSync(path.join(vaultBase, ".claude", "skills"));
-    fs.rmdirSync(path.join(vaultBase, ".claude"));
-  } catch {
-    /* not empty or missing — the user's business */
-  }
 }

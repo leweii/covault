@@ -348,8 +348,10 @@ describe("GitEngine against a real smart-HTTP remote", () => {
     fs.writeFileSync(path.join(vaultRoot, ".obsidian", "workspace.json"), "{}\n");
     fs.writeFileSync(path.join(vaultRoot, ".trash", "deleted.md"), "# gone\n");
     fs.writeFileSync(path.join(vaultRoot, "team-kb", "handbook.md"), "# team\n");
-    fs.mkdirSync(path.join(vaultRoot, ".covault", "skills"), { recursive: true });
-    fs.writeFileSync(path.join(vaultRoot, ".covault", "skills", "team-knowledge.md"), "# derived\n");
+    fs.mkdirSync(path.join(vaultRoot, ".claude", "skills", "team-knowledge"), { recursive: true });
+    fs.writeFileSync(path.join(vaultRoot, ".claude", "skills", "team-knowledge", "SKILL.md"), "# derived\n");
+    fs.mkdirSync(path.join(vaultRoot, ".claude", "skills", "my-own"), { recursive: true });
+    fs.writeFileSync(path.join(vaultRoot, ".claude", "skills", "my-own", "SKILL.md"), "# mine\n");
 
     const gitdir = path.join(vaultRoot, ".covault", "main.git");
     const ref: RepoRef = { dir: vaultRoot, url: `${server.url}/wholevault-kb.git`, branch: "main", gitdir };
@@ -364,7 +366,9 @@ describe("GitEngine against a real smart-HTTP remote", () => {
     expect(fs.existsSync(path.join(check.dir, ".obsidian"))).toBe(false);
     expect(fs.existsSync(path.join(check.dir, ".trash"))).toBe(false);
     // The generated skill is per-device derived data — synced nowhere.
-    expect(fs.existsSync(path.join(check.dir, ".covault", "skills"))).toBe(false);
+    expect(fs.existsSync(path.join(check.dir, ".claude", "skills", "team-knowledge"))).toBe(false);
+    // The user's own skill beside it is an ordinary file, and rides along.
+    expect(fs.existsSync(path.join(check.dir, ".claude", "skills", "my-own", "SKILL.md"))).toBe(true);
   });
 
   it("whole-vault scope: a folder that becomes a library leaves the personal repo", async () => {

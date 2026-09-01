@@ -1373,6 +1373,12 @@
   font-size: 0.95em;
 }
 
+.covault-ask-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .covault-ask-list-wrap {
   position: relative;
   flex: 1;
@@ -1462,6 +1468,101 @@
   padding: 6px 10px;
   font-size: 0.92em;
   white-space: pre-wrap;
+}
+
+/* A background command reporting back is not a question and must not
+   look like one: a quiet full-width note, not an accent bubble. The
+   output it carried stays folded away — the verdict is the message. */
+.covault-ask-wake {
+  align-self: stretch;
+  font-size: 0.8em;
+  color: var(--text-muted);
+  background: var(--background-secondary);
+  border-left: 2px solid var(--text-faint);
+  border-radius: 4px;
+  padding: 4px 8px;
+}
+
+.covault-ask-wake summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.covault-ask-wake-icon {
+  display: inline-flex;
+  flex: none;
+}
+
+.covault-ask-wake-icon .svg-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.covault-ask-wake-body {
+  margin: 6px 0 2px;
+  max-height: 260px;
+  overflow: auto;
+  font-size: 0.92em;
+  white-space: pre-wrap;
+  color: var(--text-faint);
+}
+
+/* A queued question is the same bubble as a sent one at 55% ink: sending
+   it turns the ink solid and moves nothing. */
+.covault-ask-queued {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0.55;
+}
+
+.covault-ask-queued.is-paused {
+  opacity: 0.4;
+}
+
+.covault-ask-queued-icon {
+  display: inline-flex;
+  flex: none;
+}
+
+.covault-ask-queued-icon .svg-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.covault-ask-queued-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.covault-ask-queued-drop {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  margin-left: 2px;
+  border: none;
+  box-shadow: none;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.covault-ask-queued:hover .covault-ask-queued-drop {
+  opacity: 0.8;
+}
+
+.covault-ask-queued-drop .svg-icon {
+  width: 12px;
+  height: 12px;
 }
 
 .covault-ask-a {
@@ -1941,18 +2042,22 @@ button.covault-ask-mcp-chip:hover {
   padding-bottom: 10px;
 }
 
-/* A textarea in the right-hand control column ends up ~3 lines tall and
-   half the width; JSON and one-per-line notes are unreadable like that.
-   Stack the label above a full-width box instead. */
-.covault-settings .setting-item:has(textarea) {
+/* A textarea (or a status list) in the right-hand control column ends up
+   ~3 lines tall and half the width; JSON and one-per-line rows are
+   unreadable like that. Stack the label above a full-width box instead.
+   The marker class is applied in SettingsTab (markStackedRows for the
+   declarative rows, renderMcpStatus for ours) rather than matched with
+   :has(), which would make the style engine re-test every row on every
+   invalidation. */
+.covault-settings .setting-item.covault-setting-stacked {
   display: block;
 }
 
-.covault-settings .setting-item:has(textarea) .setting-item-info {
+.covault-settings .covault-setting-stacked .setting-item-info {
   margin-right: 0;
 }
 
-.covault-settings .setting-item:has(textarea) .setting-item-control {
+.covault-settings .covault-setting-stacked .setting-item-control {
   width: 100%;
   padding-top: 6px;
   justify-content: stretch;
@@ -1967,24 +2072,16 @@ button.covault-ask-mcp-chip:hover {
   resize: vertical;
 }
 
-/* Status list sits in the control column but reads as rows, so let it
-   use the full width and keep the sign-in button on the right edge. */
-.covault-settings .setting-item:has(.covault-mcp-status) {
-  display: block;
-}
-
-.covault-settings .setting-item:has(.covault-mcp-status) .setting-item-control {
-  width: 100%;
-  padding-top: 6px;
-  justify-content: stretch;
+/* The status list stacks its rows and shares the column with the Check
+   button, which stays button-sized rather than stretching across the
+   panel. Width and padding come from covault-setting-stacked above. */
+.covault-settings .covault-mcp-control {
   flex-direction: column;
   align-items: stretch;
   gap: 6px;
 }
 
-/* The Check button shares the control column with the status rows; keep
-   it button-sized rather than stretched across the panel. */
-.covault-settings .setting-item:has(.covault-mcp-status) .setting-item-control > button {
+.covault-settings .covault-mcp-control > button {
   align-self: flex-start;
 }
 

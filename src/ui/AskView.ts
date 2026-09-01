@@ -8,7 +8,7 @@
  * transcripts, so reopening a session resumes the model's context, not
  * just the text on screen.
  */
-import { ItemView, MarkdownRenderer, Notice, setIcon, type WorkspaceLeaf } from "obsidian";
+import { ItemView, MarkdownRenderer, Menu, Notice, setIcon, type WorkspaceLeaf } from "obsidian";
 import * as path from "path";
 import type CovaultPlugin from "../main";
 import { withoutImageData, type AskEngine } from "../llm/ask";
@@ -28,6 +28,16 @@ import {
 
 export const COVAULT_ASK_VIEW_TYPE = "covault-ask";
 
+/** A question typed while an answer was still streaming — or a
+ *  background command reporting in, which enters the conversation the
+ *  same way a question does. */
+interface QueuedAsk {
+  question: string;
+  images: PastedImage[];
+  /** "wake" = nobody typed this; a background job finished. */
+  kind?: ChatTurn["kind"];
+}
+
 /** Within this much of the bottom counts as being at the bottom. */
 const TAIL_SLACK_PX = 40;
 
@@ -38,10 +48,15 @@ const MIN_COMPOSER_PX = 46;
 /** How the newline chord is written in the hint. */
 const MOD_KEY = process.platform === "darwin" ? "\u2318" : "Ctrl+";
 
+/** The headline of a multi-line machine message. */
+const firstLine = (text: string): string => text.split("\n", 1)[0] ?? "";
+
 export class AskView extends ItemView {
   private engine: AskEngine;
   private store: ChatStore;
-  private session: ChatSession;
+  /** Readable by sibling views: opening a conversation checks whether
+   *  another one already has it. */
+  session: ChatSession;
   private running: AbortController | null = null;
   private showSessions = false;
   /** Actions the user already allowed in this conversation — don't re-ask. */
@@ -49,6 +64,17 @@ export class AskView extends ItemView {
 
   /** Images pasted for the question being composed, not yet sent. */
   private attached: PastedImage[] = [];
+
+  /** Questions asked while an answer was still being written. Sent one at
+   *  a time, in order, as each turn finishes — the running turn is never
+   *  disturbed by them. */
+  private queue: QueuedAsk[] = [];
+  /** Esc stops the turn without throwing away what was queued behind it:
+   *  the queue holds until the reader sends the next one deliberately. */
+  private queuePaused = false;
+  /** Set once the leaf is going away, so a turn aborted by the close does
+   *  not announce itself to a view that no longer exists. */
+  private closing = false;
 
   /** Follow the answer as it streams. Off the moment the reader scrolls
    *  up — a view that keeps yanking itself to the bottom can't be read —
@@ -78,6 +104,9 @@ export class AskView extends ItemView {
   ) {
     super(leaf);
     this.engine = plugin.newAskEngine();
+    // The other half of run_in_background: a job that ends while no turn
+    // is running has nowhere to report, so it opens one.
+    this.engine.onWake = (note) => this.onBackgroundWake(note);
     this.store = new ChatStore(
       path.join(plugin.vaultBasePath(), this.app.vault.configDir, "plugins", "covault", "chats.json"),
     );
@@ -87,8 +116,43 @@ export class AskView extends ItemView {
   getViewType(): string {
     return COVAULT_ASK_VIEW_TYPE;
   }
+  /** With several conversations open, the tab titles are the only way to
+   *  tell them apart — and the dot is how a background one says it is
+   *  still working. */
   getDisplayText(): string {
-    return "Ask Covault";
+    const named = this.session.turns.length > 0 ? this.session.title : "Ask Covault";
+    if (this.running) return `\u25cf ${named}`;
+    // Hollow: nothing is being written, but a command is still running
+    // and this tab will come back to life on its own.
+    return this.engine.runningJobs().length > 0 ? `\u25cb ${named}` : named;
+  }
+
+  /** Nothing re-reads getDisplayText() on its own. updateHeader is not in
+   *  the public typings but is what the tab header calls; optional so a
+   *  future rename degrades to a stale title, not a crash. */
+  private refreshHeader(): void {
+    (this.leaf as Partial<{ updateHeader(): void }>).updateHeader?.();
+  }
+
+  /** Both entry points to a second conversation live here rather than in
+   *  the header: the sidebar has no tab of its own to right-click, and
+   *  this is the menu it does have. */
+  onPaneMenu(menu: Menu, source: string): void {
+    super.onPaneMenu(menu, source);
+    menu.addItem((item) =>
+      item
+        .setTitle("Ask in a new tab")
+        .setIcon("columns-2")
+        .onClick(() => void this.plugin.openAskTab(this.leaf)),
+    );
+    menu.addItem((item) =>
+      item
+        .setTitle("Open in its own window")
+        .setIcon("picture-in-picture-2")
+        .onClick(() => {
+          this.app.workspace.moveLeafToPopout(this.leaf);
+        }),
+    );
   }
   getIcon(): string {
     return "message-circle-question";
@@ -111,7 +175,14 @@ export class AskView extends ItemView {
       this.renderTurns();
     };
     head.createSpan({ cls: "covault-ask-title", text: "Ask your knowledge base" });
-    const newBtn = head.createEl("button", { cls: "covault-panel-icon-btn", attr: { "aria-label": "New chat" } });
+    const headActions = head.createDiv("covault-ask-head-actions");
+    const tabBtn = headActions.createEl("button", {
+      cls: "covault-panel-icon-btn",
+      attr: { "aria-label": "Ask in a new tab — runs alongside this one" },
+    });
+    setIcon(tabBtn, "columns-2");
+    tabBtn.onclick = () => void this.plugin.openAskTab(this.leaf);
+    const newBtn = headActions.createEl("button", { cls: "covault-panel-icon-btn", attr: { "aria-label": "New chat" } });
     setIcon(newBtn, "plus");
     newBtn.onclick = () => this.startNewChat();
 
@@ -173,6 +244,10 @@ export class AskView extends ItemView {
       }
       if (evt.key === "Escape" && this.running) {
         evt.preventDefault();
+        // Whatever is queued was asked on the strength of an answer the
+        // reader just stopped — firing it straight after would read as
+        // having ignored them. It waits instead.
+        if (this.queue.length > 0) this.queuePaused = true;
         this.running.abort();
       }
     });
@@ -208,7 +283,32 @@ export class AskView extends ItemView {
   }
 
   async onClose(): Promise<void> {
+    this.closing = true;
+    this.queue = [];
     this.running?.abort();
+    // Takes the conversation's background commands with it: a detached
+    // pipeline whose chat is gone has no one left to tell.
+    this.engine.dispose();
+  }
+
+  /**
+   * A background command finished while nothing was running.
+   *
+   * It joins the queue rather than barging in, so it lands in the same
+   * order the reader already sees pending questions in — and so a queue
+   * they paused with Esc stays paused. Idle, the queue drains at once,
+   * which is the wake-up itself.
+   */
+  private onBackgroundWake(note: string): void {
+    if (this.closing) return;
+    this.queue.push({ question: note, images: [], kind: "wake" });
+    this.followTail = true;
+    if (!this.running && !this.queuePaused) {
+      this.drainQueue();
+      return;
+    }
+    this.renderTurns();
+    this.renderHint();
   }
 
   /**
@@ -307,21 +407,39 @@ export class AskView extends ItemView {
     this.engine.reset();
     this.approved.clear();
     this.attached = [];
+    this.queue = [];
+    this.queuePaused = false;
     this.session = this.freshSession();
     this.showSessions = false;
     this.renderAttachments();
     this.renderTurns();
+    this.renderHint();
+    this.refreshHeader();
   }
 
   private openSession(saved: ChatSession): void {
+    // Two views on one conversation would each hold their own copy of it
+    // and overwrite the other's turns on save. Go to the one that has it.
+    const elsewhere = this.app.workspace
+      .getLeavesOfType(COVAULT_ASK_VIEW_TYPE)
+      .find((leaf) => leaf !== this.leaf && leaf.view instanceof AskView && leaf.view.session.id === saved.id);
+    if (elsewhere) {
+      void this.app.workspace.revealLeaf(elsewhere);
+      new Notice(`Covault: "${saved.title}" is already open.`);
+      return;
+    }
     this.running?.abort();
     this.approved.clear();
     this.attached = [];
+    this.queue = [];
+    this.queuePaused = false;
     this.session = saved;
     this.engine.setTranscript(saved.transcript as Message[]);
     this.showSessions = false;
     this.renderAttachments();
     this.renderTurns();
+    this.renderHint();
+    this.refreshHeader();
   }
 
   /** Persist after every completed turn — a crash costs one answer, not
@@ -431,31 +549,89 @@ export class AskView extends ItemView {
       pair.createEl("kbd", { text: keys });
       pair.appendText(label);
     };
+    const queued = this.queue.length;
+    // Between turns, a running command is the only reason the view looks
+    // idle while work is still going on. Say so, or the wake-up that
+    // arrives minutes later reads as the chat talking to itself.
+    const jobs = this.engine.runningJobs();
+    if (jobs.length > 0) {
+      const note = this.hintEl.createSpan("covault-ask-hint-pair");
+      setIcon(note.createSpan({ cls: "covault-ask-queued-icon" }), "clock");
+      note.appendText(
+        jobs.length === 1
+          ? `${jobs[0]!.id} still running — you'll be told when it's done`
+          : `${jobs.length} commands still running`,
+      );
+    }
     if (this.running) {
+      // Return no longer stops anything, so it has to say what it does now.
+      key("\u21a9", queued > 0 ? `queue (${queued} waiting)` : "queue");
       key("Esc", "stop");
+      return;
+    }
+    if (this.queuePaused && queued > 0) {
+      key("\u21a9", `send the next of ${queued}`);
       return;
     }
     key("\u21a9", "send");
     key(`${MOD_KEY}\u21a9`, "new line");
   }
 
-  private async submit(): Promise<void> {
-    if (this.running) {
-      this.running.abort();
-      return;
-    }
+  /**
+   * What Return does. Idle it asks; mid-answer it queues, because the one
+   * thing it must not do is disturb the turn that is running — that used
+   * to be an abort, which meant a follow-up thought cost you the answer
+   * you were waiting for.
+   */
+  private submit(): void {
     const question = this.inputEl.value.trim();
     const images = this.attached;
     // An image on its own is a question ("what is this?"); text is only
     // required when there is nothing else to go on.
-    if (!question && images.length === 0) return;
+    if (!question && images.length === 0) {
+      // Return on an empty box is how a queue that Esc paused gets going
+      // again — no separate button for a state that rarely happens.
+      if (this.queuePaused && this.queue.length > 0) this.drainQueue();
+      return;
+    }
 
     if (!this.engine.isEnabled()) {
       this.statusEl.setText("Set up an AI provider and key first (Settings → Covault → AI engine).");
       return;
     }
 
-    const turn: ChatTurn = { question, activity: [] };
+    // Cleared on the way in either way: the question has left the box, and
+    // where it went is shown in the transcript.
+    this.inputEl.value = "";
+    this.autoGrow();
+    this.attached = [];
+    this.renderAttachments();
+
+    if (this.running) {
+      this.queue.push({ question, images });
+      this.queuePaused = false;
+      this.followTail = true;
+      this.renderTurns();
+      this.renderHint();
+      return;
+    }
+    void this.runTurn(question, images);
+  }
+
+  /** Send the next queued question, if the queue is live. */
+  private drainQueue(): void {
+    if (this.running) return; // one turn at a time — the engine has one agent
+    this.queuePaused = false;
+    const next = this.queue.shift();
+    if (!next) {
+      this.renderHint();
+      return;
+    }
+    void this.runTurn(next.question, next.images, next.kind);
+  }
+
+  private async runTurn(question: string, images: PastedImage[], kind?: ChatTurn["kind"]): Promise<void> {
+    const turn: ChatTurn = { question, activity: [], ...(kind ? { kind } : {}) };
     if (images.length > 0) {
       // Write the bytes out now: the turn survives in chats.json, which
       // only ever holds the file names.
@@ -465,16 +641,14 @@ export class AskView extends ItemView {
     if (this.session.turns.length === 1) {
       this.session.title = titleFor(question || `${images.length} image${images.length === 1 ? "" : "s"}`);
     }
-    this.inputEl.value = "";
-    this.autoGrow();
-    this.attached = [];
     this.showSessions = false;
     this.followTail = true;
-    this.renderAttachments();
     this.renderTurns();
 
     this.running = new AbortController();
+    const { signal } = this.running;
     this.renderHint();
+    this.refreshHeader();
     this.statusEl.setText("Thinking… (Esc to stop)");
     let partial = "";
     try {
@@ -502,10 +676,22 @@ export class AskView extends ItemView {
     } finally {
       this.running = null;
       this.renderHint();
+      this.refreshHeader();
       this.statusEl.setText("");
       this.persist();
       this.renderTurns();
       this.renderMcpChips();
+      // Answered while the reader was in another tab or window: the whole
+      // point of running these in parallel is not having to watch them.
+      // Not for a turn they stopped themselves, and not for a view on its
+      // way out — closing one aborts its turn, which is not news.
+      if (!this.closing && !signal.aborted && !this.containerEl.isShown()) {
+        new Notice(`Covault: "${this.session.title}" — ${turn.error ? "couldn't finish" : "answer ready"}.`);
+      }
+      // A job can finish during the wrap-up above, while `running` still
+      // says a turn is in flight — its wake-up would then sit in the
+      // queue with nothing coming to drain it.
+      if (!this.queuePaused) this.drainQueue();
     }
   }
 
@@ -577,7 +763,8 @@ export class AskView extends ItemView {
     const last = turns.length - 1;
     turns.forEach((turn, i) => {
       if (turn.images?.length) this.renderTurnImages(turn);
-      if (turn.question) this.listEl.createDiv({ cls: "covault-ask-q", text: turn.question });
+      if (turn.kind === "wake") this.renderWake(turn.question);
+      else if (turn.question) this.listEl.createDiv({ cls: "covault-ask-q", text: turn.question });
 
       const isLive = i === last && this.running !== null;
       if (turn.activity.length > 0) this.renderActivity(turn, i);
@@ -592,6 +779,52 @@ export class AskView extends ItemView {
         this.listEl.createDiv({ cls: "covault-ask-a covault-ask-pending", text: "…" });
       }
     });
+    this.paintQueue();
+  }
+
+  /**
+   * Queued questions sit where they will appear once sent — sending them
+   * only turns the ink solid, nothing jumps. Each can be dropped while it
+   * waits; a paused queue says so, because otherwise a queue that stopped
+   * moving looks broken.
+   */
+  private paintQueue(): void {
+    for (const item of this.queue) {
+      const row = this.listEl.createDiv(
+        `covault-ask-q covault-ask-queued${this.queuePaused ? " is-paused" : ""}`,
+      );
+      setIcon(row.createSpan({ cls: "covault-ask-queued-icon" }), this.queuePaused ? "pause" : "clock");
+      // A wake-up's text is a whole log tail; one line of it is the news.
+      const label = item.kind === "wake" ? firstLine(item.question) : item.question;
+      row.createSpan({ cls: "covault-ask-queued-text", text: label || `${item.images.length} image(s)` });
+      const drop = row.createEl("button", {
+        cls: "covault-ask-queued-drop",
+        attr: { "aria-label": "Remove from the queue" },
+      });
+      setIcon(drop, "x");
+      drop.onclick = () => {
+        // By identity, not by index: a turn finishing between the paint
+        // and the click shifts the queue out from under `i`.
+        const at = this.queue.indexOf(item);
+        if (at >= 0) this.queue.splice(at, 1);
+        this.renderTurns();
+        this.renderHint();
+      };
+    }
+  }
+
+  /**
+   * A background command reporting back — not a question, so it must not
+   * look like one. The headline is the verdict ("bg1 finished with exit
+   * code 0 after 4m12s"); the output it carried is one click away, for
+   * the reader who wants to see what the model saw.
+   */
+  private renderWake(note: string): void {
+    const details = this.listEl.createEl("details", { cls: "covault-ask-wake" });
+    const summary = details.createEl("summary");
+    setIcon(summary.createSpan({ cls: "covault-ask-wake-icon" }), "bell");
+    summary.createSpan({ text: firstLine(note).replace(/^\[background\]\s*/, "") });
+    details.createEl("pre", { cls: "covault-ask-wake-body", text: note });
   }
 
   /** Sent images, read back from the attachment store. */

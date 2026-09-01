@@ -1,4 +1,4 @@
-import { apiVersion, FileSystemAdapter, Notice, Plugin, TFile, TFolder } from "obsidian";
+import { apiVersion, FileSystemAdapter, Notice, Plugin, TFile, TFolder, type WorkspaceLeaf } from "obsidian";
 import * as fs from "fs";
 import * as path from "path";
 import type { MutableModels } from "@earendil-works/pi-ai";
@@ -14,9 +14,16 @@ import { ensureIgnored } from "./covault/gitignore";
 import { ownerKeyForPath } from "./covault/ownership";
 import { sameRemote } from "./git/urls";
 import { FolderLinkedError } from "./covault/errors";
-import { writeKnowledgeSkill, SKILL_RELPATH } from "./covault/skill";
+import {
+  buildKnowledgeSkill,
+  gatherFacts,
+  migrateLegacySkill,
+  removeKnowledgeSkill,
+  writeKnowledgeSkill,
+  SKILL_TARGETS,
+} from "./covault/skill";
 import { removeAdapters, writeAdapters } from "./covault/adapters";
-import { gatherFacts } from "./covault/skill";
+import { loadAskSkills } from "./llm/skills";
 import { buildConfigExport, type ImportPlan } from "./covault/exportConfig";
 import { LibraryDescriber } from "./llm/describe";
 import { AddLibraryModal } from "./ui/AddLibraryModal";
@@ -27,7 +34,8 @@ import { CovaultPanel, COVAULT_VIEW_TYPE } from "./ui/CovaultPanel";
 import { AskView, COVAULT_ASK_VIEW_TYPE } from "./ui/AskView";
 import { AskEngine } from "./llm/ask";
 import { describeEndpoint } from "./llm/reachability";
-import { makeReadTool, makeRunCommandTool, makeSearchTool, type AskTool } from "./llm/agentTools";
+import { makeJobTools, makeReadTool, makeRunCommandTool, makeSearchTool, type AskTool } from "./llm/agentTools";
+import { BackgroundJobs } from "./llm/backgroundJobs";
 import { makeEditTools } from "./llm/editTools";
 import { McpManager } from "./llm/mcp";
 import { CliInventory } from "./llm/cliInventory";
@@ -227,6 +235,13 @@ export default class CovaultPlugin extends Plugin {
       callback: () => void this.activateAskView(),
     });
     this.addCommand({
+      id: "ask-in-new-tab",
+      name: "Ask in a new tab",
+      // Next to the Ask you are in when there is one — that is what keeps
+      // a popped-out window's tabs in that window.
+      callback: () => void this.openAskTab(this.app.workspace.getActiveViewOfType(AskView)?.leaf),
+    });
+    this.addCommand({
       id: "describe-libraries",
       name: "Write AI descriptions for libraries",
       callback: () => void this.describeAllLibraries(),
@@ -236,7 +251,11 @@ export default class CovaultPlugin extends Plugin {
       name: "Update the AI knowledge skill",
       callback: () => {
         this.refreshKnowledgeSkill();
-        new Notice(`Covault: knowledge skill updated (${SKILL_RELPATH}).`);
+        new Notice(
+          this.settings.announceToAgents
+            ? `Covault: knowledge skill updated (${SKILL_TARGETS.join(", ")}).`
+            : "Covault: the knowledge skill is off — turn on “Let AI assistants discover your libraries” in Settings.",
+        );
       },
     });
     this.addCommand({
@@ -676,14 +695,26 @@ export default class CovaultPlugin extends Plugin {
     void this.sync.syncAll("manual").then(() => this.generateLibraryDescription(repo.path));
   }
 
-  /** Rebuild the knowledge-routing skill (kernel index) and the agent
-   *  adapters from what's on disk right now. Cheap (directory walks
-   *  only), so it runs after every sync pass. */
+  /** Rebuild the knowledge-routing skill and the agent adapters from
+   *  what's on disk right now. Cheap (directory walks only), so it runs
+   *  after every sync pass.
+   *
+   *  Everything here is for the *other* agents on this machine, so the
+   *  toggle governs all of it: off means nothing of ours in the shared
+   *  skill folders. The plugin's own Ask agent builds the map in memory
+   *  and is unaffected either way. */
   refreshKnowledgeSkill(): void {
     try {
+      const base = this.vaultBasePath();
+      migrateLegacySkill(base);
       const repos = this.libraryManifest.load().repos;
-      writeKnowledgeSkill(this.vaultBasePath(), repos);
-      if (this.settings.announceToAgents) writeAdapters(this.vaultBasePath(), repos);
+      if (this.settings.announceToAgents) {
+        writeKnowledgeSkill(base, repos);
+        writeAdapters(base, repos);
+      } else {
+        removeKnowledgeSkill(base);
+        removeAdapters(base);
+      }
     } catch (e) {
       console.warn("[covault] couldn't update the knowledge skill:", e);
     }
@@ -763,13 +794,19 @@ export default class CovaultPlugin extends Plugin {
     new Notice("Covault: configuration copied to the clipboard (no keys, tokens or personal details included).");
   }
 
-  /** Each Ask view gets its own engine — its own conversation. */
+  /** Each Ask view gets its own engine — its own conversation, and its
+   *  own background commands, which end when it does. */
   newAskEngine(): AskEngine {
     const libraryDeps = {
       vaultBase: () => this.vaultBasePath(),
       repos: () => this.libraryManifest.load().repos,
     };
+    const jobs = new BackgroundJobs({
+      cwd: () => this.vaultBasePath(),
+      env: () => this.cliInventory.env(),
+    });
     return new AskEngine({
+      jobs,
       models: this.models,
       getSelection: () => this.settings.llm,
       hasKey: (provider) => this.hasModelAccess(provider),
@@ -785,18 +822,29 @@ export default class CovaultPlugin extends Plugin {
           makeRunCommandTool(
             () => this.vaultBasePath(),
             () => this.cliInventory.env(),
+            jobs,
           ),
+          ...makeJobTools(jobs),
         ];
         tools.push(...(await this.mcp.tools()));
         return tools;
       },
+      // Built in memory, not read back from disk: the Ask agent always
+      // knows the map, whether or not the user shares it with the other
+      // agents on this machine.
       libraryMap: () => {
         try {
-          return fs.readFileSync(path.join(this.vaultBasePath(), SKILL_RELPATH), "utf8");
+          return buildKnowledgeSkill(this.vaultBasePath(), this.libraryManifest.load().repos);
         } catch {
           return null;
         }
       },
+      // The user's own skills, from the folders Claude Code and pi use.
+      // Ours is left out — the model already has it as the library map.
+      skills: () =>
+        loadAskSkills(this.vaultBasePath(), {
+          exclude: SKILL_TARGETS.map((t) => path.join(this.vaultBasePath(), t)),
+        }),
       cliManifest: () => this.cliInventory.manifest(),
       // A failure is recorded whether or not debug mode was on — it is the
       // only record of why a question couldn't reach the model.
@@ -805,6 +853,37 @@ export default class CovaultPlugin extends Plugin {
       // Second look at a failed request, outside the renderer's CORS rules.
       diagnose: describeEndpoint,
     });
+  }
+
+  /**
+   * Several Ask conversations can run at once; five is the ceiling. Each
+   * one is a live agent with its own tool loop, hitting the same vault,
+   * the same MCP servers and the same rate limits — past a handful the
+   * machine, not the model, becomes the bottleneck.
+   */
+  private static readonly MAX_ASK_VIEWS = 5;
+
+  /**
+   * Another Ask conversation, beside the one asking for it.
+   *
+   * `from` is the view that asked. Making it the active leaf first is
+   * what keeps a popped-out Ask window self-contained: getLeaf("tab")
+   * builds the new tab in the active leaf's own tab group, so tabs opened
+   * from a separate window stay in that window instead of scattering back
+   * into the main one.
+   */
+  async openAskTab(from?: WorkspaceLeaf): Promise<void> {
+    const open = this.app.workspace.getLeavesOfType(COVAULT_ASK_VIEW_TYPE);
+    if (open.length >= CovaultPlugin.MAX_ASK_VIEWS) {
+      new Notice(
+        `Covault: ${CovaultPlugin.MAX_ASK_VIEWS} Ask conversations at once is the limit — close one first.`,
+      );
+      return;
+    }
+    if (from) this.app.workspace.setActiveLeaf(from, { focus: true });
+    const leaf = this.app.workspace.getLeaf("tab");
+    await leaf.setViewState({ type: COVAULT_ASK_VIEW_TYPE, active: true });
+    await this.app.workspace.revealLeaf(leaf);
   }
 
   async activateAskView(): Promise<void> {
@@ -861,16 +940,12 @@ export default class CovaultPlugin extends Plugin {
     }
   }
 
-  /** Toggle handler: on → write the adapters now; off → remove them. */
+  /** Toggle handler: on → write the skill and the adapters now; off →
+   *  remove both. */
   async setAnnounceToAgents(enabled: boolean): Promise<void> {
     this.settings.announceToAgents = enabled;
     await this.saveSettings();
-    try {
-      if (enabled) writeAdapters(this.vaultBasePath(), this.libraryManifest.load().repos);
-      else removeAdapters(this.vaultBasePath());
-    } catch (e) {
-      console.warn("[covault] couldn't update the agent adapters:", e);
-    }
+    this.refreshKnowledgeSkill();
   }
 
   /** Detach a library: drop it from the manifest AND delete the folder's

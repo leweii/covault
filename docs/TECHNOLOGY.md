@@ -74,7 +74,9 @@ isomorphic-git 没有 clean/smudge filter,转换在 GitEngine 的每个内容出
 
 - 基座:`@earendil-works/pi-ai` + `@earendil-works/pi-agent-core`。provider 是**精选列表**(Anthropic/OpenAI/DeepSeek/Groq/OpenRouter/xAI/Mistral 等十余家,刻意排除 Google/Vertex/Bedrock——它们的 SDK 会触发 Obsidian 扫描器的身份探测警告,还让 bundle 膨胀 2MB)。
 - **冲突解决**(`src/llm/resolver.ts`):系统唯一内置 prompt。按 hunk 调用,返回 merged + confidence(0–5)+ reasoning;**全部 hunk ≥3 分才静默应用**,否则进 ConflictModal 三栏人工评审。内置启发式:事实矛盾且无证据时不许猜,保持本地版并说明需人工决策;团队可通过设置追加自定义规则。
-- **Ask 问答**:面板内直接问知识库,带 MCP server 接入、本机 CLI 探测(agent 可 run_command)、路由 skill(自动维护各库的描述,告诉 agent 什么问题去哪个库找)。
+- **Ask 问答**:面板内直接问知识库,带 MCP server 接入、本机 CLI 探测(agent 可 run_command)、库地图(自动维护各库的描述,告诉 agent 什么问题去哪个库找;在内存里现算后进 system prompt,不依赖磁盘文件)。
+- **Skills 双向打通**(`src/llm/skills.ts` + `src/covault/skill.ts`):没有 covault 私有格式或私有目录——**读**用 `pi-agent-core` 的 loadSkills 扫三家六个目录——项目级 `.claude/skills`、`.pi/skills`、`.codex/skills`,用户级 `~/.claude/skills`、`~/.pi/agent/skills`、`~/.codex/skills`(后两个分别认 `PI_CODING_AGENT_DIR`、`CODEX_HOME`)——项目级优先、同名去重,system prompt 只列 name/description,正文由 `load_skill` 按需取(附件读取限制在该 skill 自己的目录内;`read_note` 拒绝点目录,用户级 skill 更在 vault 之外,所以这个工具是唯一入口);**写**把库地图生成成标准 `SKILL.md` 落到同样那三个项目级目录,老版本的 `.covault/skills/` 在启动/同步时删除迁移。生成的那一个是派生数据(gitignore 托管块 + GitEngine `ALWAYS_EXCLUDED` 双重排除,每台机器各自重建,永不产生冲突),用户自己的 skill 在同目录里正常同步。
+- **长任务不靠等**(`src/llm/backgroundJobs.ts`):前台 run_command 30 秒封顶,超时的正确解法不是加大超时或让模型 `sleep` 轮询(一次轮询烧一个 turn,十分钟的流水线能把整轮对话耗光),而是 `run_in_background: true`——进程 detach 到自己的进程组、输出落盘,工具立刻返回,turn 就此结束;进程 exit 事件回调把对话唤醒:运行中用 `agent.steer()` 塞进当前 loop,已空闲则由 AskView 开一个 wake turn。turn 预算(16)在每次唤醒时清零——等待不是失控;撞上限时走 loop 自己的 `shouldStopAfterTurn`(完整跑完当前 turn 再停)而不是 abort,所以模型已经写出的正文不会跟着丢。
 - **transport 诊断**:给 pi-ai 注入自定义 fetch,把 provider SDK 吞掉的失败原因(代理拒绝 CONNECT、TLS 拦截、DNS、区域封锁)还原成人话,并写入诊断日志;CORS 吞掉状态码的场景用免 CORS 的二次探测补全。
 
 ## 同步引擎

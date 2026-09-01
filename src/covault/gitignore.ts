@@ -7,6 +7,7 @@
  */
 import * as fs from "fs";
 import * as path from "path";
+import { SKILL_DIRS } from "./skill";
 
 const START = "# >>> covault managed — do not edit between markers <<<";
 const END = "# <<< covault managed >>>";
@@ -28,8 +29,10 @@ export function ensureIgnored(vaultBase: string, repoPaths: string[]): void {
     // Obsidian's vault trash: deleted library folders land here, and their
     // contents must not resurface in a vault-root repo another tool syncs.
     "/.trash/",
-    // Derived data, regenerated per device — synced nowhere, by anything.
-    "/.covault/skills/",
+    // The generated team-knowledge skill: derived data, regenerated per
+    // device — synced nowhere, by anything. Only ours; the user's own
+    // skills in those folders sync like any other file.
+    ...SKILL_DIRS.map((d) => `/${d}/`),
     // Local diagnostics: this machine's problem, and potentially large.
     // Kept for vaults written by an older version, which put the log here.
     "/.covault/logs/",

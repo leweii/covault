@@ -43,6 +43,11 @@ export class CovaultSettingTab extends PluginSettingTab {
     // display() called, and this runs on every render — so it is the one
     // reliable place to mark the container.
     this.containerEl.addClass("covault-settings");
+    // Obsidian builds the rows synchronously after this returns, so a
+    // microtask sees the finished DOM and still runs before paint. One
+    // pass per render beats a :has() selector, which asks the style
+    // engine to re-answer the same question on every invalidation.
+    queueMicrotask(() => this.markStackedRows());
     return [
       this.configTransfer(),
       this.githubGroup(),
@@ -51,6 +56,20 @@ export class CovaultSettingTab extends PluginSettingTab {
       this.aiGroup(),
       this.syncGroup(),
     ];
+  }
+
+  /**
+   * Rows whose control is a multi-line box read as a label above a
+   * full-width field, not as a narrow column on the right. Obsidian owns
+   * that DOM (the control is declarative), so the only way to say so is
+   * to tag the row after it exists — see the CSS under "Settings tab
+   * layout". Rows we render ourselves are tagged at the source instead
+   * (renderMcpStatus).
+   */
+  private markStackedRows(): void {
+    for (const row of Array.from(this.containerEl.querySelectorAll<HTMLElement>(".setting-item"))) {
+      if (row.querySelector("textarea")) row.addClass("covault-setting-stacked");
+    }
   }
 
   // ── Value plumbing ───────────────────────────────────────────────
@@ -295,6 +314,10 @@ export class CovaultSettingTab extends PluginSettingTab {
    * the user has a way to authorize without first asking a question.
    */
   private renderMcpStatus(setting: Setting): void {
+    // Status rows read as rows, not as a right-hand control: full width,
+    // stacked, with the Check button kept button-sized (see the CSS).
+    setting.settingEl.addClass("covault-setting-stacked");
+    setting.controlEl.addClass("covault-mcp-control");
     const box = setting.controlEl.createDiv("covault-mcp-status");
     const paint = () => {
       box.empty();

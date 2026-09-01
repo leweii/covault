@@ -8,24 +8,35 @@
  * gate — a tool whose needsApproval() returns an action string only runs
  * after the UI confirms that exact action with the user.
  *
- * The model gets the kernel index (which library covers what) in its
+ * The model gets the library map (which library covers what) in its
  * system prompt, plus the inventory of command-line tools actually
  * installed on this machine — a shell it doesn't know the contents of is
- * a shell it never uses. The tool surface is assembled by the plugin:
- * library search/read always, shell and MCP tools per settings.
+ * a shell it never uses — plus the Agent Skills this machine's coding
+ * agents already have (skills.ts). The tool surface is assembled by the
+ * plugin: library search/read always, shell, skills and MCP tools per
+ * settings and what's on disk.
  */
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import {
   contentText,
-  type AssistantMessage,
   type ImageContent,
   type Message,
   type MutableModels,
+  type AssistantMessage,
 } from "@earendil-works/pi-ai";
 import type { ApprovalRequest, AskTool } from "./agentTools";
+import { describeJob, type BackgroundJob, type BackgroundJobs } from "./backgroundJobs";
+import type { AskSkills } from "./skills";
 import { createTransportProbe, describeError, type DiagnoseFn, type TransportProbe } from "./transport";
 
-/** Runaway guard: one question should never burn more turns than this. */
+/** Runaway guard: a stretch of uninterrupted work should never burn more
+ *  turns than this. Reset whenever a background job wakes the agent —
+ *  waiting for a ten-minute build is not a runaway, and the budget is
+ *  there to stop a loop, not to put a clock on the task.
+ *
+ *  Enforced through the loop's own shouldStopAfterTurn hook rather than
+ *  by aborting: the turn that hits the ceiling finishes normally, so
+ *  what the model had already written survives the stop. */
 const MAX_TURNS = 16;
 
 const SYSTEM_PROMPT = `You answer questions using the notes in this vault: the team's shared knowledge libraries (the map below tells you which library covers which topics) and the user's own personal notes (everything outside the library folders — not mapped, just search them).
@@ -34,6 +45,7 @@ Rules:
 - ALWAYS look before you answer: pick the likely library from the map (or search the whole vault when the question sounds personal), call search_notes, read the most promising notes with read_note. The notes are the source of truth; your general knowledge is only for interpreting them.
 - If the notes don't answer the question, say so plainly — never invent an answer that isn't in the libraries.
 - Other tools (shell commands, connected services) may be available; use them when they genuinely help answer or complete what was asked. The inventory below lists the command-line tools installed on this machine — consult it before concluding you can't reach some data or system. The user approves risky actions individually — a declined action is an answer, not an obstacle: work with what you have.
+- Waiting is not your job. Anything that could take more than half a minute goes to run_command with run_in_background: true; then end your turn with one line saying what is running and what you'll do with the result. The moment it exits you are woken with its output and pick up exactly where you left off. Never sleep, never poll a log in a loop — that spends the conversation on waiting and leaves nothing for the work.
 - When the user asks you to update, fix or add to the team's notes, do it with edit_note (targeted oldText → newText replacements; prefer it) or write_note (new notes). Keep each note's existing language, style and structure; make the smallest change that fulfils the request. The user reviews a diff before anything is written.
 - Answer in the language the question was asked in.
 - Keep answers focused; quote concrete facts (names, values, steps) from the notes.
@@ -63,12 +75,20 @@ export interface AskDeps {
   requireApproval: () => boolean;
   /** Full tool surface for a new question (settings may change between asks). */
   tools: () => Promise<AskTool[]>;
-  /** The kernel index content (library map), or null before first sync. */
+  /** The library map: which library covers what, built from what is on
+   *  disk right now. null when there is nothing to map. */
   libraryMap: () => string | null;
+  /** Agent Skills found on disk, or null when the vault and the user
+   *  have none. Resolved per question, like the tools: a skill written
+   *  mid-conversation is available to the next question. */
+  skills?: () => Promise<AskSkills | null>;
   /** The installed-CLI block for the system prompt, or null when there is
    *  nothing to advertise. Resolved per question, so a tool installed
    *  mid-session shows up after a refresh. */
   cliManifest?: () => Promise<string | null>;
+  /** Commands this conversation has running in the background. The engine
+   *  subscribes to it: a job ending is what wakes the agent back up. */
+  jobs?: BackgroundJobs;
   /** One line per model HTTP request, for the debug log. `failed` marks the
    *  ones worth recording even when debug mode is off. */
   onTransport?: (line: string, failed: boolean) => void;
@@ -114,6 +134,23 @@ export function explainAskError(reported: string, transportFailure: string | nul
   return `${reported.replace(/\.$/, "")} — the request never reached the model: ${transportFailure}`;
 }
 
+/**
+ * What a finished background job says to the agent that started it.
+ *
+ * Written as something the model can act on without going back to the
+ * shell: the verdict, the command it came from, and the tail of the
+ * output, with the log path for the parts that didn't fit.
+ */
+export function wakeNote(job: BackgroundJob, tail: string): string {
+  return [
+    `[background] ${describeJob(job)}.`,
+    `$ ${job.command}`,
+    `Output (tail; full log at ${job.logPath}):`,
+    tail || "(no output)",
+    "Carry on with what you were doing — the user has not said anything new.",
+  ].join("\n");
+}
+
 export class AskEngine {
   private agent: Agent | null = null;
   private byName = new Map<string, AskTool>();
@@ -121,6 +158,19 @@ export class AskEngine {
   /** Transcript restored from a saved session, applied on next ask. */
   private pendingHistory: Message[] | null = null;
   private probe: TransportProbe;
+  /** True between the start and the end of a run — decides whether a
+   *  wake-up can be steered into the turn in flight or needs a new one. */
+  private busy = false;
+  /** Turns spent in the current stretch of work; see MAX_TURNS. */
+  private turns = 0;
+  private unsubscribeJobs: (() => void) | null = null;
+
+  /**
+   * Called when a background job finishes and there is no turn running
+   * to absorb the news. The view answers it by starting a turn with the
+   * note as its prompt — the wake-up the agent has been promised.
+   */
+  onWake?: (note: string, job: BackgroundJob) => void;
 
   constructor(private deps: AskDeps) {
     this.probe = createTransportProbe(
@@ -128,6 +178,31 @@ export class AskEngine {
       undefined,
       (url) => this.deps.diagnose?.(url) ?? Promise.resolve(null),
     );
+    this.unsubscribeJobs = deps.jobs?.onFinished((job) => this.wake(job)) ?? null;
+  }
+
+  /**
+   * Deliver a finished job to the conversation.
+   *
+   * Mid-run the note is steered in: pi-agent-core drains the steering
+   * queue at every turn boundary, and an inner loop that would otherwise
+   * stop keeps going while that queue has something in it — so the agent
+   * absorbs the result without a second request being started underneath
+   * it. Between runs there is no loop to steer, so the view is asked to
+   * open a turn instead. Which of the two it is has to be decided here,
+   * once: firing both would answer the same job twice.
+   */
+  private wake(job: BackgroundJob): void {
+    const note = wakeNote(job, this.deps.jobs?.tail(job.id) ?? "");
+    if (this.busy && this.agent) {
+      // Real work arriving is the opposite of a runaway: the budget that
+      // was there to catch a poll loop starts over.
+      this.turns = 0;
+      this.agent.steer({ role: "user", content: note, timestamp: Date.now() });
+      this.cb.onActivity?.(`${describeJob(job)} — picking it back up…`);
+      return;
+    }
+    this.onWake?.(note, job);
   }
 
   isEnabled(): boolean {
@@ -146,11 +221,32 @@ export class AskEngine {
     return this.deps.models.getModel(provider, modelId)?.input.includes("image") ?? false;
   }
 
-  /** Drop the conversation; the next ask starts fresh. */
+  /** Drop the conversation; the next ask starts fresh. Background work
+   *  belonged to the conversation being dropped, so it goes with it —
+   *  nothing should be left running that has nobody to report to. */
   reset(): void {
     this.agent?.abort();
     this.agent = null;
     this.pendingHistory = null;
+    // stopAll, not dispose: the next conversation in this view starts its
+    // own jobs, and the engine is still the one listening for them.
+    this.deps.jobs?.stopAll();
+  }
+
+  /** The conversation is over for good (the view is closing). */
+  dispose(): void {
+    this.unsubscribeJobs?.();
+    this.unsubscribeJobs = null;
+    this.onWake = undefined;
+    this.agent?.abort();
+    this.agent = null;
+    this.pendingHistory = null;
+    this.deps.jobs?.dispose();
+  }
+
+  /** Commands still running in the background, for the status line. */
+  runningJobs(): BackgroundJob[] {
+    return this.deps.jobs?.running() ?? [];
   }
 
   /** The conversation so far — persisted with the session. */
@@ -193,6 +289,11 @@ export class AskEngine {
           throw new Error(describeError(e));
         }
       },
+      // The budget, applied where the loop offers to stop by itself:
+      // after a completed turn, before the next provider request. An
+      // abort here would kill the request mid-flight and take the
+      // half-written answer with it.
+      shouldStopAfterTurn: () => this.turns >= MAX_TURNS,
       beforeToolCall: async (ctx) => {
         const tool = this.byName.get(ctx.toolCall.name);
         let request: ApprovalRequest | null | undefined;
@@ -222,9 +323,16 @@ export class AskEngine {
       throw new Error(`${model.name} can't read images — pick a model with vision in Settings to send screenshots.`);
     }
 
-    // Both are per-question: settings, MCP config and the installed CLIs
-    // can all change between asks. Resolved together so neither waits.
-    const [tools, cliManifest] = await Promise.all([this.deps.tools(), this.deps.cliManifest?.() ?? null]);
+    // All three are per-question: settings, MCP config, the installed
+    // CLIs and the skills on disk can all change between asks. Resolved
+    // together so none waits on another, and as one snapshot — the
+    // prompt lists exactly the skills load_skill can open.
+    const [ownTools, cliManifest, skills] = await Promise.all([
+      this.deps.tools(),
+      this.deps.cliManifest?.() ?? null,
+      this.deps.skills?.() ?? null,
+    ]);
+    const tools = skills ? [...ownTools, ...skills.tools] : ownTools;
     this.byName = new Map(tools.map((t) => [t.name, t]));
     this.cb = cb;
 
@@ -240,18 +348,18 @@ export class AskEngine {
     const sections = [SYSTEM_PROMPT];
     if (map) sections.push(`=== Library map ===\n${map}`);
     if (cliManifest) sections.push(cliManifest);
+    if (skills) sections.push(skills.prompt);
     agent.state.systemPrompt = sections.join("\n\n");
     agent.state.model = model;
     agent.state.tools = tools.map((t) => this.toAgentTool(t));
 
     let toolCalls = 0;
-    let turns = 0;
     let finalText = "";
+    this.turns = 0;
     const unsubscribe = agent.subscribe((event) => {
       switch (event.type) {
         case "turn_start":
-          turns += 1;
-          if (turns > MAX_TURNS) agent.abort();
+          this.turns += 1;
           break;
         case "message_update": {
           const m = event.message;
@@ -282,15 +390,31 @@ export class AskEngine {
     cb.signal?.addEventListener("abort", onAbort);
 
     this.probe.reset();
+    this.busy = true;
     try {
       await agent.prompt(question, images);
+      // A job that ended in the last moments of the run queued its
+      // wake-up after the loop's final steering poll — the one window
+      // where steering alone would leave the conversation asleep on a
+      // message it already holds. continue() drains exactly that.
+      while (agent.hasQueuedMessages() && !cb.signal?.aborted && this.turns < MAX_TURNS) {
+        await agent.continue();
+      }
       const error = agent.state.errorMessage;
       if (cb.signal?.aborted) throw new Error("Cancelled.");
-      if (turns > MAX_TURNS) throw new Error("The model kept working without answering — try a more specific question.");
       if (error) throw new Error(explainAskError(error, this.probe.lastFailure));
+      // Out of budget. Whatever the model had written by then is worth
+      // showing — it is usually the plan it was working through — so this
+      // is a note under an answer, not the loss of one.
+      if (this.turns >= MAX_TURNS) {
+        const note = `Stopped after ${MAX_TURNS} steps — say “continue” to let it keep going, or narrow the question.`;
+        if (!finalText) throw new Error(note);
+        return { text: `${finalText}\n\n*${note}*`, toolCalls };
+      }
       if (!finalText) throw new Error("The model returned no answer — try again.");
       return { text: finalText, toolCalls };
     } finally {
+      this.busy = false;
       unsubscribe();
       cb.signal?.removeEventListener("abort", onAbort);
       this.cb = {};

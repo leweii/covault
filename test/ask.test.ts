@@ -1,12 +1,14 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAssistantMessageEventStream, type AssistantMessage, type MutableModels, type ToolCall } from "@earendil-works/pi-ai";
 import { searchLibraries, readLibraryNote } from "../src/covault/librarySearch";
-import { makeReadTool, makeRunCommandTool, makeSearchTool } from "../src/llm/agentTools";
+import { makeJobTools, makeReadTool, makeRunCommandTool, makeSearchTool } from "../src/llm/agentTools";
+import { BackgroundJobs, type BackgroundJob } from "../src/llm/backgroundJobs";
 import { parseMcpConfig } from "../src/llm/mcp";
-import { AskEngine } from "../src/llm/ask";
+import { AskEngine, type AskDeps } from "../src/llm/ask";
+import { loadAskSkills } from "../src/llm/skills";
 import type { ManifestRepo } from "../src/covault/manifest";
 
 let vault: string;
@@ -97,11 +99,13 @@ describe("parseMcpConfig", () => {
 
 type Script = AssistantMessage["content"][];
 
-function scriptedModels(script: Script): MutableModels {
+/** `seen` collects the requests, for tests that assert on the prompt. */
+function scriptedModels(script: Script, seen?: { systemPrompt?: string }[]): MutableModels {
   let call = 0;
   return {
     getModel: () => ({ id: "fake", api: "fake", provider: "fake" }),
-    streamSimple: () => {
+    streamSimple: (_model: unknown, context: { systemPrompt?: string }) => {
+      seen?.push(context);
       const stream = createAssistantMessageEventStream();
       const content = script[Math.min(call++, script.length - 1)]!;
       const message: AssistantMessage = {
@@ -131,14 +135,24 @@ function scriptedModels(script: Script): MutableModels {
   } as unknown as MutableModels;
 }
 
-function engine(models: MutableModels, opts: { requireApproval?: boolean } = {}): AskEngine {
+function engine(
+  models: MutableModels,
+  opts: { requireApproval?: boolean; jobs?: BackgroundJobs; skills?: AskDeps["skills"] } = {},
+): AskEngine {
   return new AskEngine({
     models,
     getSelection: () => ({ provider: "fake", model: "fake" }),
     hasKey: () => true,
     requireApproval: () => opts.requireApproval ?? true,
-    tools: async () => [makeSearchTool(libraryDeps), makeReadTool(libraryDeps), makeRunCommandTool(() => vault)],
+    jobs: opts.jobs,
+    tools: async () => [
+      makeSearchTool(libraryDeps),
+      makeReadTool(libraryDeps),
+      makeRunCommandTool(() => vault, undefined, opts.jobs),
+      ...(opts.jobs ? makeJobTools(opts.jobs) : []),
+    ],
     libraryMap: () => "## ccp-kb — refunds, Zendesk\n## oms-kb — order cancellation",
+    skills: opts.skills,
   });
 }
 
@@ -226,6 +240,33 @@ describe("AskEngine", () => {
     const a2 = await escape.ask("edit outside");
     expect(a2.text).toBe("blocked, done");
     expect(fs.existsSync(path.join(vault, "..", "evil.md"))).toBe(false);
+  });
+
+  it("advertises the skills on disk and loads one on demand", async () => {
+    const dir = path.join(vault, ".claude/skills/refunds");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "SKILL.md"),
+      "---\nname: refunds\ndescription: How this team answers refund questions.\n---\n\nAlways name the OMS ticket.\n",
+    );
+
+    const seen: { systemPrompt?: string }[] = [];
+    const ask = engine(
+      scriptedModels(
+        [[toolCall("1", "load_skill", { name: "refunds" })], [{ type: "text", text: "done" }]],
+        seen,
+      ),
+      { skills: () => loadAskSkills(vault) },
+    );
+    const activity: string[] = [];
+    const answer = await ask.ask("退款怎么答？", { onActivity: (l) => activity.push(l) });
+
+    expect(answer.text).toBe("done");
+    // Listed by description only; the body arrives through the tool.
+    expect(seen[0]?.systemPrompt).toContain("<name>refunds</name>");
+    expect(seen[0]?.systemPrompt).not.toContain("Always name the OMS ticket.");
+    expect(activity.join(" ")).toContain("Loading the refunds skill");
+    expect(answer.toolCalls).toBe(1);
   });
 
   /**
@@ -380,5 +421,156 @@ describe("edit tools through the agent", () => {
     });
     expect(seen[0]).toContain("+Use the NEW console");
     expect(fs.readFileSync(path.join(vault, "teams/oms-kb/cancel.md"), "utf8")).toContain("OMS console");
+  });
+});
+
+describe("background commands", () => {
+  let jobs: BackgroundJobs;
+  beforeEach(() => {
+    jobs = new BackgroundJobs({ cwd: () => vault, logDir: () => path.join(vault, ".logs") });
+  });
+  afterEach(() => jobs.dispose());
+
+  it("collects output and reports the exit through the callback", async () => {
+    const finished = new Promise<BackgroundJob>((resolve) => jobs.onFinished(resolve));
+    const job = jobs.start("echo hello; exit 3");
+    expect(job.status).toBe("running");
+    expect(jobs.running()).toHaveLength(1);
+
+    const ended = await finished;
+    expect(ended.id).toBe(job.id);
+    expect(ended.status).toBe("failed");
+    expect(ended.exitCode).toBe(3);
+    expect(jobs.tail(job.id)).toContain("hello");
+    expect(jobs.running()).toHaveLength(0);
+  });
+
+  it("stops a job on request", async () => {
+    const finished = new Promise<BackgroundJob>((resolve) => jobs.onFinished(resolve));
+    const job = jobs.start("sleep 30");
+    expect(jobs.stop(job.id)).toBe(true);
+    const ended = await finished;
+    expect(ended.signal).toBe("SIGTERM");
+    expect(jobs.running()).toHaveLength(0);
+  });
+
+  it("returns from the tool at once instead of waiting", async () => {
+    const tool = makeRunCommandTool(() => vault, undefined, jobs);
+    // The point of the flag: a command far longer than the foreground
+    // timeout answers in milliseconds.
+    const outcome = await tool.execute({ command: "sleep 30", run_in_background: true });
+    expect(outcome.isError).toBeFalsy();
+    expect(outcome.text).toMatch(/Started bg1 in the background/);
+    expect(tool.needsApproval?.({ command: "sleep 30", run_in_background: true })).toEqual({
+      action: "$ sleep 30  (in the background)",
+    });
+    expect(jobs.running()).toHaveLength(1);
+  });
+
+  it("tells the model the flag exists, where it will look for it", async () => {
+    // The 30s foreground timeout is only survivable if the description
+    // names the way out; without a registry there is nothing to offer.
+    expect(makeRunCommandTool(() => vault, undefined, jobs).description).toContain("run_in_background: true");
+    expect(makeRunCommandTool(() => vault).description).not.toContain("run_in_background");
+  });
+
+  /**
+   * The whole reason the mechanism exists: the turn ends while the work
+   * goes on, and the job finishing is what brings the conversation back.
+   */
+  it("wakes the conversation when a job finishes between turns", async () => {
+    const ask = engine(
+      scriptedModels([
+        [toolCall("1", "run_command", { command: "sleep 0.3; echo pipeline-done", run_in_background: true })],
+        [{ type: "text", text: "Started it — I'll report back when it exits." }],
+        [{ type: "text", text: "It finished: pipeline-done." }],
+      ]),
+      { jobs },
+    );
+    const woken: string[] = [];
+    ask.onWake = (note) => void woken.push(note);
+
+    const first = await ask.ask("run the pipeline", { approve: async () => true });
+    expect(first.text).toContain("report back");
+    expect(ask.runningJobs()).toHaveLength(1);
+
+    await vi.waitFor(() => expect(woken).toHaveLength(1));
+    expect(woken[0]).toContain("[background]");
+    expect(woken[0]).toContain("exit code 0");
+    expect(woken[0]).toContain("pipeline-done");
+
+    // The note is a prompt like any other — the conversation carries on.
+    const second = await ask.ask(woken[0]!, {});
+    expect(second.text).toContain("It finished");
+  });
+
+  /**
+   * A job that lands while the agent is still working must not open a
+   * second turn underneath it: pi-agent-core's steering queue is drained
+   * at the next turn boundary, so the running loop absorbs it.
+   */
+  it("steers a job that lands mid-turn into the run in flight", async () => {
+    const ask = engine(
+      scriptedModels([
+        [toolCall("1", "run_command", { command: "echo first", run_in_background: true })],
+        [{ type: "text", text: "All done." }],
+      ]),
+      { jobs },
+    );
+    const woken: string[] = [];
+    ask.onWake = (note) => void woken.push(note);
+
+    // The approval gate is the pause: the run is in flight and stays
+    // there until we allow the command.
+    let release = () => {};
+    const paused = new Promise<void>((resolve) => (release = resolve));
+    const answer = ask.ask("start it", {
+      approve: async () => {
+        // Something started earlier finishes while the turn is stuck here.
+        const finished = new Promise<BackgroundJob>((resolve) => jobs.onFinished(resolve));
+        jobs.start("echo earlier-job");
+        await finished;
+        await paused;
+        return true;
+      },
+    });
+    release();
+    await answer;
+
+    expect(woken).toHaveLength(0); // no second turn was opened
+    const transcript = ask.getTranscript();
+    const notes = transcript.filter(
+      (m) => m.role === "user" && typeof m.content === "string" && m.content.startsWith("[background]"),
+    );
+    expect(notes).toHaveLength(1);
+    expect(String(notes[0]?.content)).toContain("earlier-job");
+  });
+});
+
+describe("the turn budget", () => {
+  /**
+   * The runaway it exists to catch: a model that keeps calling tools and
+   * never answers. Stopping must not cost the reader what was written —
+   * the loop is asked to stop after a completed turn rather than aborted
+   * in the middle of one.
+   */
+  it("stops after a completed turn and keeps what the model wrote", async () => {
+    const ask = engine(
+      scriptedModels([
+        // The last entry repeats forever: search, search, search…
+        [{ type: "text", text: "Still looking through the libraries." }, toolCall("1", "search_notes", { query: "refund" })],
+      ]),
+    );
+    const answer = await ask.ask("dig until you drop");
+    expect(answer.text).toContain("Still looking through the libraries.");
+    expect(answer.text).toContain("Stopped after 16 steps");
+    expect(answer.toolCalls).toBe(16);
+    // Stopped, not aborted: the transcript is intact and usable.
+    expect(ask.getTranscript().length).toBeGreaterThan(16);
+  });
+
+  it("reports a runaway that never wrote anything as an error", async () => {
+    const ask = engine(scriptedModels([[toolCall("1", "search_notes", { query: "refund" })]]));
+    await expect(ask.ask("dig silently")).rejects.toThrow(/Stopped after 16 steps/);
   });
 });

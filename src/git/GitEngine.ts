@@ -117,8 +117,19 @@ function hasConflictMarkers(content: string): boolean {
  *  main repo — that's how libraries/marks propagate across machines.
  *  .covault/main.git IS: it's the main repo's own git directory, and so
  *  are the debug logs — local diagnostics, and they can be large. The
- *  Obsidian config folder is appended per-engine via deps.configDir.) */
-const ALWAYS_EXCLUDED = [".trash", ".covault/main.git", ".covault/skills", ".covault/logs"];
+ *  three skill folders hold the generated team-knowledge skill, rebuilt
+ *  per device (see covault/skill.ts SKILL_DIRS — kept literal here so
+ *  the git layer stays independent of the covault one); the user's own
+ *  skills beside them are ordinary files and sync normally. The Obsidian
+ *  config folder is appended per-engine via deps.configDir.) */
+const ALWAYS_EXCLUDED = [
+  ".trash",
+  ".covault/main.git",
+  ".covault/logs",
+  ".claude/skills/team-knowledge",
+  ".pi/skills/team-knowledge",
+  ".codex/skills/team-knowledge",
+];
 
 export class GitEngine {
   private lfs: LfsClient;

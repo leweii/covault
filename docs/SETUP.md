@@ -214,6 +214,16 @@ Client ID 是公开信息(出现在授权 URL 里),可以安全入库。
 - **Connected services (MCP)**:可选,JSON 配置外部服务(同 Claude Desktop 的 `mcpServers` 结构);**Service status** 里 Check / Sign in 验证连通。
   - `url` 型远端服务点 **Sign in** 走 OAuth;`command` 型本地服务(`npx`、`uvx`)由插件用你登录 shell 的 PATH 启动,所以终端里能跑的命令这里也能跑,无需写绝对路径。真找不到时报错会告诉你用 `which <命令>` 填绝对路径。
   - `uvx pkg@latest` 首次运行要下载包,Check 可能要等一会儿;想省这一步就先在终端里跑一次同样的命令做缓存。
+- **Skills**:Ask 直接复用本机 coding agent 的 Agent Skills,三家的目录都读,项目级优先:
+
+  | | 项目级(本 vault) | 用户级(本机) |
+  |---|---|---|
+  | Claude Code | `.claude/skills` | `~/.claude/skills` |
+  | pi | `.pi/skills` | `~/.pi/agent/skills`(认 `PI_CODING_AGENT_DIR`) |
+  | Codex | `.codex/skills` | `~/.codex/skills`(认 `CODEX_HOME`) |
+
+  标准 `SKILL.md` 格式,无需为 Covault 改写;同名以项目级为准。system prompt 只带 name + description,模型判断用得上时再用 `load_skill` 取正文(以及 skill 目录里被引用的附件)。每次提问重新扫盘,所以中途新写的 skill 下一问就生效。Codex 预装在 `~/.codex/skills/.system` 下的内置 skill 会跳过(它们依赖 Codex 自己的工具)。
+- **Let AI assistants discover your libraries**:默认开。把库地图写成一个标准 skill 放进 `.claude/skills/team-knowledge/SKILL.md`、`.pi/skills/team-knowledge/SKILL.md` 与 `.codex/skills/team-knowledge/SKILL.md`,并在 AGENTS.md / CLAUDE.md 的托管块里指向它——Claude Code、pi 这些在 vault 里干活的 agent 于是自己就知道哪个库答哪类问题。这几个 skill 文件是**派生数据**(每台机器各自重建、随同步排除),你自己放在同目录下的 skill 不受影响,照常同步。关掉则连块带文件一起删干净;插件自己的 Ask 不受影响(它的地图在内存里现算)。
 - **Ask before the agent acts**:默认开。关掉等于放开审批——命令、外部服务、笔记编辑都不再询问。合规口径上建议保持开启。
 - 没配 AI 也能用:同步照常,只是冲突不会自动合并,全部浮到人工界面。
 
@@ -298,7 +308,7 @@ OS 用户配置目录:macOS `~/Library/Application Support/`、Windows `%APPDATA
 | Export configuration (copy to clipboard) | 导出配置(§4.10) |
 | Ask your knowledge base | 基于知识库提问 |
 | Write AI descriptions for libraries | 给库生成 AI 描述 |
-| Update the AI knowledge skill | 刷新 AGENTS.md/CLAUDE.md 块与 Agent Skill |
+| Update the AI knowledge skill | 刷新 AGENTS.md/CLAUDE.md 块与 team-knowledge skill(§4.7) |
 | Move existing attachments to Git LFS | 存量附件迁移(§5) |
 | Copy the diagnostic log / Clear the diagnostic log | 诊断日志 |
 

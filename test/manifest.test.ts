@@ -107,7 +107,11 @@ describe("ensureIgnored", () => {
     const content = fs.readFileSync(path.join(vault, ".gitignore"), "utf8");
     expect(content).toContain("/teams/a-kb/");
     expect(content).toContain("/teams/b-kb/");
-    expect(content).toContain("/.covault/skills/");
+    // The generated skill lives in the standard skill folders now, and
+    // only ours is ignored there.
+    expect(content).toContain("/.claude/skills/team-knowledge/");
+    expect(content).toContain("/.pi/skills/team-knowledge/");
+    expect(content).toContain("/.codex/skills/team-knowledge/");
     // Deleted library folders land in the vault trash; a vault-root repo
     // another tool syncs must not pick their contents back up.
     expect(content).toContain("/.trash/");

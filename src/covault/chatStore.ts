@@ -17,6 +17,9 @@ export interface ChatTurn {
   answer?: string;
   activity: string[];
   error?: string;
+  /** "wake" = the turn was opened by a background command finishing, not
+   *  by the user typing; `question` is the report it carried. */
+  kind?: "wake";
   /** Images pasted with the question — bytes live in the AttachmentStore. */
   images?: AttachmentRef[];
 }

@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   applyManagedBlock,
   buildAgentBlock,
-  buildSkillFile,
   removeAdapters,
   removeManagedBlock,
   writeAdapters,
@@ -26,24 +25,18 @@ function lib(p: string, description?: string): ManifestRepo {
   return description ? { ...repo, description } : repo;
 }
 
-describe("buildAgentBlock / buildSkillFile", () => {
-  it("lists every library with its path, pointing at the kernel index", () => {
+describe("buildAgentBlock", () => {
+  it("lists every library with its path, pointing at the generated skill", () => {
     const block = buildAgentBlock([lib("teams/ccp-kb", "Customer Care Portal — Zendesk bridge")]);
     expect(block).toContain("- ccp-kb — `teams/ccp-kb/` — Customer Care Portal — Zendesk bridge");
-    expect(block).toContain(".covault/skills/team-knowledge.md");
+    expect(block).toContain(".claude/skills/team-knowledge/SKILL.md");
+    expect(block).toContain(".pi/skills/team-knowledge/SKILL.md");
+    expect(block).toContain(".codex/skills/team-knowledge/SKILL.md");
     expect(block.startsWith("<!-- >>> covault managed")).toBe(true);
-
-    const skill = buildSkillFile([lib("teams/ccp-kb")]);
-    expect(skill).toContain("name: team-knowledge");
-    expect(skill).toContain("(ccp-kb)"); // frontmatter trigger names
-    expect(skill).toContain("- ccp-kb — `teams/ccp-kb/`");
   });
 
   it("is deterministic regardless of input order (sync-safety invariant)", () => {
-    const a = [lib("a-kb"), lib("b-kb")];
-    const b = [lib("b-kb"), lib("a-kb")];
-    expect(buildAgentBlock(a)).toBe(buildAgentBlock(b));
-    expect(buildSkillFile(a)).toBe(buildSkillFile(b));
+    expect(buildAgentBlock([lib("a-kb"), lib("b-kb")])).toBe(buildAgentBlock([lib("b-kb"), lib("a-kb")]));
   });
 });
 
@@ -89,28 +82,20 @@ describe("applyManagedBlock / removeManagedBlock", () => {
 });
 
 describe("writeAdapters / removeAdapters", () => {
-  it("maintains all three targets and reports change correctly", () => {
+  it("maintains both targets and reports change correctly", () => {
     expect(writeAdapters(vault, [lib("a-kb")])).toBe(true);
     expect(fs.existsSync(path.join(vault, "AGENTS.md"))).toBe(true);
     expect(fs.existsSync(path.join(vault, "CLAUDE.md"))).toBe(true);
-    expect(fs.existsSync(path.join(vault, ".claude/skills/team-knowledge/SKILL.md"))).toBe(true);
     expect(writeAdapters(vault, [lib("a-kb")])).toBe(false); // unchanged
 
     removeAdapters(vault);
     expect(fs.existsSync(path.join(vault, "AGENTS.md"))).toBe(false);
-    expect(fs.existsSync(path.join(vault, ".claude"))).toBe(false); // emptied → tidied
+    expect(fs.existsSync(path.join(vault, "CLAUDE.md"))).toBe(false);
   });
 
   it("treats an empty library list as removal — no noise in empty vaults", () => {
     writeAdapters(vault, [lib("a-kb")]);
     expect(writeAdapters(vault, [])).toBe(false);
     expect(fs.existsSync(path.join(vault, "AGENTS.md"))).toBe(false);
-  });
-
-  it("leaves a .claude with other skills alone", () => {
-    fs.mkdirSync(path.join(vault, ".claude/skills/other-skill"), { recursive: true });
-    writeAdapters(vault, [lib("a-kb")]);
-    removeAdapters(vault);
-    expect(fs.existsSync(path.join(vault, ".claude/skills/other-skill"))).toBe(true);
   });
 });
