@@ -9,7 +9,7 @@ import * as fs from "fs";
 import * as http from "http";
 import * as os from "os";
 import * as path from "path";
-import { explainMcpError, McpManager, parseMcpConfig } from "../src/llm/mcp";
+import { explainMcpError, McpManager, parseMcpConfig, resolveCommandPath } from "../src/llm/mcp";
 import {
   LoopbackAuthReceiver,
   McpAuthStore,
@@ -420,5 +420,119 @@ describe("connecting without interrupting the user", () => {
     expect(mcp.status()[0]?.error).toBe("not contacted yet");
     expect(mcp.broken()).toEqual([]);
     expect(mcp.needingSignIn()).toEqual([]);
+  });
+});
+
+/**
+ * The bug: a stdio server configured the way Claude Desktop configures
+ * one — `"command": "uvx"` — failed with ENOENT in Obsidian, because the
+ * PATH probe hadn't finished (Settings' Check button never triggers it)
+ * and a Finder-launched app's PATH is /usr/bin:/bin:/usr/sbin:/sbin.
+ */
+describe("starting a stdio server the way a terminal would", () => {
+  let dir = "";
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "covault-bin-"));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A bare-minimum MCP stdio server, installed under a bare name in
+   *  `dir` so it is reachable only through PATH. */
+  function installFakeServer(name: string): void {
+    const js = path.join(dir, "server.mjs");
+    fs.writeFileSync(
+      js,
+      `process.stderr.write("starting up\\n");
+       let buf = "";
+       process.stdin.on("data", (chunk) => {
+         buf += chunk;
+         let i;
+         while ((i = buf.indexOf("\\n")) >= 0) {
+           const line = buf.slice(0, i);
+           buf = buf.slice(i + 1);
+           if (!line.trim()) continue;
+           const msg = JSON.parse(line);
+           if (msg.id === undefined) continue; // notification
+           const result =
+             msg.method === "initialize"
+               ? { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "fake", version: "1" } }
+               : { tools: [{ name: "ping", description: "ping", inputSchema: { type: "object", properties: {} } }] };
+           process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result }) + "\\n");
+         }
+       });`,
+    );
+    const bin = path.join(dir, name);
+    fs.writeFileSync(bin, `#!/bin/sh\nexec ${process.execPath} ${js}\n`, { mode: 0o755 });
+  }
+
+  it("resolves a bare command name against the PATH it is given", () => {
+    installFakeServer("uvx-ish");
+    const env = { PATH: `/nonexistent:${dir}` };
+    expect(resolveCommandPath("uvx-ish", env)).toBe(path.join(dir, "uvx-ish"));
+    expect(resolveCommandPath("definitely-not-installed-xyz", env)).toBeNull();
+    // An explicit path is the user's own choice — never second-guessed.
+    expect(resolveCommandPath("/opt/homebrew/bin/uvx", env)).toBeNull();
+  });
+
+  it("uses PATHEXT on Windows, where a bare name is not executable", () => {
+    const seen: string[] = [];
+    const found = resolveCommandPath(
+      "uvx",
+      { PATH: "C:\\tools", PATHEXT: ".COM;.EXE" },
+      "win32",
+      (file) => {
+        seen.push(file);
+        return file.endsWith("uvx.EXE");
+      },
+    );
+    expect(found).toContain("uvx.EXE");
+    expect(seen.some((f) => f.endsWith("uvx.COM"))).toBe(true);
+  });
+
+  it("waits for an async env before spawning, so the real PATH is used", async () => {
+    installFakeServer("uvx-ish");
+    let asked = 0;
+    const logged: string[] = [];
+    const mcp = new McpManager(
+      () => '{"mcpServers": {"workspace": {"command": "uvx-ish", "args": ["run"]}}}',
+      // Exactly the shape cliInventory.envReady() has: the PATH only
+      // becomes known after a login-shell probe.
+      async () => {
+        asked++;
+        await new Promise((r) => setTimeout(r, 20));
+        return { ...process.env, PATH: `${dir}:${process.env.PATH ?? ""}` };
+      },
+      () => {},
+      (line) => logged.push(line),
+    );
+    try {
+      const tools = await mcp.tools();
+      expect(asked).toBe(1);
+      expect(mcp.status()[0]).toMatchObject({ name: "workspace", transport: "stdio", ok: true, toolCount: 1 });
+      expect(tools.map((t) => t.name)).toEqual(["workspace__ping"]);
+      // Whatever the server said about its own startup is kept, tagged
+      // with the server it came from.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(logged).toContain("workspace: starting up");
+    } finally {
+      await mcp.dispose();
+    }
+  });
+
+  it("reports the PATH problem when the command really is missing", async () => {
+    const mcp = new McpManager(
+      () => '{"mcpServers": {"workspace": {"command": "uvx-ish"}}}',
+      async () => ({ PATH: dir }), // installFakeServer was not called
+      () => {},
+    );
+    try {
+      expect(await mcp.tools()).toEqual([]);
+      expect(mcp.broken()[0]?.error).toMatch(/isn't on the PATH/);
+    } finally {
+      await mcp.dispose();
+    }
   });
 });

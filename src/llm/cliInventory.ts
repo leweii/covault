@@ -347,6 +347,18 @@ export class CliInventory {
     return this.resolved?.env ?? this.host.baseEnv;
   }
 
+  /**
+   * Same env, but waits for the probe instead of falling back.
+   *
+   * Callers that spawn a process cannot use the fallback: a bare
+   * Finder-launched PATH turns `"command": "uvx"` into ENOENT, and the
+   * settings page's Check button runs before any question has ever
+   * triggered the probe. Costs one login-shell read the first time.
+   */
+  async envReady(): Promise<Record<string, string | undefined>> {
+    return (await this.probe()).env;
+  }
+
   /** The system-prompt block, or null if there's nothing to advertise. */
   async manifest(): Promise<string | null> {
     const { found, context } = await this.probe();

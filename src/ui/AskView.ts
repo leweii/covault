@@ -28,6 +28,13 @@ import {
 
 export const COVAULT_ASK_VIEW_TYPE = "covault-ask";
 
+/** Never draggable below roughly two lines — a composer you cannot see
+ *  what you typed in is not a composer. */
+const MIN_COMPOSER_PX = 46;
+
+/** How the newline chord is written in the hint. */
+const MOD_KEY = process.platform === "darwin" ? "\u2318" : "Ctrl+";
+
 export class AskView extends ItemView {
   private engine: AskEngine;
   private store: ChatStore;
@@ -45,7 +52,10 @@ export class AskView extends ItemView {
   private statusEl!: HTMLElement;
   private attachEl!: HTMLElement;
   private inputEl!: HTMLTextAreaElement;
-  private sendBtn!: HTMLButtonElement;
+  private hintEl!: HTMLElement;
+  /** Height the user dragged the composer to, in px. Null = follow the
+   *  text (autoGrow). Restored from settings on open. */
+  private manualHeight: number | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -118,19 +128,27 @@ export class AskView extends ItemView {
     this.attachEl = root.createDiv("covault-ask-attach");
 
     const inputRow = root.createDiv("covault-ask-input");
+    this.buildGrip(inputRow);
     this.inputEl = inputRow.createEl("textarea", {
-      attr: { rows: "2", placeholder: "Ask about anything in your vault…" },
+      attr: { placeholder: "Ask about anything in your vault…" },
     });
     this.inputEl.addEventListener("keydown", (evt) => {
-      if (evt.key === "Enter" && !evt.shiftKey && !evt.isComposing) {
+      if (evt.key === "Enter" && !evt.isComposing) {
         evt.preventDefault();
-        void this.submit();
+        // A bare ↩ sends, because that is what the question is for.
+        // ⌘↩ (⌃↩ off the Mac) and ⇧↩ break the line instead.
+        if (evt.metaKey || evt.ctrlKey || evt.shiftKey) this.insertNewline();
+        else void this.submit();
+        return;
       }
       if (evt.key === "Escape" && this.running) {
         evt.preventDefault();
         this.running.abort();
       }
     });
+    // The composer follows the question. Two fixed lines meant a long
+    // one had to be read through a slit.
+    this.inputEl.addEventListener("input", () => this.autoGrow());
     this.inputEl.addEventListener("paste", (evt) => {
       const files = imageFilesFrom(evt.clipboardData);
       if (files.length === 0) return; // plain text paste — leave it alone
@@ -149,9 +167,12 @@ export class AskView extends ItemView {
       evt.preventDefault();
       void this.attach(files);
     });
-    this.sendBtn = inputRow.createEl("button", { cls: "mod-cta", text: "Ask" });
-    this.sendBtn.onclick = () => void this.submit();
+    this.hintEl = inputRow.createDiv("covault-ask-hint");
 
+    const saved = this.plugin.settings.ask.composerHeight;
+    if (saved > 0) this.applyHeight(saved);
+    this.autoGrow();
+    this.renderHint();
     this.renderAttachments();
     this.renderTurns();
   }
@@ -286,6 +307,108 @@ export class AskView extends ItemView {
     }
   }
 
+  /**
+   * The drag handle above the composer.
+   *
+   * The top edge is the one that moves: the box is pinned to the bottom
+   * of the panel, so a native bottom-right resize corner would sit still
+   * while the pointer moved away from it. Dragging up makes it taller and
+   * the transcript shorter, which is the trade the user is making.
+   */
+  private buildGrip(row: HTMLElement): void {
+    const grip = row.createDiv("covault-ask-grip");
+    grip.setAttribute("aria-label", "Drag to resize — double-click to fit the text");
+    grip.addEventListener("pointerdown", (evt) => {
+      // Or the drag selects the transcript instead of resizing.
+      evt.preventDefault();
+      const startY = evt.clientY;
+      const startHeight = this.inputEl.getBoundingClientRect().height;
+      grip.setPointerCapture(evt.pointerId);
+      const onMove = (move: PointerEvent) => this.applyHeight(startHeight + (startY - move.clientY));
+      const onUp = () => {
+        grip.removeEventListener("pointermove", onMove);
+        grip.removeEventListener("pointerup", onUp);
+        grip.removeEventListener("pointercancel", onUp);
+        // Saved on release, not per pixel.
+        this.plugin.settings.ask.composerHeight = this.manualHeight ?? 0;
+        void this.plugin.saveSettings();
+      };
+      grip.addEventListener("pointermove", onMove);
+      grip.addEventListener("pointerup", onUp);
+      grip.addEventListener("pointercancel", onUp);
+    });
+    // A way back to automatic that doesn't need a settings trip.
+    grip.addEventListener("dblclick", () => {
+      this.manualHeight = null;
+      this.inputEl.style.maxHeight = "";
+      this.plugin.settings.ask.composerHeight = 0;
+      void this.plugin.saveSettings();
+      this.autoGrow();
+    });
+  }
+
+  /** Set a dragged height, clamped so the composer can neither disappear
+   *  nor swallow the conversation it is part of. */
+  private applyHeight(px: number): void {
+    const panel = this.contentEl.clientHeight || 0;
+    const max = panel > 0 ? Math.max(MIN_COMPOSER_PX, panel * 0.75) : px;
+    const height = Math.round(Math.min(Math.max(px, MIN_COMPOSER_PX), max));
+    this.manualHeight = height;
+    // The CSS cap exists to stop autoGrow from eating the panel; a height
+    // the user dragged to is not autoGrow's business.
+    this.inputEl.style.maxHeight = "none";
+    this.inputEl.style.height = `${height}px`;
+  }
+
+  /**
+   * Height follows content, up to the max-height in CSS — past that the
+   * textarea scrolls. Borders are added back because the element is
+   * border-box while scrollHeight is not.
+   */
+  private autoGrow(): void {
+    // A height the user chose by hand outranks the text.
+    if (this.manualHeight !== null) return;
+    const el = this.inputEl;
+    el.style.height = "auto";
+    // Called once at build time too, when the leaf may not be laid out
+    // yet — measuring then would pin the box to zero.
+    if (el.scrollHeight === 0) return;
+    const style = getComputedStyle(el);
+    const borders = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+    el.style.height = `${el.scrollHeight + (Number.isFinite(borders) ? borders : 0)}px`;
+  }
+
+  /** ⌘↩ / ⇧↩: a line break at the caret. Done by hand because the
+   *  keydown that carries it is the one we cancel to keep ↩ sending. */
+  private insertNewline(): void {
+    const el = this.inputEl;
+    const start = el.selectionStart ?? el.value.length;
+    const end = el.selectionEnd ?? start;
+    el.value = `${el.value.slice(0, start)}\n${el.value.slice(end)}`;
+    el.selectionStart = el.selectionEnd = start + 1;
+    this.autoGrow();
+    // Typing at the end of a box already at its max height would put the
+    // new line out of sight.
+    if (el.selectionStart === el.value.length) el.scrollTop = el.scrollHeight;
+  }
+
+  /** What the two keys do, said quietly under the box — and while the
+   *  agent is working, the one key that stops it. */
+  private renderHint(): void {
+    this.hintEl.empty();
+    const key = (keys: string, label: string) => {
+      const pair = this.hintEl.createSpan("covault-ask-hint-pair");
+      pair.createEl("kbd", { text: keys });
+      pair.appendText(label);
+    };
+    if (this.running) {
+      key("Esc", "stop");
+      return;
+    }
+    key("\u21a9", "send");
+    key(`${MOD_KEY}\u21a9`, "new line");
+  }
+
   private async submit(): Promise<void> {
     if (this.running) {
       this.running.abort();
@@ -313,13 +436,14 @@ export class AskView extends ItemView {
       this.session.title = titleFor(question || `${images.length} image${images.length === 1 ? "" : "s"}`);
     }
     this.inputEl.value = "";
+    this.autoGrow();
     this.attached = [];
     this.showSessions = false;
     this.renderAttachments();
     this.renderTurns();
 
     this.running = new AbortController();
-    this.sendBtn.setText("Stop");
+    this.renderHint();
     this.statusEl.setText("Thinking… (Esc to stop)");
     let partial = "";
     try {
@@ -347,7 +471,7 @@ export class AskView extends ItemView {
       turn.error = (e as Error).message;
     } finally {
       this.running = null;
-      this.sendBtn.setText("Ask");
+      this.renderHint();
       this.statusEl.setText("");
       this.persist();
       this.renderTurns();

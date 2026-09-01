@@ -74,7 +74,15 @@ export interface CovaultSettings {
    *  cliHints is free text listing extra command-line tools (and how to
    *  use them here) that detection can't guess — it joins the detected
    *  inventory in the agent's system prompt. */
-  ask: { requireApproval: boolean; mcpServers: string; cliHints: string };
+  ask: {
+    requireApproval: boolean;
+    mcpServers: string;
+    cliHints: string;
+    /** Height in px the user dragged the Ask composer to. 0 = follow the
+     *  text. Device-local taste, so it is deliberately not part of an
+     *  exported configuration. */
+    composerHeight: number;
+  };
 
   /** Maintain AGENTS.md/CLAUDE.md blocks + an Agent Skill so AI coding
    *  assistants working in this vault discover the libraries on their own. */
@@ -99,7 +107,7 @@ export const DEFAULT_SETTINGS: CovaultSettings = {
   sync: { auto: true, intervalMinutes: 10 },
   repos: [],
   author: { name: "", email: "" },
-  ask: { requireApproval: true, mcpServers: "", cliHints: "" },
+  ask: { requireApproval: true, mcpServers: "", cliHints: "", composerHeight: 0 },
   announceToAgents: true,
   debugMode: false,
   mainRepo: null,

@@ -135,11 +135,16 @@ export default class CovaultPlugin extends Plugin {
       declared: () => this.settings.ask.cliHints,
     });
     // Built after the inventory: an MCP server started as a command needs
-    // the same real PATH, or `npx` is not found.
+    // the same real PATH, or `npx`/`uvx` is not found. envReady, not env:
+    // spawning cannot use the bare-PATH fallback, and Settings' Check
+    // button runs before any question has warmed the probe.
     this.mcp = new McpManager(
       () => this.settings.ask.mcpServers,
-      () => this.cliInventory.env(),
+      () => this.cliInventory.envReady(),
       (url) => window.open(url, "_blank"),
+      // Always recorded: a server that starts slowly or dies on startup
+      // leaves no other trace, and debug mode is off when it happens.
+      (line) => this.debugLog.op("mcp", line),
     );
     this.describer = new LibraryDescriber({
       models: this.models,

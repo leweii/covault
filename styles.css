@@ -1123,6 +1123,12 @@
   font-size: 0.95em;
 }
 
+/* Dimmed when the open note has no history to show — still clickable, so
+   the Notice can say why. */
+.covault-panel-icon-btn.is-idle {
+  opacity: 0.4;
+}
+
 .covault-panel-icon-btn {
   background: transparent;
   border: none;
@@ -1293,185 +1299,6 @@
 .covault-cv2-reasoning {
   max-height: 200px;
   overflow-y: auto;
-}
-
-/* ─── Panel: history section (drag-resizable, collapsible) ─────── */
-
-.covault-gh-resizer {
-  flex: 0 0 auto;
-  height: 7px;
-  cursor: row-resize;
-  position: relative;
-  touch-action: none;
-}
-
-.covault-gh-resizer::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 3px;
-  height: 1px;
-  background: var(--background-modifier-border);
-}
-
-.covault-gh-resizer:hover::after,
-.covault-gh-resizer.is-dragging::after {
-  top: 2px;
-  height: 3px;
-  border-radius: 2px;
-  background: var(--interactive-accent);
-}
-
-.covault-gh-section {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  flex: 0 0 auto;
-  height: 180px;
-  padding: 0 10px 8px;
-}
-
-/* Drag-resized: explicit height from the custom property. */
-.covault-gh-section.is-sized {
-  height: var(--covault-history-height);
-}
-
-/* Collapsed: shrinks to its header, styled as a button. */
-.covault-gh-section.is-collapsed {
-  height: auto;
-}
-
-.covault-gh-section.is-collapsed .covault-gh-list {
-  display: none;
-}
-
-.covault-gh-section.is-collapsed .covault-gh-header {
-  cursor: pointer;
-  padding: 6px 10px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
-  background: var(--background-secondary);
-}
-
-.covault-gh-section.is-collapsed .covault-gh-header:hover {
-  background: var(--background-modifier-hover);
-}
-
-.covault-gh-chevron {
-  display: none;
-  margin-left: auto;
-  color: var(--text-muted);
-  flex-shrink: 0;
-}
-
-.covault-gh-chevron svg { width: 13px; height: 13px; }
-
-.covault-gh-section.is-collapsed .covault-gh-chevron {
-  display: inline-flex;
-}
-
-.covault-gh-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 4px;
-  flex-shrink: 0;
-}
-
-.covault-gh-icon {
-  display: inline-flex;
-  color: var(--text-muted);
-  flex-shrink: 0;
-}
-
-.covault-gh-icon svg { width: 13px; height: 13px; }
-
-.covault-gh-title {
-  font-size: 0.72em;
-  font-weight: 700;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-}
-
-.covault-gh-expand-btn {
-  background: none;
-  border: none;
-  box-shadow: none;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  cursor: pointer;
-  color: var(--text-muted);
-  border-radius: 4px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-.covault-gh-expand-btn:hover {
-  background: var(--background-modifier-hover);
-  color: var(--text-normal);
-}
-.covault-gh-expand-btn svg { width: 13px; height: 13px; }
-
-.covault-gh-list {
-  overflow-y: auto;
-  flex: 1 1 auto;
-  min-height: 40px;
-}
-
-.covault-gh-empty {
-  padding: 12px 4px;
-  font-size: 0.8em;
-  color: var(--text-faint);
-  text-align: center;
-  line-height: 1.4;
-}
-
-.covault-gh-row {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 4px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 0.82em;
-  transition: background 80ms;
-  user-select: none;
-}
-
-.covault-gh-row:hover { background: var(--background-modifier-hover); }
-
-.covault-gh-origin-icon {
-  display: inline-flex;
-  flex-shrink: 0;
-  align-items: center;
-}
-
-.covault-gh-origin-icon svg { width: 11px; height: 11px; }
-.covault-gh-origin-icon.is-local  { color: var(--color-accent); }
-.covault-gh-origin-icon.is-remote { color: var(--color-green); }
-
-.covault-gh-message {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.covault-gh-date {
-  font-size: 0.9em;
-  color: var(--text-faint);
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-  flex-shrink: 0;
 }
 
 /* ─── Setup dialog (personal knowledge base) ───────────────────── */
@@ -1713,15 +1540,70 @@
 
 .covault-ask-input {
   display: flex;
-  gap: 8px;
-  padding: 8px 12px 12px;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 12px 10px;
   border-top: 1px solid var(--background-modifier-border);
 }
 
+.covault-ask-grip {
+  flex: none;
+  height: 10px;
+  /* Full panel width, sunk into the composer's own padding: easy to hit,
+     adds no visible bulk. */
+  margin: -5px -12px 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.covault-ask-grip::before {
+  content: "";
+  width: 26px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--background-modifier-border);
+  transition: background 120ms ease;
+}
+
+.covault-ask-grip:hover::before {
+  background: var(--text-faint);
+}
+
 .covault-ask-input textarea {
-  flex: 1;
+  box-sizing: border-box;
+  width: 100%;
   resize: none;
   font-size: 0.92em;
+  line-height: 1.45;
+  /* Four lines to start; AskView.autoGrow() takes it from there and the
+     max turns the rest into a scroll rather than eating the transcript. */
+  min-height: 5.2em;
+  max-height: 45vh;
+  overflow-y: auto;
+}
+
+.covault-ask-hint {
+  display: flex;
+  gap: 12px;
+  font-size: 0.74em;
+  color: var(--text-faint);
+  user-select: none;
+}
+
+.covault-ask-hint kbd {
+  /* Obsidian gives kbd a chip look; here it should read as one quiet
+     line, not two badges. */
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  margin-right: 3px;
+  font-family: inherit;
+  font-size: 1.05em;
+  color: var(--text-muted);
 }
 
 /* ── Diff approval (Ask note edits) ───────────────────────── */
@@ -2043,29 +1925,23 @@ button.covault-ask-mcp-chip:hover {
 /* Pinned between the scrolling list and the history pane. */
 .covault-panel-ask-bar {
   flex: 0 0 auto;
-  padding: 8px 10px;
+  padding: 7px 10px 6px;
   border-top: 1px solid var(--background-modifier-border);
 }
 
+/* Colour comes from .mod-cta so the active theme decides what a primary
+   action looks like; only the shape is ours. */
 .covault-panel-ask {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 7px;
   width: 100%;
-  padding: 9px 12px;
-  border-radius: 8px;
-  background: var(--interactive-accent);
-  color: var(--text-on-accent);
-  font-size: 0.88em;
+  padding: 8px 12px;
+  border-radius: 7px;
+  font-size: 0.86em;
   font-weight: var(--font-medium);
   cursor: pointer;
-  box-shadow: none;
-}
-
-.covault-panel-ask:hover {
-  background: var(--interactive-accent-hover);
-  color: var(--text-on-accent);
 }
 
 .covault-panel-ask-icon {
@@ -2073,8 +1949,8 @@ button.covault-ask-mcp-chip:hover {
 }
 
 .covault-panel-ask-icon .svg-icon {
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
 }
 
 /* A per-row sync button stays out of the way until the row is hovered,
@@ -2099,51 +1975,3 @@ button.covault-ask-mcp-chip:hover {
   }
 }
 
-/* ── Panel: what is syncing right now ─────────────────────── */
-
-.covault-panel-tasks {
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 8px;
-  padding: 7px 9px;
-  background: var(--background-secondary);
-  font-size: 0.82em;
-}
-
-.covault-panel-tasks-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--text-muted);
-  font-weight: var(--font-medium);
-  margin-bottom: 4px;
-}
-
-.covault-panel-tasks-icon {
-  display: inline-flex;
-}
-
-.covault-panel-tasks-icon .svg-icon {
-  width: 13px;
-  height: 13px;
-  animation: covault-spin 1.6s linear infinite;
-}
-
-.covault-panel-task {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 1px 0 1px 19px;
-}
-
-.covault-panel-task-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.covault-panel-task-age {
-  margin-left: auto;
-  color: var(--text-faint);
-  font-variant-numeric: tabular-nums;
-  flex: 0 0 auto;
-}

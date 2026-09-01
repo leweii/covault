@@ -1,7 +1,7 @@
 import { ItemView, Notice, setIcon, TFile, TFolder, type WorkspaceLeaf } from "obsidian";
 import { FuzzySuggestModal, type TAbstractFile } from "obsidian";
 import type CovaultPlugin from "../main";
-import type { FileCommit, RepoRef } from "../git/GitEngine";
+import type { RepoRef } from "../git/GitEngine";
 import { AddLibraryModal } from "./AddLibraryModal";
 import { MainKbModal } from "./MainKbModal";
 import { ConfirmModal } from "./ConfirmModal";
@@ -10,34 +10,20 @@ import { FileHistoryModal } from "./FileHistoryModal";
 export const COVAULT_VIEW_TYPE = "covault-panel";
 
 /**
- * Right-sidebar tool panel. Three clearly separated areas:
+ * Right-sidebar tool panel. Two areas, both with inline add/remove and
+ * live sync state:
  *   1. My knowledge base — what you share to your personal repo
  *   2. Team libraries    — the shared repos pulled into this vault
- *   3. History           — recent changes to the note you're reading
- * The first two carry inline add/remove and live sync state; the history
- * section sits at the bottom behind a drag-to-resize divider (drag it
- * near-closed to collapse it to a header button).
+ * The history of the open note is one icon in the header corner: it used
+ * to be a resizable list pinned to the bottom, which cost a third of the
+ * panel to duplicate what FileHistoryModal already shows better.
  */
 export class CovaultPanel extends ItemView {
-  // History section state — kept on the instance so a re-render (which
-  // rebuilds the whole panel on every sync tick) doesn't wipe the view.
-  /** Ticks the age labels while something is syncing; null when idle. */
-  private taskTimer: number | null = null;
-  private ghSectionEl: HTMLElement | null = null;
-  private ghTitleEl: HTMLElement | null = null;
-  private ghListEl: HTMLElement | null = null;
+  // The note whose history the header button would open. Kept on the
+  // instance because a re-render (every sync tick) rebuilds the panel.
   private ghFile: string | null = null;
-  private ghCommits: FileCommit[] = [];
   private ghCtx: { ref: RepoRef; relPath: string } | null = null;
-  private ghPanelHeight: number | null = null;
-  private ghCollapsed = false;
-  /** Discards history responses for a file the user already navigated away from. */
-  private ghLoadSeq = 0;
-
-  private static readonly GH_MIN_HEIGHT = 80;
-  private static readonly GH_COLLAPSE_AT = 48;
-  private static readonly GH_HEIGHT_KEY = "covault-history-height";
-  private static readonly GH_COLLAPSED_KEY = "covault-history-collapsed";
+  private ghBtnEl: HTMLElement | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -57,15 +43,9 @@ export class CovaultPanel extends ItemView {
   }
 
   onOpen(): Promise<void> {
-    const savedHeight = Number(this.app.loadLocalStorage(CovaultPanel.GH_HEIGHT_KEY));
-    if (Number.isFinite(savedHeight) && savedHeight >= CovaultPanel.GH_MIN_HEIGHT) {
-      this.ghPanelHeight = savedHeight;
-    }
-    this.ghCollapsed = this.app.loadLocalStorage(CovaultPanel.GH_COLLAPSED_KEY) === "1";
-
     this.render();
-    this.registerEvent(this.app.workspace.on("file-open", (file) => void this.ghLoad(file)));
-    void this.ghLoad(this.app.workspace.getActiveFile());
+    this.registerEvent(this.app.workspace.on("file-open", (file) => this.ghTrack(file)));
+    this.ghTrack(this.app.workspace.getActiveFile());
     return Promise.resolve();
   }
 
@@ -81,8 +61,10 @@ export class CovaultPanel extends ItemView {
     // a global sweep next to them mostly invited accidental full sweeps.
     const header = scroll.createDiv("covault-panel-header");
     header.createSpan({ cls: "covault-panel-title", text: "Covault" });
-
-    this.renderActiveTasks(scroll);
+    this.ghBtnEl = header.createEl("button", { cls: "covault-panel-icon-btn" });
+    setIcon(this.ghBtnEl, "history");
+    this.ghBtnEl.onclick = () => this.ghOpenModal();
+    this.ghApplyBtnState();
 
     const conflicts = this.plugin.sync.pendingConflicts();
     if (conflicts.length > 0) {
@@ -97,43 +79,6 @@ export class CovaultPanel extends ItemView {
     this.renderPersonalSection(scroll);
     this.renderLibrariesSection(scroll);
     this.renderAskButton(root);
-    this.renderHistorySection(root);
-  }
-
-  /**
-   * What is syncing right now. Hidden when nothing is, so it never costs
-   * space; visible the moment something starts, because otherwise a long
-   * round is indistinguishable from a stuck one.
-   */
-  private renderActiveTasks(root: HTMLElement): void {
-    if (this.taskTimer !== null) {
-      window.clearInterval(this.taskTimer);
-      this.taskTimer = null;
-    }
-    const tasks = this.plugin.sync.activeTasks();
-    if (tasks.length === 0) return;
-    const ages: { el: HTMLElement; startedAt: number }[] = [];
-    const box = root.createDiv("covault-panel-tasks");
-    const head = box.createDiv("covault-panel-tasks-head");
-    setIcon(head.createSpan({ cls: "covault-panel-tasks-icon" }), "refresh-cw");
-    head.createSpan({
-      text: this.plugin.sync.isSweeping()
-        ? `Syncing everything · ${tasks.length} in progress`
-        : `Syncing · ${tasks.length} in progress`,
-    });
-    for (const task of tasks) {
-      const row = box.createDiv("covault-panel-task");
-      row.createSpan({ cls: "covault-panel-task-name", text: task.label });
-      const age = row.createSpan({ cls: "covault-panel-task-age", text: describeAge(Date.now() - task.startedAt) });
-      ages.push({ el: age, startedAt: task.startedAt });
-    }
-    // The panel only re-renders when a round starts or ends, so without a
-    // tick a long round would show the age it had when it began — exactly
-    // the case this list exists to make visible. Only the labels change.
-    this.taskTimer = window.setInterval(() => {
-      for (const { el, startedAt } of ages) el.setText(describeAge(Date.now() - startedAt));
-    }, 1000);
-    this.registerInterval(this.taskTimer);
   }
 
   /**
@@ -143,8 +88,11 @@ export class CovaultPanel extends ItemView {
    */
   private renderAskButton(root: HTMLElement): void {
     const bar = root.createDiv("covault-panel-ask-bar");
+    // mod-cta, not a hand-painted accent: themes style Obsidian's own CTA
+    // class deliberately, and a private background is what left this
+    // reading as an inert grey slab under Blue Topaz.
     const ask = bar.createEl("button", {
-      cls: "covault-panel-ask",
+      cls: "covault-panel-ask mod-cta",
       attr: { "aria-label": "Ask your knowledge base" },
     });
     setIcon(ask.createSpan({ cls: "covault-panel-ask-icon" }), "message-circle-question");
@@ -170,99 +118,34 @@ export class CovaultPanel extends ItemView {
   }
 
   // ── Section 3: history of the current note ─────────────────
-  private renderHistorySection(root: HTMLElement): void {
-    const resizer = root.createDiv("covault-gh-resizer");
-    resizer.setAttribute("aria-label", "Drag to resize history");
-
-    const section = root.createDiv("covault-gh-section");
-    this.ghSectionEl = section;
-
-    const head = section.createDiv("covault-gh-header");
-    const icon = head.createSpan("covault-gh-icon");
-    setIcon(icon, "history");
-    this.ghTitleEl = head.createSpan({ cls: "covault-gh-title", text: "History" });
-    const expand = head.createEl("button", {
-      cls: "covault-gh-expand-btn",
-      attr: { "aria-label": "Open full history" },
-    });
-    setIcon(expand, "maximize-2");
-    expand.onclick = (e) => {
-      e.stopPropagation(); // don't also toggle the collapsed header
-      this.ghOpenModal();
-    };
-    const chevron = head.createSpan("covault-gh-chevron");
-    setIcon(chevron, "chevron-up");
-    head.onclick = () => {
-      if (this.ghCollapsed) this.ghSetCollapsed(false);
-    };
-
-    this.ghInitResize(resizer);
-    this.ghListEl = section.createDiv("covault-gh-list");
-    this.ghApplyPanelState();
-
-    // Restore what was already loaded (render() runs on every sync tick).
-    if (this.ghFile) {
-      const name = this.ghFile.split("/").pop() ?? this.ghFile;
-      this.ghTitleEl.setText(name);
-      this.ghTitleEl.setAttribute("title", this.ghFile);
-    }
-    if (this.ghCommits.length > 0) this.ghRenderList();
-    else this.ghEmpty(this.ghFile ? "No history for this note yet." : "Open a note to see its history.");
-  }
-
-  private ghEmpty(text: string): void {
-    this.ghListEl?.empty();
-    this.ghListEl?.createDiv({ cls: "covault-gh-empty", text });
-  }
-
-  /** Load the commit list for the newly opened file. */
-  private async ghLoad(file: TFile | null): Promise<void> {
+  /**
+   * Remember which note the header button would show history for. No
+   * commits are fetched here any more — the modal loads its own, so
+   * opening a note no longer costs a git log it may never look at.
+   */
+  private ghTrack(file: TFile | null): void {
     if (!file) return;
-    if (file.path === this.ghFile && this.ghCommits.length > 0) return;
-    const seq = ++this.ghLoadSeq;
-
     this.ghFile = file.path;
-    this.ghCommits = [];
     this.ghCtx = this.plugin.historyContextFor(file.path);
-    if (this.ghTitleEl) {
-      this.ghTitleEl.setText(file.name);
-      this.ghTitleEl.setAttribute("title", file.path);
-    }
-
-    if (!this.ghCtx) {
-      this.ghEmpty("This note isn't synced — share it to track its history.");
-      return;
-    }
-    this.ghEmpty("Loading…");
-    try {
-      const commits = await this.plugin.engine.fileLog(this.ghCtx.ref, this.ghCtx.relPath, 30);
-      if (seq !== this.ghLoadSeq) return; // superseded by a newer file
-      this.ghCommits = commits;
-      if (commits.length === 0) this.ghEmpty("No history for this note yet.");
-      else this.ghRenderList();
-    } catch (e) {
-      if (seq !== this.ghLoadSeq) return;
-      console.warn("[covault] couldn't load history:", e);
-      this.ghEmpty("Couldn't load history.");
-    }
+    this.ghApplyBtnState();
   }
 
-  private ghRenderList(): void {
-    const list = this.ghListEl;
-    if (!list) return;
-    list.empty();
-    const myEmail = this.plugin.gitAuthorEmail();
-    for (const commit of this.ghCommits) {
-      const row = list.createDiv("covault-gh-row");
-      const isMine = commit.authorEmail === myEmail;
-      const origin = row.createSpan({ cls: `covault-gh-origin-icon ${isMine ? "is-local" : "is-remote"}` });
-      origin.setAttribute("aria-label", isMine ? "Your change" : `${commit.authorName}'s change`);
-      setIcon(origin, isMine ? "upload" : "download");
-      const msg = row.createSpan({ cls: "covault-gh-message", text: commit.message });
-      msg.setAttribute("title", `${commit.message}\n${commit.authorName} · ${commit.hash.slice(0, 7)}`);
-      row.createSpan({ cls: "covault-gh-date", text: ghRelativeDate(commit.date) });
-      row.onclick = () => this.ghOpenModal();
-    }
+  /** The button says what it will do before it is pressed: which note,
+   *  or dimmed when the open one isn't synced. */
+  private ghApplyBtnState(): void {
+    const btn = this.ghBtnEl;
+    if (!btn) return;
+    const name = this.ghFile?.split("/").pop();
+    const available = this.ghCtx !== null && this.ghFile !== null;
+    btn.toggleClass("is-idle", !available);
+    btn.setAttribute(
+      "aria-label",
+      available
+        ? `History of ${name}`
+        : name
+          ? `${name} isn't synced — share it to track its history`
+          : "Open a synced note to see its history",
+    );
   }
 
   private ghOpenModal(): void {
@@ -278,69 +161,6 @@ export class CovaultPanel extends ItemView {
       this.ghFile,
       this.plugin.gitAuthorEmail(),
     ).open();
-  }
-
-  // ── History section sizing ─────────────────────────────────
-
-  private ghApplyPanelState(): void {
-    const section = this.ghSectionEl;
-    if (!section) return;
-    section.toggleClass("is-collapsed", this.ghCollapsed);
-    // An explicit height only applies while expanded with a stored size;
-    // otherwise the stylesheet's default sizing takes over.
-    const sized = !this.ghCollapsed && this.ghPanelHeight !== null;
-    section.toggleClass("is-sized", sized);
-    if (sized) section.setCssProps({ "--covault-history-height": `${this.ghPanelHeight ?? 0}px` });
-  }
-
-  private ghSetCollapsed(collapsed: boolean): void {
-    this.ghCollapsed = collapsed;
-    this.ghApplyPanelState();
-    this.app.saveLocalStorage(CovaultPanel.GH_COLLAPSED_KEY, collapsed ? "1" : null);
-  }
-
-  private ghInitResize(handle: HTMLElement): void {
-    handle.addEventListener("pointerdown", (e: PointerEvent) => {
-      const section = this.ghSectionEl;
-      if (!section) return;
-      e.preventDefault();
-      handle.setPointerCapture(e.pointerId);
-      handle.addClass("is-dragging");
-
-      const startY = e.clientY;
-      const startH = this.ghCollapsed ? 0 : section.getBoundingClientRect().height;
-      // Always leave a sliver of the sections above visible.
-      const panelH = this.contentEl.getBoundingClientRect().height;
-      const maxH = Math.max(CovaultPanel.GH_MIN_HEIGHT, panelH - 120);
-
-      const onMove = (ev: PointerEvent) => {
-        const raw = startH + (startY - ev.clientY);
-        if (raw < CovaultPanel.GH_COLLAPSE_AT) {
-          if (!this.ghCollapsed) {
-            this.ghCollapsed = true;
-            this.ghApplyPanelState();
-          }
-          return;
-        }
-        this.ghCollapsed = false;
-        this.ghPanelHeight = Math.min(Math.max(raw, CovaultPanel.GH_MIN_HEIGHT), maxH);
-        this.ghApplyPanelState();
-      };
-      const onUp = (ev: PointerEvent) => {
-        handle.removeClass("is-dragging");
-        handle.releasePointerCapture(ev.pointerId);
-        handle.removeEventListener("pointermove", onMove);
-        handle.removeEventListener("pointerup", onUp);
-        handle.removeEventListener("pointercancel", onUp);
-        this.app.saveLocalStorage(CovaultPanel.GH_COLLAPSED_KEY, this.ghCollapsed ? "1" : null);
-        if (this.ghPanelHeight !== null) {
-          this.app.saveLocalStorage(CovaultPanel.GH_HEIGHT_KEY, String(this.ghPanelHeight));
-        }
-      };
-      handle.addEventListener("pointermove", onMove);
-      handle.addEventListener("pointerup", onUp);
-      handle.addEventListener("pointercancel", onUp);
-    });
   }
 
   // ── Section 1: my knowledge base ───────────────────────────
@@ -413,6 +233,35 @@ export class CovaultPanel extends ItemView {
   // ── Section 2: team libraries ──────────────────────────────
   /** Sync just this repo. Disabled only while *this* repo is syncing;
    *  another library's sync is no reason to refuse. */
+  /**
+   * Sync everything, now. A sweep rather than a loop over the libraries:
+   * syncAll already skips what is mid-flight and folds a second click
+   * into the round that is running, which a hand-rolled loop would not.
+   */
+  private addSweepButton(head: HTMLElement): void {
+    const btn = head.createEl("button", {
+      cls: "covault-panel-icon-btn",
+      attr: { "aria-label": "Sync everything now" },
+    });
+    setIcon(btn, "refresh-cw");
+    if (this.plugin.sync.isSweeping()) {
+      btn.addClass("is-syncing");
+      btn.disabled = true;
+    }
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      // Spun and dead on the first click: a sweep of fifteen libraries
+      // takes long enough that an unchanged button reads as ignored.
+      btn.disabled = true;
+      btn.addClass("is-syncing");
+      try {
+        await this.plugin.sync.syncAll("manual");
+      } finally {
+        this.render();
+      }
+    };
+  }
+
   private addSyncButton(row: HTMLElement, repoPath: string, label: string): void {
     const btn = row.createEl("button", { cls: "covault-panel-icon-btn", attr: { "aria-label": label } });
     setIcon(btn, "refresh-cw");
@@ -438,6 +287,7 @@ export class CovaultPanel extends ItemView {
     const addBtn = head.createEl("button", { cls: "covault-panel-icon-btn", attr: { "aria-label": "Add a library" } });
     setIcon(addBtn, "plus");
     addBtn.onclick = () => new AddLibraryModal(this.app, this.plugin).open();
+    this.addSweepButton(head);
 
     const repos = this.plugin.libraryManifest.load().repos;
     if (repos.length === 0) {
@@ -505,20 +355,6 @@ export class CovaultPanel extends ItemView {
   }
 }
 
-/** Compact relative age for the panel's commit rows ("3h", "2d", "5mo"). */
-function ghRelativeDate(date: Date): string {
-  const mins = Math.floor((Date.now() - date.getTime()) / 60_000);
-  if (mins < 1) return "now";
-  if (mins < 60) return `${mins}m`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h`;
-  const days = Math.floor(hrs / 24);
-  if (days < 30) return `${days}d`;
-  const mos = Math.floor(days / 30);
-  if (mos < 12) return `${mos}mo`;
-  return `${Math.floor(mos / 12)}y`;
-}
-
 /** Picker for "share a note or folder to my knowledge base". */
 class SharePickerModal extends FuzzySuggestModal<TAbstractFile> {
   constructor(
@@ -555,8 +391,3 @@ class SharePickerModal extends FuzzySuggestModal<TAbstractFile> {
   }
 }
 
-/** "12s" / "3m" — enough to tell a slow round from a stuck one. */
-function describeAge(ms: number): string {
-  const seconds = Math.max(0, Math.round(ms / 1000));
-  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-}

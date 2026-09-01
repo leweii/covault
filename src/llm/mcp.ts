@@ -8,6 +8,8 @@
  * tool is used in a conversation (needsApproval), so nothing fires
  * silently.
  */
+import * as fs from "fs";
+import * as path from "path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -62,9 +64,68 @@ export function explainMcpError(error: unknown, server: McpServerConfig): string
     return "needs sign-in — a browser window should have opened; finish there, then ask again.";
   }
   if (/ENOENT|not found/i.test(raw) && server.command) {
-    return `couldn't start "${server.command}" — it isn't on the PATH Obsidian sees. Use an absolute path (\`which ${server.command}\`).`;
+    return (
+      `couldn't start "${server.command}" — it isn't on the PATH Obsidian sees, even with your login ` +
+      `shell's PATH loaded. Put an absolute path in "command" (\`which ${server.command}\`).`
+    );
+  }
+  // A cold `uvx`/`npx` first downloads the package, which can outlast any
+  // startup timeout — worth saying, because a retry usually just works.
+  if (/timed out|ETIMEDOUT/i.test(raw) && server.command) {
+    return (
+      `"${server.command}" didn't finish starting in time. A first run downloads the package — run ` +
+      `\`${[server.command, ...(server.args ?? [])].join(" ")}\` once in a terminal to cache it, then Check again.`
+    );
   }
   return raw;
+}
+
+/** Extensions that make a bare name executable on Windows. */
+function windowsExtensions(env: Record<string, string | undefined>): string[] {
+  return (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+}
+
+/**
+ * Absolute path for a bare command name, searching the PATH we were
+ * handed. Resolving before spawning is what makes `"command": "uvx"`
+ * behave in Obsidian the way it does in a terminal: on Windows spawn
+ * ignores the child env's PATH entirely, and everywhere else the PATH in
+ * question is one we reconstructed ourselves, so doing the lookup here
+ * also lets the failure name what was searched.
+ *
+ * Returns null when nothing matches; the caller spawns the bare name and
+ * lets the ENOENT explain itself.
+ */
+export function resolveCommandPath(
+  command: string,
+  env: Record<string, string | undefined>,
+  platform: string = process.platform,
+  isExecutable: (file: string) => boolean = defaultIsExecutable,
+): string | null {
+  // An explicit path — absolute or relative — is the user's own choice.
+  if (command.includes("/") || command.includes("\\")) return null;
+  const names =
+    platform === "win32" && !path.extname(command)
+      ? windowsExtensions(env).map((ext) => command + ext)
+      : [command];
+  for (const dir of (env.PATH ?? "").split(path.delimiter)) {
+    if (!dir.trim()) continue;
+    for (const name of names) {
+      const candidate = path.join(dir, name);
+      if (isExecutable(candidate)) return candidate;
+    }
+  }
+  return null;
+}
+
+function defaultIsExecutable(file: string): boolean {
+  try {
+    if (!fs.statSync(file).isFile()) return false;
+    fs.accessSync(file, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -95,6 +156,10 @@ export function parseMcpConfig(json: string): McpServerConfig[] {
   return entries.filter((s) => s.command || s.url);
 }
 
+/** Startup budget for a stdio server, generous enough for a first-run
+ *  package download. */
+const STDIO_STARTUP_TIMEOUT_MS = 180_000;
+
 function sanitize(name: string): string {
   return name.replace(/[^a-zA-Z0-9_-]+/g, "_");
 }
@@ -115,12 +180,19 @@ export class McpManager {
 
   /** `env` supplies the user's real login-shell environment (see
    *  cliInventory): a GUI-launched Obsidian has a bare PATH, so without it
-   *  a plain `"command": "npx"` fails with ENOENT. `openBrowser` is how an
-   *  OAuth server gets in front of the user. */
+   *  a plain `"command": "npx"` fails with ENOENT. It may be async — the
+   *  probe that finds that PATH has to be allowed to finish before the
+   *  first spawn, or the fallback bare PATH is what gets used.
+   *  `openBrowser` is how an OAuth server gets in front of the user. */
   constructor(
     private getConfigJson: () => string,
-    private env?: () => Record<string, string | undefined>,
+    private env?: () => Record<string, string | undefined> | Promise<Record<string, string | undefined>>,
     private openBrowser: (url: string) => void = (url) => window.open(url, "_blank"),
+    /** Where a stdio server's own stderr goes. Discarding it is what made
+     *  a slow start indistinguishable from a hang: the only thing that
+     *  said "Downloading google-api-python-client (15.3MiB)" was the
+     *  child's stderr. */
+    private onLog: (line: string) => void = () => {},
   ) {}
 
   /** Stop waiting on a sign-in nobody is going to finish. */
@@ -267,13 +339,25 @@ export class McpManager {
     if (existing) return existing;
     const client = new Client({ name: "covault", version: "1.0.0" });
     if (server.command) {
+      const env = { ...((await this.env?.()) ?? process.env), ...(server.env ?? {}) } as Record<string, string>;
+      const transport = new StdioClientTransport({
+        command: resolveCommandPath(server.command, env) ?? server.command,
+        args: server.args ?? [],
+        env,
+        // "pipe", not "ignore": read below, never inherited — a child
+        // writing to Obsidian's own stderr goes nowhere a user can see.
+        stderr: "pipe",
+      });
+      transport.stderr?.on("data", (chunk: Buffer) => {
+        for (const line of chunk.toString().split("\n")) {
+          if (line.trim()) this.onLog(`${server.name}: ${line.trim()}`);
+        }
+      });
       await client.connect(
-        new StdioClientTransport({
-          command: server.command,
-          args: server.args ?? [],
-          env: { ...(this.env?.() ?? process.env), ...(server.env ?? {}) } as Record<string, string>,
-          stderr: "ignore",
-        }),
+        transport,
+        // The default 60s is not enough for a cold `uvx pkg@latest`, which
+        // downloads the whole dependency tree before it says a word.
+        { timeout: STDIO_STARTUP_TIMEOUT_MS },
       );
     } else if (server.url) {
       return this.connectHttp(server, client, interactive);

@@ -211,7 +211,9 @@ Client ID 是公开信息(出现在授权 URL 里),可以安全入库。
 
 - **Provider** → **Model** → **API key**(20+ provider 可选)。key 存在本机 OS 用户目录,**不在 vault 里**。
 - 需要自建/网关端点时,Provider 选 custom,填 **Endpoint**(OpenAI 兼容 baseURL)+ **Model name**,模型能读图就勾 **This model can read images**。
-- **Connected services (MCP)**:可选,JSON 配置外部服务;**Service status** 里 Check / Sign in 验证连通。
+- **Connected services (MCP)**:可选,JSON 配置外部服务(同 Claude Desktop 的 `mcpServers` 结构);**Service status** 里 Check / Sign in 验证连通。
+  - `url` 型远端服务点 **Sign in** 走 OAuth;`command` 型本地服务(`npx`、`uvx`)由插件用你登录 shell 的 PATH 启动,所以终端里能跑的命令这里也能跑,无需写绝对路径。真找不到时报错会告诉你用 `which <命令>` 填绝对路径。
+  - `uvx pkg@latest` 首次运行要下载包,Check 可能要等一会儿;想省这一步就先在终端里跑一次同样的命令做缓存。
 - **Ask before the agent acts**:默认开。关掉等于放开审批——命令、外部服务、笔记编辑都不再询问。合规口径上建议保持开启。
 - 没配 AI 也能用:同步照常,只是冲突不会自动合并,全部浮到人工界面。
 
