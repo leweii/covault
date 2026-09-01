@@ -52,7 +52,6 @@ export interface AskCallbacks {
 export interface AskAnswer {
   text: string;
   toolCalls: number;
-  costUsd: number;
 }
 
 export interface AskDeps {
@@ -246,7 +245,6 @@ export class AskEngine {
     agent.state.tools = tools.map((t) => this.toAgentTool(t));
 
     let toolCalls = 0;
-    let costUsd = 0;
     let turns = 0;
     let finalText = "";
     const unsubscribe = agent.subscribe((event) => {
@@ -267,7 +265,6 @@ export class AskEngine {
           const m = event.message;
           if (m.role === "assistant") {
             const done = m as AssistantMessage;
-            costUsd += done.usage?.cost?.total ?? 0;
             const text = contentText(done.content).trim();
             if (text) finalText = text;
           }
@@ -292,7 +289,7 @@ export class AskEngine {
       if (turns > MAX_TURNS) throw new Error("The model kept working without answering — try a more specific question.");
       if (error) throw new Error(explainAskError(error, this.probe.lastFailure));
       if (!finalText) throw new Error("The model returned no answer — try again.");
-      return { text: finalText, toolCalls, costUsd };
+      return { text: finalText, toolCalls };
     } finally {
       unsubscribe();
       cb.signal?.removeEventListener("abort", onAbort);

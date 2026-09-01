@@ -21,9 +21,6 @@ export interface AISuggestion {
   /** Indices into merged[] where the model made a substantive choice. */
   picks: number[];
   model: string;
-  inputTokens: number;
-  outputTokens: number;
-  costUsd: number;
 }
 
 export interface AISuggestResult {
@@ -176,16 +173,9 @@ export class ConflictResolver {
     }
 
     const parsed = parseAIResponse(contentText(reply.content));
-    const usage = reply.usage;
     return {
       providerName: provider,
-      suggestion: {
-        ...parsed,
-        model: modelId,
-        inputTokens: usage?.input ?? 0,
-        outputTokens: usage?.output ?? 0,
-        costUsd: usage?.cost?.total ?? 0,
-      },
+      suggestion: { ...parsed, model: modelId },
     };
   }
 }

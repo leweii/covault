@@ -166,7 +166,6 @@ describe("AskEngine", () => {
     });
     expect(answer.text).toContain("Zendesk");
     expect(answer.toolCalls).toBe(2);
-    expect(answer.costUsd).toBeCloseTo(0.03);
     expect(activity[0]).toContain("Searching");
     expect(activity[1]).toContain("Reading refunds.md");
     // Streaming: an early delta is a strict prefix of the final text.

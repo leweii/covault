@@ -17,7 +17,6 @@ export interface ChatTurn {
   answer?: string;
   activity: string[];
   error?: string;
-  costUsd?: number;
   /** Images pasted with the question — bytes live in the AttachmentStore. */
   images?: AttachmentRef[];
 }

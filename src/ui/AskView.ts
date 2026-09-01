@@ -497,7 +497,6 @@ export class AskView extends ItemView {
         images,
       );
       turn.answer = answer.text;
-      turn.costUsd = answer.costUsd;
     } catch (e) {
       turn.error = (e as Error).message;
     } finally {
@@ -632,9 +631,6 @@ export class AskView extends ItemView {
     void MarkdownRenderer.render(this.app, turn.answer ?? "", body, "", this);
 
     const foot = wrap.createDiv("covault-ask-foot");
-    if (turn.costUsd !== undefined && turn.costUsd > 0) {
-      foot.createSpan({ text: `$${turn.costUsd.toFixed(4)}` });
-    }
     const copy = foot.createEl("button", { cls: "covault-panel-icon-btn", attr: { "aria-label": "Copy answer" } });
     setIcon(copy, "copy");
     copy.onclick = () => {

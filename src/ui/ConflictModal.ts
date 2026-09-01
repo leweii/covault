@@ -507,11 +507,11 @@ export class ConflictModal extends Modal {
       header.createSpan({ text: "Why the AI merged it this way" });
       const list = reasoning.createEl("ul", { cls: "covault-cv2-reasoning-list" });
       for (const r of state.suggestion.reasoning) list.createEl("li", { text: r });
+      // Which model merged it, and nothing about what it cost: usage is
+      // between the user and their provider, not something this plugin
+      // reports back at them.
       const info = reasoning.createDiv("covault-cv2-model-info");
       info.createSpan({ text: `model: ${state.suggestion.model}` });
-      info.createSpan({ text: `tokens: ${state.suggestion.inputTokens} in / ${state.suggestion.outputTokens} out` });
-      const cost = state.suggestion.costUsd;
-      info.createSpan({ cls: "covault-cv2-cost", text: cost > 0 ? `~$${cost.toFixed(4)}` : "" });
       return;
     }
 
