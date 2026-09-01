@@ -28,6 +28,9 @@ import {
 
 export const COVAULT_ASK_VIEW_TYPE = "covault-ask";
 
+/** Within this much of the bottom counts as being at the bottom. */
+const TAIL_SLACK_PX = 40;
+
 /** Never draggable below roughly two lines — a composer you cannot see
  *  what you typed in is not a composer. */
 const MIN_COMPOSER_PX = 46;
@@ -47,7 +50,19 @@ export class AskView extends ItemView {
   /** Images pasted for the question being composed, not yet sent. */
   private attached: PastedImage[] = [];
 
+  /** Follow the answer as it streams. Off the moment the reader scrolls
+   *  up — a view that keeps yanking itself to the bottom can't be read —
+   *  and on again when they reach the bottom, press the button, or ask
+   *  something new. */
+  private followTail = true;
+  /** Scroll events a rebuild causes are not the reader's doing. */
+  private rebuilding = false;
+  /** Which turns' step lists the reader opened. The list is rebuilt on
+   *  every streamed chunk, so a <details> would otherwise slam shut. */
+  private stepsOpen = new Set<number>();
+
   private mcpEl!: HTMLElement;
+  private tailBtn!: HTMLElement;
   private listEl!: HTMLElement;
   private statusEl!: HTMLElement;
   private attachEl!: HTMLElement;
@@ -100,7 +115,11 @@ export class AskView extends ItemView {
     setIcon(newBtn, "plus");
     newBtn.onclick = () => this.startNewChat();
 
-    this.listEl = root.createDiv("covault-ask-list");
+    // A wrapper, because a button positioned inside a scrolling box
+    // scrolls away with the content it is meant to escape.
+    const listWrap = root.createDiv("covault-ask-list-wrap");
+    this.listEl = listWrap.createDiv("covault-ask-list");
+    this.listEl.addEventListener("scroll", () => this.onListScroll());
     this.listEl.addEventListener("click", (evt) => {
       const link = (evt.target as HTMLElement).closest("a.internal-link");
       if (!link) return;
@@ -111,6 +130,17 @@ export class AskView extends ItemView {
       const href = link.getAttribute("data-href") ?? link.getAttribute("href");
       if (href) void this.app.workspace.openLinkText(href, "", false);
     });
+
+    this.tailBtn = listWrap.createEl("button", {
+      cls: "covault-ask-tail",
+      attr: { "aria-label": "Jump to the latest" },
+    });
+    setIcon(this.tailBtn, "chevron-down");
+    this.tailBtn.onclick = () => {
+      this.followTail = true;
+      this.listEl.scrollTop = this.listEl.scrollHeight;
+      this.applyTailBtn();
+    };
 
     // Connected-service state lives here, not in the conversation: asking
     // a question never triggers a sign-in, so this is the only place it
@@ -439,6 +469,7 @@ export class AskView extends ItemView {
     this.autoGrow();
     this.attached = [];
     this.showSessions = false;
+    this.followTail = true;
     this.renderAttachments();
     this.renderTurns();
 
@@ -496,7 +527,41 @@ export class AskView extends ItemView {
 
   // ── Rendering ──────────────────────────────────────────────
 
+  /**
+   * Rebuilds the list — which happens on every streamed chunk — without
+   * moving the reader. Only the tail grows, so the offset they were at
+   * still points at the same text.
+   */
   private renderTurns(partial?: string): void {
+    const prevTop = this.listEl.scrollTop;
+    this.rebuilding = true;
+    try {
+      this.paintTurns(partial);
+    } finally {
+      this.listEl.scrollTop = this.showSessions
+        ? 0
+        : this.followTail
+          ? this.listEl.scrollHeight
+          : prevTop;
+      this.rebuilding = false;
+      this.applyTailBtn();
+    }
+  }
+
+  /** Has the reader scrolled away from the tail? A few pixels of rounding
+   *  must not count as away. */
+  private onListScroll(): void {
+    if (this.rebuilding) return;
+    const el = this.listEl;
+    this.followTail = el.scrollHeight - el.scrollTop - el.clientHeight < TAIL_SLACK_PX;
+    this.applyTailBtn();
+  }
+
+  private applyTailBtn(): void {
+    this.tailBtn?.toggleClass("is-visible", !this.followTail && !this.showSessions);
+  }
+
+  private paintTurns(partial?: string): void {
     this.listEl.empty();
     if (this.showSessions) {
       this.renderSessions();
@@ -516,7 +581,7 @@ export class AskView extends ItemView {
       if (turn.question) this.listEl.createDiv({ cls: "covault-ask-q", text: turn.question });
 
       const isLive = i === last && this.running !== null;
-      if (turn.activity.length > 0) this.renderActivity(turn, isLive);
+      if (turn.activity.length > 0) this.renderActivity(turn, i);
 
       if (turn.answer !== undefined) {
         this.renderAnswer(turn);
@@ -528,7 +593,6 @@ export class AskView extends ItemView {
         this.listEl.createDiv({ cls: "covault-ask-a covault-ask-pending", text: "…" });
       }
     });
-    this.listEl.scrollTop = this.listEl.scrollHeight;
   }
 
   /** Sent images, read back from the attachment store. */
@@ -545,20 +609,26 @@ export class AskView extends ItemView {
     }
   }
 
-  /** Live: every step as it happens. Done: collapsed to "n steps". */
-  private renderActivity(turn: ChatTurn, isLive: boolean): void {
-    if (isLive) {
-      for (const line of turn.activity) this.listEl.createDiv({ cls: "covault-ask-activity", text: line });
-      return;
-    }
+  /**
+   * "n steps", closed, whether or not the turn is still running. Live, it
+   * used to print every step as its own line, and a list growing under
+   * the text you were reading is what made the view impossible to read.
+   * Nothing is lost: the step happening right now is in the status line.
+   */
+  private renderActivity(turn: ChatTurn, index: number): void {
     const details = this.listEl.createEl("details", { cls: "covault-ask-steps" });
+    if (this.stepsOpen.has(index)) details.setAttribute("open", "");
+    details.addEventListener("toggle", () => {
+      if (details.open) this.stepsOpen.add(index);
+      else this.stepsOpen.delete(index);
+    });
     details.createEl("summary", { text: `${turn.activity.length} step${turn.activity.length === 1 ? "" : "s"}` });
     for (const line of turn.activity) details.createDiv({ cls: "covault-ask-activity", text: line });
   }
 
   private renderAnswer(turn: ChatTurn): void {
     const wrap = this.listEl.createDiv("covault-ask-a");
-    const body = wrap.createDiv();
+    const body = wrap.createDiv("covault-ask-md");
     void MarkdownRenderer.render(this.app, turn.answer ?? "", body, "", this);
 
     const foot = wrap.createDiv("covault-ask-foot");
