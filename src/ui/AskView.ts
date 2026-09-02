@@ -490,7 +490,7 @@ export class AskView extends ItemView {
     // A way back to automatic that doesn't need a settings trip.
     grip.addEventListener("dblclick", () => {
       this.manualHeight = null;
-      this.inputEl.style.maxHeight = "";
+      this.inputEl.removeClass("is-dragged");
       this.plugin.settings.ask.composerHeight = 0;
       void this.plugin.saveSettings();
       this.autoGrow();
@@ -505,9 +505,11 @@ export class AskView extends ItemView {
     const height = Math.round(Math.min(Math.max(px, MIN_COMPOSER_PX), max));
     this.manualHeight = height;
     // The CSS cap exists to stop autoGrow from eating the panel; a height
-    // the user dragged to is not autoGrow's business.
-    this.inputEl.style.maxHeight = "none";
-    this.inputEl.style.height = `${height}px`;
+    // the user dragged to is not autoGrow's business. The cap lives in a
+    // stylesheet, so lifting it is a class — only the measured pixels are
+    // written from here.
+    this.inputEl.addClass("is-dragged");
+    this.inputEl.setCssStyles({ height: `${height}px` });
   }
 
   /**
@@ -519,13 +521,15 @@ export class AskView extends ItemView {
     // A height the user chose by hand outranks the text.
     if (this.manualHeight !== null) return;
     const el = this.inputEl;
-    el.style.height = "auto";
+    // Collapse before measuring: scrollHeight of an already-tall box
+    // reports the box, not the text in it.
+    el.setCssStyles({ height: "auto" });
     // Called once at build time too, when the leaf may not be laid out
     // yet — measuring then would pin the box to zero.
     if (el.scrollHeight === 0) return;
     const style = getComputedStyle(el);
     const borders = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
-    el.style.height = `${el.scrollHeight + (Number.isFinite(borders) ? borders : 0)}px`;
+    el.setCssStyles({ height: `${el.scrollHeight + (Number.isFinite(borders) ? borders : 0)}px` });
   }
 
   /** ⌘↩ / ⇧↩: a line break at the caret. Done by hand because the

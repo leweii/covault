@@ -1766,6 +1766,14 @@
   overflow-y: auto;
 }
 
+/* Dragged by hand: the cap above is there to stop autoGrow from eating
+   the transcript, and a height someone chose deliberately is not
+   autoGrow's doing. AskView.applyHeight clamps it to 75% of the panel,
+   so lifting the cap cannot swallow the conversation either. */
+.covault-ask-input textarea.is-dragged {
+  max-height: none;
+}
+
 .covault-ask-hint {
   display: flex;
   gap: 12px;
