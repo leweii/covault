@@ -52,6 +52,10 @@ const MOD_KEY = process.platform === "darwin" ? "\u2318" : "Ctrl+";
 /** The headline of a multi-line machine message. */
 const firstLine = (text: string): string => text.split("\n", 1)[0] ?? "";
 
+/** The step list's summary, written in one place because the live turn
+ *  rewrites it without going through a repaint. */
+const stepCount = (n: number): string => `${n} step${n === 1 ? "" : "s"}`;
+
 export class AskView extends ItemView {
   private engine: AskEngine;
   private store: ChatStore;
@@ -84,9 +88,22 @@ export class AskView extends ItemView {
   private followTail = true;
   /** Scroll events a rebuild causes are not the reader's doing. */
   private rebuilding = false;
-  /** Which turns' step lists the reader opened. The list is rebuilt on
-   *  every streamed chunk, so a <details> would otherwise slam shut. */
+  /** Which turns' step lists the reader opened, so a rebuild does not
+   *  slam them shut. */
   private stepsOpen = new Set<number>();
+  /** The answer as far as it has streamed. Held here rather than passed
+   *  around, so any repaint — including one deferred past a selection —
+   *  can put the live text back where it was. */
+  private livePartial = "";
+  /** The two nodes a streaming turn writes into. Held so a chunk can be
+   *  appended to them instead of rebuilding the transcript around them:
+   *  a rebuild deletes the nodes a selection is anchored in, which is
+   *  what made text impossible to select while an answer was arriving. */
+  private liveEl: HTMLElement | null = null;
+  private liveSteps: HTMLElement | null = null;
+  /** A repaint that arrived while the reader was holding a selection,
+   *  waiting for them to let go of it. */
+  private repaintPending = false;
 
   private mcpEl!: HTMLElement;
   private tailBtn!: HTMLElement;
@@ -193,12 +210,17 @@ export class AskView extends ItemView {
     const listWrap = root.createDiv("covault-ask-list-wrap");
     this.listEl = listWrap.createDiv("covault-ask-list");
     this.listEl.addEventListener("scroll", () => this.onListScroll());
+    // Letting go of a selection is what releases the repaints held back
+    // while it existed. Bound on the whole view, because a selection is
+    // just as often ended by clicking somewhere else in it.
+    this.registerDomEvent(this.containerEl, "pointerup", () => this.flushRepaint());
+    this.registerDomEvent(this.containerEl, "keyup", () => this.flushRepaint());
     this.listEl.addEventListener("click", (evt) => {
       const link = (evt.target as HTMLElement).closest("a.internal-link");
       if (!link) return;
       // A drag that happens to end on a citation is someone copying text,
       // not asking to navigate away from it.
-      if (!window.getSelection()?.isCollapsed) return;
+      if (!this.listEl.win.getSelection()?.isCollapsed) return;
       evt.preventDefault();
       const href = link.getAttribute("data-href") ?? link.getAttribute("href");
       if (href) void this.app.workspace.openLinkText(href, "", false);
@@ -656,21 +678,19 @@ export class AskView extends ItemView {
     this.renderHint();
     this.refreshHeader();
     this.statusEl.setText("Thinking… (Esc to stop)");
-    let partial = "";
     try {
       const answer = await this.engine.ask(
         question || "What do you make of this?",
         {
           signal: this.running.signal,
           onDelta: (text) => {
-            partial = text;
             this.statusEl.setText("Writing… (Esc to stop)");
-            this.renderTurns(partial);
+            this.streamAnswer(text);
           },
           onActivity: (line) => {
             turn.activity.push(line);
             this.statusEl.setText(line);
-            this.renderTurns(partial);
+            this.streamActivity(turn);
           },
           approve: (request) => this.approveAction(request),
         },
@@ -681,6 +701,11 @@ export class AskView extends ItemView {
       turn.error = (e as Error).message;
     } finally {
       this.running = null;
+      // The answer is real now; the streamed copy of it must not survive
+      // into the repaint below, or a deferred one would restore it.
+      this.livePartial = "";
+      this.liveEl = null;
+      this.liveSteps = null;
       this.renderHint();
       this.refreshHeader();
       this.statusEl.setText("");
@@ -723,11 +748,23 @@ export class AskView extends ItemView {
    * moving the reader. Only the tail grows, so the offset they were at
    * still points at the same text.
    */
-  private renderTurns(partial?: string): void {
+  /**
+   * Rebuild the transcript.
+   *
+   * Held back while the reader has text selected in it: this empties the
+   * list, and a selection whose nodes have been deleted is a selection
+   * gone. The repaint is not dropped — releasing the selection runs it.
+   */
+  private renderTurns(): void {
+    if (this.hasHeldSelection()) {
+      this.repaintPending = true;
+      return;
+    }
+    this.repaintPending = false;
     const prevTop = this.listEl.scrollTop;
     this.rebuilding = true;
     try {
-      this.paintTurns(partial);
+      this.paintTurns();
     } finally {
       this.listEl.scrollTop = this.showSessions
         ? 0
@@ -752,8 +789,11 @@ export class AskView extends ItemView {
     this.tailBtn?.toggleClass("is-visible", !this.followTail && !this.showSessions);
   }
 
-  private paintTurns(partial?: string): void {
+  private paintTurns(): void {
     this.listEl.empty();
+    this.liveEl = null;
+    this.liveSteps = null;
+    const partial = this.livePartial;
     if (this.showSessions) {
       this.renderSessions();
       return;
@@ -773,16 +813,17 @@ export class AskView extends ItemView {
       else if (turn.question) this.listEl.createDiv({ cls: "covault-ask-q", text: turn.question });
 
       const isLive = i === last && this.running !== null;
-      if (turn.activity.length > 0) this.renderActivity(turn, i);
+      if (turn.activity.length > 0) {
+        const steps = this.renderActivity(turn, i);
+        if (isLive) this.liveSteps = steps;
+      }
 
       if (turn.answer !== undefined) {
         this.renderAnswer(turn);
       } else if (turn.error !== undefined) {
         this.listEl.createDiv({ cls: "covault-ask-err", text: turn.error });
-      } else if (isLive && partial) {
-        this.listEl.createDiv({ cls: "covault-ask-a covault-ask-pending", text: partial });
       } else if (isLive) {
-        this.listEl.createDiv({ cls: "covault-ask-a covault-ask-pending", text: "…" });
+        this.liveEl = this.listEl.createDiv({ cls: "covault-ask-a covault-ask-pending", text: partial || "…" });
       }
     });
     this.paintQueue();
@@ -853,15 +894,84 @@ export class AskView extends ItemView {
    * the text you were reading is what made the view impossible to read.
    * Nothing is lost: the step happening right now is in the status line.
    */
-  private renderActivity(turn: ChatTurn, index: number): void {
+  private renderActivity(turn: ChatTurn, index: number): HTMLElement {
     const details = this.listEl.createEl("details", { cls: "covault-ask-steps" });
     if (this.stepsOpen.has(index)) details.setAttribute("open", "");
     details.addEventListener("toggle", () => {
       if (details.open) this.stepsOpen.add(index);
       else this.stepsOpen.delete(index);
     });
-    details.createEl("summary", { text: `${turn.activity.length} step${turn.activity.length === 1 ? "" : "s"}` });
+    details.createEl("summary", { text: stepCount(turn.activity.length) });
     for (const line of turn.activity) details.createDiv({ cls: "covault-ask-activity", text: line });
+    return details;
+  }
+
+  /**
+   * A streamed chunk, written into the answer already on screen.
+   *
+   * The text arrives cumulative, so the common case is appending to the
+   * one text node that is already there — which leaves a selection
+   * anchored earlier in that node intact, where setting the whole text
+   * would replace the node and drop it. Anything else (a model that
+   * rewrote what it had said, a node that is gone) falls back to a full
+   * repaint, which the selection guard may then hold.
+   */
+  private streamAnswer(text: string): void {
+    this.livePartial = text;
+    // A repaint waiting on a selection that has since been let go: run it
+    // now, so the chunk below is appended to the fresh nodes.
+    this.flushRepaint();
+    const el = this.liveEl;
+    const node = el?.firstChild;
+    if (!el?.isConnected || !node || node.nodeType !== Node.TEXT_NODE) {
+      this.renderTurns();
+      return;
+    }
+    const shown = node.nodeValue ?? "";
+    if (shown === "…" || !text.startsWith(shown)) el.setText(text);
+    else if (text.length > shown.length) (node as Text).appendData(text.slice(shown.length));
+    this.keepAtTail();
+  }
+
+  /** The same trick for the step list: one line appended, one count
+   *  rewritten, nothing else in the transcript touched. */
+  private streamActivity(turn: ChatTurn): void {
+    this.flushRepaint();
+    const steps = this.liveSteps;
+    if (!steps?.isConnected) {
+      // No list yet — the first step is what creates it.
+      this.renderTurns();
+      return;
+    }
+    steps.find("summary")?.setText(stepCount(turn.activity.length));
+    steps.createDiv({ cls: "covault-ask-activity", text: turn.activity[turn.activity.length - 1] });
+    this.keepAtTail();
+  }
+
+  /** Follow the tail as text arrives — unless the reader is selecting,
+   *  when moving the text out from under the cursor is the whole
+   *  complaint. */
+  private keepAtTail(): void {
+    if (!this.followTail || this.hasHeldSelection()) return;
+    this.rebuilding = true;
+    this.listEl.scrollTop = this.listEl.scrollHeight;
+    this.rebuilding = false;
+  }
+
+  /** Run a held-back repaint once the selection it was waiting on is
+   *  gone. Cheap enough to call from anywhere; does nothing when there is
+   *  nothing waiting. */
+  private flushRepaint(): void {
+    if (this.repaintPending && !this.hasHeldSelection()) this.renderTurns();
+  }
+
+  /** Is the reader holding a selection inside the transcript? Read from
+   *  the list's own window, which is not the main one when Ask is in a
+   *  popout. */
+  private hasHeldSelection(): boolean {
+    const sel = this.listEl.win.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return false;
+    return this.listEl.contains(sel.getRangeAt(0).commonAncestorContainer);
   }
 
   private renderAnswer(turn: ChatTurn): void {
