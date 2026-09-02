@@ -9,7 +9,7 @@
  * transcripts, so reopening a session resumes the model's context, not
  * just the text on screen.
  */
-import { ItemView, MarkdownRenderer, Menu, Notice, setIcon, type WorkspaceLeaf } from "obsidian";
+import { ItemView, MarkdownRenderer, Menu, Notice, setIcon, setTooltip, type WorkspaceLeaf } from "obsidian";
 import * as path from "path";
 import type CovaultPlugin from "../main";
 import { withoutImageData, type AskEngine } from "../llm/ask";
@@ -580,16 +580,20 @@ export class AskView extends ItemView {
     const queued = this.queue.length;
     // Between turns, a running command is the only reason the view looks
     // idle while work is still going on. Say so, or the wake-up that
-    // arrives minutes later reads as the chat talking to itself.
+    // arrives minutes later reads as the chat talking to itself — but say
+    // it in two words on a line that is mostly keyboard hints. The
+    // promise the note used to spell out is in its tooltip.
     const jobs = this.engine.runningJobs();
     if (jobs.length > 0) {
-      const note = this.hintEl.createSpan("covault-ask-hint-pair");
-      setIcon(note.createSpan({ cls: "covault-ask-queued-icon" }), "clock");
-      note.appendText(
-        jobs.length === 1
-          ? `${jobs[0]!.id} still running — you'll be told when it's done`
-          : `${jobs.length} commands still running`,
-      );
+      const note = this.hintEl.createSpan("covault-ask-hint-job");
+      setIcon(note.createSpan({ cls: "covault-ask-hint-job-icon" }), "loader");
+      note.createSpan({
+        cls: "covault-ask-hint-job-text",
+        text: jobs.length === 1 ? `${jobs[0]!.id} running` : `${jobs.length} running`,
+      });
+      setTooltip(note, `${jobs.map((j) => `$ ${j.command}`).join("\n")}\nYou'll be told when it finishes.`, {
+        delay: 300,
+      });
     }
     if (this.running) {
       // Return no longer stops anything, so it has to say what it does now.

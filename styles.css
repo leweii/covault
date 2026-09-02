@@ -1776,10 +1776,23 @@
 
 .covault-ask-hint {
   display: flex;
+  /* Centred, because the row mixes glyphs of three different heights —
+     an icon, a kbd and running text — and only the box each sits in
+     lines them up. */
+  align-items: center;
   gap: 12px;
   font-size: 0.74em;
   color: var(--text-faint);
   user-select: none;
+}
+
+/* One key and what it does, held together so the gap above never falls
+   between them. */
+.covault-ask-hint-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
 }
 
 .covault-ask-hint kbd {
@@ -1789,11 +1802,45 @@
   border: none;
   box-shadow: none;
   padding: 0;
-  margin-right: 3px;
   font-family: inherit;
   font-size: 1.05em;
   color: var(--text-muted);
 }
+
+/* A command still running. A pill, so it reads as state rather than as
+   one more keyboard hint, and the only thing on this row allowed to
+   shrink — a long job name may be clipped, the hints may not. */
+.covault-ask-hint-job {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 1px 7px;
+  border-radius: var(--radius-s);
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+}
+
+.covault-ask-hint-job-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.covault-ask-hint-job-icon {
+  display: inline-flex;
+  flex: none;
+  /* Turning, because "still running" is exactly the thing a still image
+     cannot say. Same keyframes as the panel's sync spinner, defined with
+     it at the bottom of this file. */
+  animation: covault-spin 1.4s linear infinite;
+}
+
+.covault-ask-hint-job-icon .svg-icon {
+  width: 11px;
+  height: 11px;
+}
+
 
 /* ── Diff approval (Ask note edits) ───────────────────────── */
 
