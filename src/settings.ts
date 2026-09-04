@@ -103,14 +103,6 @@ export interface CovaultSettings {
 
   /** Personal knowledge base: the vault root synced to a personal repo. */
   mainRepo: { url: string; branch: string } | null;
-  /**
-   * A personal KB setup that hasn't finished yet — set the moment the user
-   * commits to a target, cleared once `mainRepo` is saved. Setup can run
-   * for many minutes (a big attachment backlog) and outlive a reload; on
-   * the next load this is what lets it resume on its own instead of
-   * sending the user back through the picker.
-   */
-  pendingMainKb: { url: string; branch: string; mode: "create" | "adopt" } | null;
 }
 
 export const DEFAULT_SETTINGS: CovaultSettings = {
@@ -128,7 +120,6 @@ export const DEFAULT_SETTINGS: CovaultSettings = {
   announceToAgents: true,
   debugMode: false,
   mainRepo: null,
-  pendingMainKb: null,
 };
 
 /**

@@ -368,7 +368,6 @@ export default class CovaultPlugin extends Plugin {
     );
 
     this.applySyncSchedule();
-    this.resumePendingMainKb();
     // Warm the repo list so the pickers open without a spinner.
     this.app.workspace.onLayoutReady(() => {
       void this.fetchAccessibleRepos();
@@ -1174,50 +1173,16 @@ export default class CovaultPlugin extends Plugin {
    * happens before an AI provider is configured.
    */
   /** Registered as a task so the panel shows it and no sync round starts
-   *  on the personal repo underneath it. Also recorded in settings before
-   *  starting — see resumePendingMainKb — so a setup interrupted by a
-   *  reload resumes on its own instead of sending the user back through
-   *  the picker. */
+   *  on the personal repo underneath it. */
   async setupMainKb(url: string, branch: string, mode: "create" | "adopt"): Promise<void> {
-    this.settings.pendingMainKb = { url, branch, mode };
-    await this.saveSettings();
     return this.sync.runExclusive("", "Personal knowledge base", () => this.buildMainKb(url, branch, mode));
-  }
-
-  /**
-   * Resume a personal KB setup a previous session started but never
-   * finished. Safe to call unconditionally on load: a no-op once mainRepo
-   * is saved (buildMainKb clears pendingMainKb the moment it is).
-   */
-  private resumePendingMainKb(): void {
-    const pending = this.settings.pendingMainKb;
-    if (!pending || this.settings.mainRepo) return;
-    new Notice("Covault: resuming personal knowledge base setup…");
-    this.setupMainKb(pending.url, pending.branch, pending.mode)
-      .then(() => new Notice(`Covault: your personal knowledge base is connected to ${pending.url}.`))
-      .catch((e: Error) => {
-        console.error("[covault] resuming personal KB setup failed:", e);
-        new Notice(`Covault: couldn't resume setup — ${e.message}`, 12_000);
-      });
   }
 
   private async buildMainKb(url: string, branch: string, mode: "create" | "adopt"): Promise<void> {
     const gitdir = this.mainGitDir();
     // A previous failed attempt may have left a half-built repo; it holds
     // nothing anyone depends on (mainRepo was never saved), so restart clean.
-    // The LFS object cache is the exception: it's addressed by content hash,
-    // so whatever it already has is reusable regardless of which attempt (or
-    // even which remote) fetched it — and for an "adopt" with a large
-    // attachment backlog, redownloading everything on every retry was most
-    // of why an interrupted setup was so costly to restart.
-    const lfsCache = path.join(gitdir, "lfs");
-    const lfsCacheBackup = `${gitdir}.lfs-keep`;
-    if (fs.existsSync(lfsCache)) fs.renameSync(lfsCache, lfsCacheBackup);
     fs.rmSync(gitdir, { recursive: true, force: true });
-    if (fs.existsSync(lfsCacheBackup)) {
-      fs.mkdirSync(gitdir, { recursive: true });
-      fs.renameSync(lfsCacheBackup, lfsCache);
-    }
 
     // Adopt whatever branch the remote actually calls default; a repo
     // with no branches at all has nothing to adopt — this vault seeds it,
@@ -1242,7 +1207,6 @@ export default class CovaultPlugin extends Plugin {
     }
 
     this.settings.mainRepo = { url, branch };
-    this.settings.pendingMainKb = null;
     await this.saveSettings();
     this.refreshSettingsUI();
     void this.sync.syncAll("manual");

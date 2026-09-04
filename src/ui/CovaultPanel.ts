@@ -103,26 +103,17 @@ export class CovaultPanel extends ItemView {
   /**
    * The coloured dot every synced thing carries, with its state in the
    * tooltip. Shared so the personal repo reads the same as a library.
-   *
-   * `state()` only tracks *sync* rounds, not the setup work `runExclusive`
-   * also guards (initial clone/adopt) — so a repo mid-setup reads back as
-   * "idle" there. Falling back to `isSyncing` for that stretch is what
-   * lets the personal KB section show "connecting" instead of looking
-   * identical to a repo that was never touched.
    */
   private addStateDot(row: HTMLElement, repoPath: string): void {
     const state = this.plugin.sync.state(repoPath);
-    const phase = state.phase === "idle" && this.plugin.sync.isSyncing(repoPath) ? "syncing" : state.phase;
-    const dot = row.createSpan({ cls: `covault-panel-state ${phase}` });
+    const dot = row.createSpan({ cls: `covault-panel-state ${state.phase}` });
     dot.setAttribute(
       "title",
-      phase === "syncing"
-        ? "Connecting…"
-        : state.phase === "idle"
-          ? state.lastSyncedAt
-            ? `Up to date · ${new Date(state.lastSyncedAt).toLocaleTimeString()}`
-            : "Waiting for first sync"
-          : (state.detail ?? state.phase),
+      state.phase === "idle"
+        ? state.lastSyncedAt
+          ? `Up to date · ${new Date(state.lastSyncedAt).toLocaleTimeString()}`
+          : "Waiting for first sync"
+        : (state.detail ?? state.phase),
     );
   }
 
@@ -176,26 +167,17 @@ export class CovaultPanel extends ItemView {
   private renderPersonalSection(root: HTMLElement): void {
     const section = root.createDiv("covault-panel-section");
     const head = section.createDiv("covault-panel-section-head");
-    const s = this.plugin.settings;
-    // Setup (clone/adopt + attachment backlog) can run for minutes before
-    // settings.mainRepo is saved — without this, that whole stretch looked
-    // identical to "never started", which is what led to setup being
-    // retried from scratch mid-flight.
-    const connecting = !s.mainRepo && this.plugin.sync.isSyncing("");
     // Same dot as a library: this repo syncs like any other, so it should
     // report like any other.
-    if (s.mainRepo || connecting) this.addStateDot(head, "");
+    if (this.plugin.settings.mainRepo) this.addStateDot(head, "");
     head.createSpan({ cls: "covault-panel-section-title", text: "My knowledge base" });
     const addBtn = head.createEl("button", { cls: "covault-panel-icon-btn", attr: { "aria-label": "Share a note or folder" } });
     setIcon(addBtn, "plus");
 
+    const s = this.plugin.settings;
     if (!s.mainRepo) {
       addBtn.disabled = true;
       const empty = section.createDiv("covault-panel-empty");
-      if (connecting) {
-        empty.createSpan({ text: "Connecting…" });
-        return;
-      }
       empty.createSpan({ text: "Not set up yet. " });
       const link = empty.createEl("a", { text: "Connect a personal repo" });
       link.onclick = () => new MainKbModal(this.app, this.plugin).open();
