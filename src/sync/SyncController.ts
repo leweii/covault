@@ -24,6 +24,22 @@ const REPO_TIMEOUT_MS = 10 * 60_000;
 /** Below this AI confidence (0–5) a hunk is never auto-applied. */
 const SILENT_MIN_CONFIDENCE = 3;
 
+/**
+ * Race a promise against REPO_TIMEOUT_MS so a stalled round is reported
+ * instead of hanging forever. A round that never settles (a hung network
+ * request, a dead socket the transport's own watchdog didn't catch) used to
+ * hold its repo's lock — and the panel's "syncing" state — until the app
+ * was force-quit and relaunched, discarding whatever progress it had made.
+ */
+function withTimeout<T>(promise: Promise<T>): Promise<T> {
+  let expiry: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    const tooLong = `took longer than ${REPO_TIMEOUT_MS / 60_000} minutes and was given up on`;
+    expiry = setNodeTimeout(() => reject(new Error(tooLong)), REPO_TIMEOUT_MS);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearNodeTimeout(expiry));
+}
+
 export type RepoPhase = "idle" | "syncing" | "conflict" | "error";
 
 export interface RepoState {
@@ -158,13 +174,18 @@ export class SyncController {
    * Both were invisible before: they go through the engine directly, so
    * the panel showed nothing while they ran, and nothing stopped a sync
    * round starting on the same repo underneath them.
+   *
+   * Also watchdogged, same as a sync round: setup can mean downloading a
+   * large attachment backlog, and a stall in that (a dead connection a
+   * network blip left behind) must surface as an error, not hang the lock
+   * — and the panel's task row — until the app is restarted.
    */
   async runExclusive<T>(repoPath: string, label: string, work: () => Promise<T>): Promise<T> {
     if (this.inFlight.has(repoPath)) {
       throw new Error(`"${label}" is already busy — wait for it to finish.`);
     }
     const done = this.log?.opTime("task", label, { repo: repoPath });
-    const round = work();
+    const round = withTimeout(work());
     this.inFlight.set(
       repoPath,
       round.then(
@@ -331,10 +352,6 @@ export class SyncController {
     const name = repo.label ?? repo.path;
     this.setState(repo.path, { phase: "syncing" });
     const done = this.log?.opTime("repo", name, { branch: ref.branch, trigger });
-    // Node timers, not window ones: no view owns this deadline — the sync
-    // loop outlives every panel and popout — and the controller is
-    // unit-tested headless, where there is no window to reach for.
-    let expiry: NodeJS.Timeout | undefined;
     try {
       // An attachment backlog is worked through in budgeted rounds, each
       // with a fresh watchdog: the ceiling exists to catch a *stalled*
@@ -343,14 +360,7 @@ export class SyncController {
       // is a stall after all.
       let lastPending = Infinity;
       for (;;) {
-        const pending = await Promise.race([
-          this.syncRepo(ref, repo, trigger, name),
-          new Promise<never>((_resolve, reject) => {
-            const tooLong = `took longer than ${REPO_TIMEOUT_MS / 60_000} minutes and was given up on`;
-            expiry = setNodeTimeout(() => reject(new Error(tooLong)), REPO_TIMEOUT_MS);
-          }),
-        ]);
-        if (expiry) clearNodeTimeout(expiry);
+        const pending = await withTimeout(this.syncRepo(ref, repo, trigger, name));
         if (pending === 0) break;
         if (pending >= lastPending) {
           throw new Error(`attachment uploads stopped making progress (${pending} left)`);
@@ -366,7 +376,6 @@ export class SyncController {
       this.log?.op("repo", `${name} — failed`, { error: e, stack: e instanceof Error ? e.stack : undefined });
       if (trigger === "manual") new Notice(`Covault: couldn't sync "${name}" — ${message}`);
     } finally {
-      if (expiry) clearNodeTimeout(expiry);
       done?.();
     }
   }
