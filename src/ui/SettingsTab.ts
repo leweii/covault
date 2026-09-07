@@ -146,7 +146,7 @@ export class CovaultSettingTab extends PluginSettingTab {
         s.customLlm.vision = Boolean(value);
         break;
       case "announceAgents":
-        // Owns its own persistence: writes/removes the adapter files too.
+        // Owns its own persistence: writes/removes the skill files too.
         await this.plugin.setAnnounceToAgents(Boolean(value));
         return;
       case "askApprove":
@@ -608,7 +608,7 @@ export class CovaultSettingTab extends PluginSettingTab {
         },
         {
           name: "Let AI assistants discover your libraries",
-          aliases: ["agents.md", "claude.md", "skill", "announce"],
+          aliases: ["skill", "announce", "agent skill", "claude code"],
           control: { type: "toggle", key: "announceAgents" },
         },
         {

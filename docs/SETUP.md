@@ -223,7 +223,9 @@ Client ID 是公开信息(出现在授权 URL 里),可以安全入库。
   | Codex | `.codex/skills` | `~/.codex/skills`(认 `CODEX_HOME`) |
 
   标准 `SKILL.md` 格式,无需为 Covault 改写;同名以项目级为准。system prompt 只带 name + description,模型判断用得上时再用 `load_skill` 取正文(以及 skill 目录里被引用的附件)。每次提问重新扫盘,所以中途新写的 skill 下一问就生效。Codex 预装在 `~/.codex/skills/.system` 下的内置 skill 会跳过(它们依赖 Codex 自己的工具)。
-- **Let AI assistants discover your libraries**:默认开。把库地图写成一个标准 skill 放进 `.claude/skills/team-knowledge/SKILL.md`、`.pi/skills/team-knowledge/SKILL.md` 与 `.codex/skills/team-knowledge/SKILL.md`,并在 AGENTS.md / CLAUDE.md 的托管块里指向它——Claude Code、pi 这些在 vault 里干活的 agent 于是自己就知道哪个库答哪类问题。这几个 skill 文件是**派生数据**(每台机器各自重建、随同步排除),你自己放在同目录下的 skill 不受影响,照常同步。关掉则连块带文件一起删干净;插件自己的 Ask 不受影响(它的地图在内存里现算)。
+- **Let AI assistants discover your libraries**:默认开。把库地图写成一个标准 skill 放进 `.claude/skills/team-knowledge/SKILL.md`、`.pi/skills/team-knowledge/SKILL.md` 与 `.codex/skills/team-knowledge/SKILL.md`——Claude Code、pi 这些在 vault 里干活的 agent 读 skill 时于是自己就知道哪个库答哪类问题。这几个 skill 文件是**派生数据**(每台机器各自重建、随同步排除),你自己放在同目录下的 skill 不受影响,照常同步。关掉则删干净;插件自己的 Ask 不受影响(它的地图在内存里现算)。
+
+  早先的版本还会在 vault 根目录的 AGENTS.md / CLAUDE.md 里维护一个托管块指向这个 skill。这部分已经去掉:插件不再写 vault 根目录的文件,升级后首次加载(以及之后每轮同步)会把旧的托管块清掉,块外你自己写的内容原样保留;文件里除了托管块什么都没有时,该文件一并删除。
 - **Ask before the agent acts**:默认开。关掉等于放开审批——命令、外部服务、笔记编辑都不再询问。合规口径上建议保持开启。
 - 没配 AI 也能用:同步照常,只是冲突不会自动合并,全部浮到人工界面。
 
@@ -308,7 +310,7 @@ OS 用户配置目录:macOS `~/Library/Application Support/`、Windows `%APPDATA
 | Export configuration (copy to clipboard) | 导出配置(§4.10) |
 | Ask your knowledge base | 基于知识库提问 |
 | Write AI descriptions for libraries | 给库生成 AI 描述 |
-| Update the AI knowledge skill | 刷新 AGENTS.md/CLAUDE.md 块与 team-knowledge skill(§4.7) |
+| Update the AI knowledge skill | 刷新 team-knowledge skill(§4.7) |
 | Move existing attachments to Git LFS | 存量附件迁移(§5) |
 | Copy the diagnostic log / Clear the diagnostic log | 诊断日志 |
 

@@ -95,7 +95,7 @@ export interface CovaultSettings {
     openIn: AskOpenIn;
   };
 
-  /** Maintain AGENTS.md/CLAUDE.md blocks + an Agent Skill so AI coding
+  /** Write the library map as a standard Agent Skill, so AI coding
    *  assistants working in this vault discover the libraries on their own. */
   announceToAgents: boolean;
 

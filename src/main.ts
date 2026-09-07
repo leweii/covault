@@ -31,7 +31,7 @@ import {
   writeKnowledgeSkill,
   SKILL_TARGETS,
 } from "./covault/skill";
-import { removeAdapters, writeAdapters } from "./covault/adapters";
+import { purgeLegacyAgentBlock } from "./covault/legacyAgentBlock";
 import { loadAskSkills } from "./llm/skills";
 import { buildConfigExport, type ImportPlan } from "./covault/exportConfig";
 import { LibraryDescriber } from "./llm/describe";
@@ -706,26 +706,25 @@ export default class CovaultPlugin extends Plugin {
     void this.sync.syncAll("manual").then(() => this.generateLibraryDescription(repo.path));
   }
 
-  /** Rebuild the knowledge-routing skill and the agent adapters from
-   *  what's on disk right now. Cheap (directory walks only), so it runs
-   *  after every sync pass.
+  /** Rebuild the knowledge-routing skill from what's on disk right now.
+   *  Cheap (directory walks only), so it runs after every sync pass.
    *
-   *  Everything here is for the *other* agents on this machine, so the
-   *  toggle governs all of it: off means nothing of ours in the shared
-   *  skill folders. The plugin's own Ask agent builds the map in memory
-   *  and is unaffected either way. */
+   *  The skill is for the *other* agents on this machine, so the toggle
+   *  governs it: off means nothing of ours in the shared skill folders.
+   *  The plugin's own Ask agent builds the map in memory and is
+   *  unaffected either way.
+   *
+   *  Both cleanups run regardless of the toggle — they undo things past
+   *  versions wrote, and a vault should not have to turn a feature on to
+   *  get rid of them. */
   refreshKnowledgeSkill(): void {
     try {
       const base = this.vaultBasePath();
       migrateLegacySkill(base);
+      purgeLegacyAgentBlock(base);
       const repos = this.libraryManifest.load().repos;
-      if (this.settings.announceToAgents) {
-        writeKnowledgeSkill(base, repos);
-        writeAdapters(base, repos);
-      } else {
-        removeKnowledgeSkill(base);
-        removeAdapters(base);
-      }
+      if (this.settings.announceToAgents) writeKnowledgeSkill(base, repos);
+      else removeKnowledgeSkill(base);
     } catch (e) {
       console.warn("[covault] couldn't update the knowledge skill:", e);
     }
@@ -1037,7 +1036,7 @@ export default class CovaultPlugin extends Plugin {
       const line = await this.describer.describe(gatherFacts(this.vaultBasePath(), repo));
       if (!line) return false;
       this.libraryManifest.setDescription(folderPath, line);
-      this.refreshKnowledgeSkill(); // adapters render the new description
+      this.refreshKnowledgeSkill(); // the skill renders the new description
       return true;
     } catch (e) {
       console.warn(`[covault] couldn't describe "${folderPath}":`, e);
@@ -1045,8 +1044,7 @@ export default class CovaultPlugin extends Plugin {
     }
   }
 
-  /** Toggle handler: on → write the skill and the adapters now; off →
-   *  remove both. */
+  /** Toggle handler: on → write the skill now; off → remove it. */
   async setAnnounceToAgents(enabled: boolean): Promise<void> {
     this.settings.announceToAgents = enabled;
     await this.saveSettings();
