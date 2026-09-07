@@ -1360,25 +1360,6 @@
   padding: 0;
 }
 
-.covault-ask-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--background-modifier-border);
-}
-
-.covault-ask-title {
-  font-weight: 600;
-  font-size: 0.95em;
-}
-
-.covault-ask-head-actions {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
 .covault-ask-list-wrap {
   position: relative;
   flex: 1;
@@ -1774,8 +1755,27 @@
   max-height: none;
 }
 
+/* The row under the composer: keyboard hints on the left, the history
+   and new-chat buttons on the right. The buttons sit here rather than in
+   a header, so the conversation keeps that row of height. */
+.covault-ask-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.covault-ask-bar-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+
 .covault-ask-hint {
   display: flex;
+  /* Yields to the buttons: a long job pill may be clipped, they may not. */
+  min-width: 0;
   /* Centred, because the row mixes glyphs of three different heights —
      an icon, a kbd and running text — and only the box each sits in
      lines them up. */

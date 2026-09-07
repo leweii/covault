@@ -196,18 +196,17 @@ export default class CovaultPlugin extends Plugin {
 
     this.registerView(COVAULT_VIEW_TYPE, (leaf) => new CovaultPanel(leaf, this));
     this.registerView(COVAULT_ASK_VIEW_TYPE, (leaf) => new AskView(leaf, this));
-    this.addRibbonIcon("library", "Open Covault panel", () => void this.activatePanel());
+    // The ribbon is the one always-visible entry point, and what people
+    // come here to do is ask — not watch repositories tick over. Sync
+    // status is a thing you go looking for when something looks wrong, so
+    // it lives behind a command and the status bar instead.
+    this.addRibbonIcon("message-circle-question", "Ask your knowledge base", () =>
+      void this.activateAskView(),
+    );
     this.addCommand({
       id: "open-panel",
-      name: "Open panel",
+      name: "Show sync status",
       callback: () => void this.activatePanel(),
-    });
-    this.app.workspace.onLayoutReady(() => {
-      // Open the panel in the right sidebar on first install; afterwards
-      // respect whatever the user did with it (Obsidian restores layout).
-      if (this.app.workspace.getLeavesOfType(COVAULT_VIEW_TYPE).length === 0) {
-        void this.activatePanel(false);
-      }
     });
 
     this.statusBarEl = this.addStatusBarItem();
@@ -588,16 +587,19 @@ export default class CovaultPlugin extends Plugin {
     }
   }
 
-  async activatePanel(reveal = true): Promise<void> {
+  /** The sync-status pane, on demand. Nothing opens it on its own any
+   *  more — it is somewhere you go when a library looks wrong, not
+   *  something to keep an eye on. */
+  async activatePanel(): Promise<void> {
     const existing = this.app.workspace.getLeavesOfType(COVAULT_VIEW_TYPE)[0];
     if (existing) {
-      if (reveal) await this.app.workspace.revealLeaf(existing);
+      await this.app.workspace.revealLeaf(existing);
       return;
     }
     const leaf = this.app.workspace.getRightLeaf(false);
     if (!leaf) return;
-    await leaf.setViewState({ type: COVAULT_VIEW_TYPE, active: reveal });
-    if (reveal) await this.app.workspace.revealLeaf(leaf);
+    await leaf.setViewState({ type: COVAULT_VIEW_TYPE, active: true });
+    await this.app.workspace.revealLeaf(leaf);
   }
 
   /** Register an existing shared library and start syncing it. The
@@ -942,14 +944,30 @@ export default class CovaultPlugin extends Plugin {
   /**
    * A new conversation wherever the user said new conversations go.
    *
-   * Not in the sidebar either way: a sidebar pane is 350px of borrowed
-   * width and the conversation was the thing being squeezed. Beyond that
-   * the choice is a screen-shaped one, not a right answer — so it is a
-   * setting, and both entry points honour it.
+   * The choice is a screen-shaped one, not a right answer — one monitor
+   * and the split wins, two and the window does, and a sidebar keeps the
+   * note full-width at the cost of a narrow chat — so it is a setting,
+   * and every entry point honours it.
    */
   async openAskWhereConfigured(): Promise<void> {
-    if (this.settings.ask.openIn === "split") await this.openAskSplit();
-    else await this.openAskWindow();
+    if (this.settings.ask.openIn === "sidebar") await this.openAskSidebar();
+    else if (this.settings.ask.openIn === "window") await this.openAskWindow();
+    else await this.openAskSplit();
+  }
+
+  /**
+   * Ask in the right dock, sharing it with whatever else lives there.
+   *
+   * Narrow, but it costs the note no width and it is where an Obsidian
+   * reader expects a companion pane to be — so it is offered, not
+   * imposed.
+   */
+  async openAskSidebar(): Promise<void> {
+    if (!this.askRoomLeft()) return;
+    const leaf = this.app.workspace.getRightLeaf(false);
+    if (!leaf) return;
+    await leaf.setViewState({ type: COVAULT_ASK_VIEW_TYPE, active: true });
+    await this.app.workspace.revealLeaf(leaf);
   }
 
   /**

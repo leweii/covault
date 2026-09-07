@@ -185,25 +185,9 @@ export class AskView extends ItemView {
     root.empty();
     root.addClass("covault-ask");
 
-    const head = root.createDiv("covault-ask-head");
-    const historyBtn = head.createEl("button", { cls: "covault-panel-icon-btn", attr: { "aria-label": "Chat history" } });
-    setIcon(historyBtn, "history");
-    historyBtn.onclick = () => {
-      this.showSessions = !this.showSessions;
-      this.renderTurns();
-    };
-    head.createSpan({ cls: "covault-ask-title", text: "Ask your knowledge base" });
-    const headActions = head.createDiv("covault-ask-head-actions");
-    // One action, and it never touches this conversation: a new chat is a
-    // new tab beside this one, so what you are reading — or are still
-    // waiting on — stays exactly where it is. Same window, because a chat
-    // started from here belongs with the chats it was started from.
-    const newBtn = headActions.createEl("button", {
-      cls: "covault-panel-icon-btn",
-      attr: { "aria-label": "New chat in a new tab" },
-    });
-    setIcon(newBtn, "plus");
-    newBtn.onclick = () => void this.plugin.openAskTab(this.leaf);
+    // No header: the tab already says what this pane is, and a title bar
+    // spelling it out again cost the conversation a row of height. Its two
+    // buttons moved down to the composer, where the hands already are.
 
     // A wrapper, because a button positioned inside a scrolling box
     // scrolls away with the content it is meant to escape.
@@ -296,7 +280,30 @@ export class AskView extends ItemView {
       evt.preventDefault();
       void this.attach(files);
     });
-    this.hintEl = inputRow.createDiv("covault-ask-hint");
+    // Under the box: what the keys do on the left, the two conversation
+    // actions on the right — reachable without leaving the composer.
+    const bar = inputRow.createDiv("covault-ask-bar");
+    this.hintEl = bar.createDiv("covault-ask-hint");
+    const barActions = bar.createDiv("covault-ask-bar-actions");
+    const historyBtn = barActions.createEl("button", {
+      cls: "covault-panel-icon-btn",
+      attr: { "aria-label": "Chat history" },
+    });
+    setIcon(historyBtn, "history");
+    historyBtn.onclick = () => {
+      this.showSessions = !this.showSessions;
+      this.renderTurns();
+    };
+    // Never touches this conversation: a new chat is a new tab beside this
+    // one, so what you are reading — or are still waiting on — stays
+    // exactly where it is. Same window, because a chat started from here
+    // belongs with the chats it was started from.
+    const newBtn = barActions.createEl("button", {
+      cls: "covault-panel-icon-btn",
+      attr: { "aria-label": "New chat in a new tab" },
+    });
+    setIcon(newBtn, "plus");
+    newBtn.onclick = () => void this.plugin.openAskTab(this.leaf);
 
     const saved = this.plugin.settings.ask.composerHeight;
     if (saved > 0) this.applyHeight(saved);

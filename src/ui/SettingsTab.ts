@@ -153,7 +153,7 @@ export class CovaultSettingTab extends PluginSettingTab {
         s.ask.requireApproval = Boolean(value);
         break;
       case "askOpenIn":
-        s.ask.openIn = value === "split" ? "split" : "window";
+        s.ask.openIn = value === "window" || value === "sidebar" ? value : "split";
         break;
       case "askMcp":
         s.ask.mcpServers = String(value);
@@ -618,7 +618,7 @@ export class CovaultSettingTab extends PluginSettingTab {
         },
         {
           name: "Open conversations in",
-          aliases: ["window", "popout", "split", "pane", "tab", "layout", "position"],
+          aliases: ["window", "popout", "split", "pane", "tab", "sidebar", "dock", "layout", "position"],
           // Hidden on mobile, where there is no second window to open and
           // a split is the only thing this could mean.
           visible: () => Platform.isDesktopApp,
@@ -626,8 +626,9 @@ export class CovaultSettingTab extends PluginSettingTab {
             type: "dropdown",
             key: "askOpenIn",
             options: {
-              window: "Their own window",
               split: "A pane beside the note",
+              sidebar: "The right sidebar",
+              window: "Their own window",
             },
           },
         },
