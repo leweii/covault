@@ -6,10 +6,11 @@
  */
 import { Notice } from "obsidian";
 import * as path from "path";
-import type { GitEngine, RepoRef, SyncResult } from "../git/GitEngine";
+import type { ChangeKind, GitEngine, RepoRef, SyncResult } from "../git/GitEngine";
 import type { ManifestRepo } from "../covault/manifest";
 import type { ConflictResolver } from "../llm/resolver";
 import type { DebugLog } from "../debug/logger";
+import type { SyncRecord } from "../debug/syncHistory";
 import { applyResolutions, extractHunks, getContextLines, parseConflict, type HunkResolution } from "./ConflictParser";
 import { setTimeout as setNodeTimeout, clearTimeout as clearNodeTimeout } from "node:timers";
 
@@ -53,6 +54,21 @@ export interface SyncHost {
   onStateChange(states: ReadonlyMap<string, RepoState>): void;
   /** Called once after every full sync pass (regardless of outcome). */
   onSyncPass?(): void;
+  /** Called after each repo round that ended in sync (not on failure or conflict). */
+  onSynced?(record: SyncRecord): void;
+}
+
+/**
+ * Teammates' changes to a repo that the user hasn't looked at yet,
+ * accumulated across sync rounds until the panel shows them. In memory
+ * only: after a restart the sync history file still has them.
+ */
+export interface UnseenUpdates {
+  /** Path inside the repo → latest kind of change. */
+  files: Map<string, ChangeKind>;
+  authors: Set<string>;
+  /** When the first unseen change arrived. */
+  since: number;
 }
 
 export interface PendingConflict {
@@ -63,6 +79,7 @@ export interface PendingConflict {
 export class SyncController {
   private states = new Map<string, RepoState>();
   private pending = new Map<string, PendingConflict>();
+  private unseen = new Map<string, UnseenUpdates>();
   /**
    * One entry per repo currently syncing, keyed by its SyncItem path.
    *
@@ -112,7 +129,31 @@ export class SyncController {
   forget(repoPath: string): void {
     const hadState = this.states.delete(repoPath);
     const hadPending = this.pending.delete(repoPath);
+    this.unseen.delete(repoPath);
     if (hadState || hadPending) this.host.onStateChange(this.states);
+  }
+
+  /** Teammates' changes not yet looked at, or null when there are none. */
+  unseenUpdates(repoPath: string): UnseenUpdates | null {
+    return this.unseen.get(repoPath) ?? null;
+  }
+
+  /** The user has seen them — the panel drops its badge. */
+  markSeen(repoPath: string): void {
+    if (this.unseen.delete(repoPath)) this.host.onStateChange(this.states);
+  }
+
+  private noteIncoming(repoPath: string, incoming: SyncResult["incoming"]): void {
+    if (!incoming) return;
+    const entry = this.unseen.get(repoPath) ?? { files: new Map(), authors: new Set(), since: Date.now() };
+    for (const f of incoming.files) {
+      // Added then deleted before anyone looked: nothing left to see.
+      if (f.kind === "deleted" && entry.files.get(f.filepath) === "added") entry.files.delete(f.filepath);
+      else entry.files.set(f.filepath, entry.files.get(f.filepath) === "added" && f.kind === "modified" ? "added" : f.kind);
+    }
+    for (const a of incoming.authors) entry.authors.add(a);
+    if (entry.files.size > 0) this.unseen.set(repoPath, entry);
+    else this.unseen.delete(repoPath);
   }
 
   state(repoPath: string): RepoState {
@@ -187,63 +228,6 @@ export class SyncController {
   /** True while a full sweep is in progress. */
   isSweeping(): boolean {
     return this.pass !== null;
-  }
-
-  /**
-   * Convert every repo's already-tracked attachments to LFS pointers (see
-   * GitEngine.migrateAttachments), then push each through a normal sync
-   * round so merging and uploading follow the usual path. Busy and
-   * conflicted repos are skipped, not queued — rerunning the command later
-   * picks them up.
-   */
-  async migrateAttachments(): Promise<{ files: number; repos: number; skipped: string[] }> {
-    let files = 0;
-    let repos = 0;
-    const skipped: string[] = [];
-    for (const repo of this.host.repos()) {
-      const name = repo.label ?? repo.path;
-      if (this.inFlight.has(repo.path) || this.state(repo.path).phase === "conflict") {
-        skipped.push(name);
-        continue;
-      }
-      const ref = this.toRef(repo);
-      if (!(await this.engine.isRepo(ref))) continue;
-      try {
-        const converted = await this.runExclusive(repo.path, `Moving attachments in ${name}`, async () => {
-          const n = await this.engine.migrateAttachments(ref);
-          if (n > 0) {
-            // Budgeted rounds until the backlog is shipped (see syncOne):
-            // uploads are durable, so each pass resumes where the last left.
-            let lastPending = Infinity;
-            for (;;) {
-              const result = await this.engine.syncToRemote(ref, {
-                commitMessage: describeChanges,
-                exclude: repo.exclude,
-                include: repo.include,
-              });
-              if (result.lfsPending === 0) break;
-              if (result.lfsPending >= lastPending) {
-                throw new Error(`attachment uploads stopped making progress (${result.lfsPending} left)`);
-              }
-              lastPending = result.lfsPending;
-              this.log?.op("repo", `${name} — migration continuing`, { pending: result.lfsPending });
-            }
-          }
-          return n;
-        });
-        if (converted > 0) {
-          files += converted;
-          repos++;
-          this.setState(repo.path, { phase: "idle", lastSyncedAt: Date.now() });
-        }
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        this.setState(repo.path, { phase: "error", detail: message });
-        this.log?.op("repo", `${name} — attachment migration failed`, { error: e });
-        skipped.push(name);
-      }
-    }
-    return { files, repos, skipped };
   }
 
   /**
@@ -330,6 +314,7 @@ export class SyncController {
     const ref = this.toRef(repo);
     const name = repo.label ?? repo.path;
     this.setState(repo.path, { phase: "syncing" });
+    const startedAt = Date.now();
     const done = this.log?.opTime("repo", name, { branch: ref.branch, trigger });
     // Node timers, not window ones: no view owns this deadline — the sync
     // loop outlives every panel and popout — and the controller is
@@ -344,7 +329,7 @@ export class SyncController {
       let lastPending = Infinity;
       for (;;) {
         const pending = await Promise.race([
-          this.syncRepo(ref, repo, trigger, name),
+          this.syncRepo(ref, repo, trigger, name, startedAt),
           new Promise<never>((_resolve, reject) => {
             const tooLong = `took longer than ${REPO_TIMEOUT_MS / 60_000} minutes and was given up on`;
             expiry = setNodeTimeout(() => reject(new Error(tooLong)), REPO_TIMEOUT_MS);
@@ -373,7 +358,23 @@ export class SyncController {
 
   /** One repo's round. Throws on failure; syncOne owns the reporting.
    *  Returns the number of LFS objects still to upload (0 = round done). */
-  private async syncRepo(ref: RepoRef, repo: SyncItem, trigger: "manual" | "auto", name: string): Promise<number> {
+  private async syncRepo(
+    ref: RepoRef,
+    repo: SyncItem,
+    trigger: "manual" | "auto",
+    name: string,
+    startedAt: number,
+  ): Promise<number> {
+    const synced = (summary: string, files: SyncResult["committed"] = [], incoming: SyncResult["incoming"] = null) =>
+      this.host.onSynced?.({
+        at: Date.now(),
+        library: name,
+        trigger,
+        summary,
+        files,
+        incoming,
+        ms: Date.now() - startedAt,
+      });
     if (!(await this.engine.isRepo(ref))) {
       if (repo.noAutoClone) {
         this.setState(repo.path, { phase: "error", detail: "Needs set up again (repo state missing)" });
@@ -387,6 +388,7 @@ export class SyncController {
         await this.engine.initAndPush(ref, `Share ${name} as a knowledge library`);
       }
       this.setState(repo.path, { phase: "idle", lastSyncedAt: Date.now() });
+      synced("set up on this device");
       if (trigger === "manual") new Notice(`Covault: "${name}" is ready.`);
       return 0;
     }
@@ -396,6 +398,9 @@ export class SyncController {
       exclude: repo.exclude,
       include: repo.include,
     });
+    // Recorded whatever the round goes on to do: a merge whose push is
+    // deferred (attachments still uploading) has still changed the tree.
+    this.noteIncoming(repo.path, result.incoming);
 
     if (result.conflictFilepaths.length > 0) {
       // First line of defense: the agent merges silently when confident.
@@ -403,6 +408,7 @@ export class SyncController {
       if (auto) {
         this.pending.delete(repo.path);
         this.setState(repo.path, { phase: "idle", lastSyncedAt: Date.now() });
+        synced(`AI merged ${result.conflictFilepaths.length} conflicting note(s)`, result.committed);
         new Notice(
           `Covault: you and a teammate edited the same note(s) in "${name}" — ` +
             `the AI merged ${result.conflictFilepaths.length} of them automatically.`,
@@ -439,6 +445,7 @@ export class SyncController {
       pulled: result.pulled,
       pushed: result.pushed,
     });
+    synced(summarize(result), result.committed, result.incoming);
     if (trigger === "manual") {
       new Notice(`Covault: "${name}" ${summarize(result)}.`);
     }

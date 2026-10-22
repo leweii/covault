@@ -103,11 +103,20 @@ describe("GitEngine against a real smart-HTTP remote", () => {
     expect(result.pulled).toBe(true);
     expect(result.pushed).toBe(false);
     expect(fs.existsSync(path.join(refB.dir, "onboarding.md"))).toBe(true);
+    // What the panel and the sync history report: the teammate's note, and who.
+    expect(result.incoming).toEqual({ files: [{ filepath: "onboarding.md", kind: "added" }], authors: ["alice"] });
   });
 
   it("reports up-to-date when nothing changed anywhere", async () => {
     const result = await engineB.syncToRemote(refB, { commitMessage: msg });
-    expect(result).toEqual({ committed: [], pulled: false, pushed: false, conflictFilepaths: [], lfsPending: 0 });
+    expect(result).toEqual({
+      committed: [],
+      pulled: false,
+      pushed: false,
+      conflictFilepaths: [],
+      lfsPending: 0,
+      incoming: null,
+    });
   });
 
   it("merges diverged non-overlapping edits and pushes the merge", async () => {
@@ -122,11 +131,15 @@ describe("GitEngine against a real smart-HTTP remote", () => {
     expect(result.pulled).toBe(true);
     expect(result.pushed).toBe(true);
     expect(fs.existsSync(path.join(refB.dir, "from-alice.md"))).toBe(true);
+    // Only Alice's side of the merge — Bob's own note isn't news to Bob.
+    expect(result.incoming).toEqual({ files: [{ filepath: "from-alice.md", kind: "added" }], authors: ["alice"] });
 
     // A picks up the merge.
     const follow = await engineA.syncToRemote(refA, { commitMessage: msg });
     expect(follow.pulled).toBe(true);
     expect(fs.existsSync(path.join(refA.dir, "from-bob.md"))).toBe(true);
+    expect(follow.incoming?.files).toEqual([{ filepath: "from-bob.md", kind: "added" }]);
+    expect(follow.incoming?.authors).toEqual(["bob"]);
   });
 
   it("detects deletions", async () => {

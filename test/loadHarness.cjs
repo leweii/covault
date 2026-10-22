@@ -35,7 +35,7 @@ const Plugin = require(require('path').join(__dirname, '..', 'main.js')).default
 const adapter = new stub.FileSystemAdapter();
 const app = {
   vault: { adapter, configDir: '.obsidian', on(){}, getAbstractFileByPath(){return null}, getAllLoadedFiles(){return []} },
-  workspace: { on(){}, onLayoutReady(cb){cb()}, getLeavesOfType(){return []}, getRightLeaf(){return null},
+  workspace: { on(){}, onLayoutReady(cb){cb()}, getLeavesOfType(){return []}, getRightLeaf(){return null}, getLeftLeaf(){return null}, leftSplit: {},
                getActiveFile(){return null}, revealLeaf(){return Promise.resolve()} },
   loadLocalStorage(){return null}, saveLocalStorage(){},
 };

@@ -103,7 +103,13 @@ export class AddLibraryModal extends Modal {
     try {
       const groups = await this.plugin.appAuth.listAccessibleRepos();
       for (const g of groups) {
-        this.reposByOrg.set(g.login, g.repos);
+        // By name, as the dropdown shows it ("owner/name" → name): the API
+        // returns them in creation order, which is no order to look in.
+        const name = (r: string) => r.split("/")[1] ?? r;
+        this.reposByOrg.set(
+          g.login,
+          [...g.repos].sort((a, b) => name(a).localeCompare(name(b), undefined, { sensitivity: "base" })),
+        );
         if (g.error) this.errorByOrg.set(g.login, g.error);
       }
     } catch (e) {

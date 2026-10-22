@@ -79,13 +79,17 @@ export const BackendClient = {
     });
   },
 
-  async listInstallations(sessionId: string, deviceId: string): Promise<GitHubAppInstallation[]> {
-    const out = await call<{ installations: GitHubAppInstallation[] }>("/installations", {
-      method: "GET",
-      sessionId,
-      query: { deviceId },
-    });
-    return out.installations ?? [];
+  /** The installations, plus the account's commit email (null from a
+   *  backend that predates reporting it). */
+  async listInstallations(
+    sessionId: string,
+    deviceId: string,
+  ): Promise<{ installations: GitHubAppInstallation[]; email: string | null }> {
+    const out = await call<{ installations: GitHubAppInstallation[]; user?: { email?: string | null } }>(
+      "/installations",
+      { method: "GET", sessionId, query: { deviceId } },
+    );
+    return { installations: out.installations ?? [], email: out.user?.email ?? null };
   },
 
   async disconnect(sessionId: string, deviceId: string): Promise<void> {

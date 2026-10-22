@@ -1,6 +1,5 @@
 import {
   Notice,
-  Platform,
   PluginSettingTab,
   type App,
   type Setting,
@@ -17,6 +16,7 @@ import { AddLibraryModal } from "./AddLibraryModal";
 import { MainKbModal } from "./MainKbModal";
 import { SharedItemsModal } from "./SharedItemsModal";
 import { ImportConfigModal } from "./ImportConfigModal";
+import { RecommendedPluginsModal } from "./RecommendedPluginsModal";
 
 /**
  * Covault settings, declarative (Obsidian 1.13+): definitions feed the
@@ -51,6 +51,7 @@ export class CovaultSettingTab extends PluginSettingTab {
     queueMicrotask(() => this.markStackedRows());
     return [
       this.configTransfer(),
+      this.recommendedPlugins(),
       this.githubGroup(),
       this.personalKbGroup(),
       this.librariesList(),
@@ -64,8 +65,7 @@ export class CovaultSettingTab extends PluginSettingTab {
    * full-width field, not as a narrow column on the right. Obsidian owns
    * that DOM (the control is declarative), so the only way to say so is
    * to tag the row after it exists — see the CSS under "Settings tab
-   * layout". Rows we render ourselves are tagged at the source instead
-   * (renderMcpStatus).
+   * layout".
    */
   private markStackedRows(): void {
     for (const row of Array.from(this.containerEl.querySelectorAll<HTMLElement>(".setting-item"))) {
@@ -94,16 +94,8 @@ export class CovaultSettingTab extends PluginSettingTab {
         return s.customLlm.baseUrl;
       case "customModel":
         return s.customLlm.model;
-      case "customVision":
-        return s.customLlm.vision;
       case "announceAgents":
         return s.announceToAgents;
-      case "askApprove":
-        return s.ask.requireApproval;
-      case "askMcp":
-        return s.ask.mcpServers;
-      case "askOpenIn":
-        return s.ask.openIn;
       case "syncAuto":
         return s.sync.auto;
       case "syncInterval":
@@ -142,24 +134,10 @@ export class CovaultSettingTab extends PluginSettingTab {
       case "customModel":
         s.customLlm.model = String(value).trim();
         break;
-      case "customVision":
-        s.customLlm.vision = Boolean(value);
-        break;
       case "announceAgents":
         // Owns its own persistence: writes/removes the skill files too.
         await this.plugin.setAnnounceToAgents(Boolean(value));
         return;
-      case "askApprove":
-        s.ask.requireApproval = Boolean(value);
-        break;
-      case "askOpenIn":
-        s.ask.openIn = value === "window" || value === "sidebar" ? value : "split";
-        break;
-      case "askMcp":
-        s.ask.mcpServers = String(value);
-        // Drop cached connections: the entry just edited may be the broken one.
-        this.plugin.mcp.reset();
-        break;
       case "syncAuto":
         s.sync.auto = Boolean(value);
         break;
@@ -185,6 +163,19 @@ export class CovaultSettingTab extends PluginSettingTab {
     // The provider choice changes which model options exist, and the
     // custom fields change whether they are shown at all.
     if (key === "llmProvider" || key.startsWith("custom")) this.update();
+  }
+
+  private recommendedPlugins(): SettingDefinition {
+    return {
+      name: "Recommended plugins",
+      desc: "Community plugins that work well with Covault.",
+      aliases: ["plugins", "claudian", "knowlery", "install", "guide"],
+      render: (setting: Setting) => {
+        setting.addButton((btn) =>
+          btn.setButtonText("Browse…").onClick(() => new RecommendedPluginsModal(this.app).open()),
+        );
+      },
+    };
   }
 
   /** Ungrouped, above everything: moving a setup between machines is the
@@ -305,7 +296,9 @@ export class CovaultSettingTab extends PluginSettingTab {
         control: {
           type: "text",
           key: "authorEmail",
-          placeholder: login ? `${login}@users.noreply.github.com` : "you@example.com",
+          placeholder:
+            this.plugin.settings.githubApp.connections[0]?.email ??
+            (login ? `${login}@users.noreply.github.com` : "you@example.com"),
         },
       },
     ];
@@ -314,69 +307,6 @@ export class CovaultSettingTab extends PluginSettingTab {
   }
 
   /** Segmented control for the two mutually-exclusive sign-in methods. */
-  /**
-   * Live status per configured MCP server. "Test" connects for real —
-   * which is also what starts the browser sign-in for an OAuth server, so
-   * the user has a way to authorize without first asking a question.
-   */
-  private renderMcpStatus(setting: Setting): void {
-    // Status rows read as rows, not as a right-hand control: full width,
-    // stacked, with the Check button kept button-sized (see the CSS).
-    setting.settingEl.addClass("covault-setting-stacked");
-    setting.controlEl.addClass("covault-mcp-control");
-    const box = setting.controlEl.createDiv("covault-mcp-status");
-    const paint = () => {
-      box.empty();
-      const rows = this.plugin.mcp.status();
-      if (rows.length === 0) {
-        box.createSpan({ cls: "covault-mcp-none", text: "No services configured." });
-        return;
-      }
-      for (const row of rows) {
-        const line = box.createDiv("covault-mcp-row");
-        const state = row.ok ? "is-ok" : row.needsAuth ? "is-auth" : "is-bad";
-        line.createSpan({ cls: `covault-mcp-dot ${state}` });
-        line.createSpan({ cls: "covault-mcp-name", text: row.name });
-        line.createSpan({
-          cls: "covault-mcp-detail",
-          text: row.ok ? `${row.toolCount} tool${row.toolCount === 1 ? "" : "s"}` : (row.error ?? "unavailable"),
-        });
-        // Sign-in is per server and only ever on an explicit click.
-        if (row.needsAuth) {
-          const btn = line.createEl("button", { cls: "covault-mcp-signin", text: "Sign in" });
-          btn.onclick = async () => {
-            btn.setAttribute("disabled", "true");
-            btn.setText("Signing in…");
-            try {
-              await this.plugin.mcp.signIn(row.name);
-              new Notice(`Covault: connected to "${row.name}".`);
-            } catch (e) {
-              new Notice(`Covault: couldn't connect to "${row.name}" — ${(e as Error).message}`, 10_000);
-            } finally {
-              paint();
-            }
-          };
-        }
-      }
-    };
-    paint();
-    setting.addButton((btn) =>
-      btn
-        .setButtonText("Check")
-        .setTooltip("Connect to each service without signing in")
-        .onClick(async () => {
-          btn.setDisabled(true).setButtonText("Checking…");
-          this.plugin.mcp.reset();
-          try {
-            await this.plugin.mcp.tools();
-          } finally {
-            paint();
-            btn.setDisabled(false).setButtonText("Check");
-          }
-        }),
-    );
-  }
-
   private renderAuthTabs(setting: Setting): void {
     const s = this.plugin.settings;
     const tabs = setting.controlEl.createDiv("covault-tabs");
@@ -585,52 +515,9 @@ export class CovaultSettingTab extends PluginSettingTab {
           control: { type: "text", key: "customModel", placeholder: "deepseek/deepseek-v4-flash-vision-exp" },
         },
         {
-          name: "This model can read images",
-          aliases: ["vision", "images", "screenshots"],
-          visible: () => this.plugin.settings.llm.provider === CUSTOM_PROVIDER_ID,
-          control: { type: "toggle", key: "customVision" },
-        },
-        {
-          name: "Connected services (MCP)",
-          aliases: ["mcp", "model context protocol", "servers", "tools"],
-          // The shape hint lives in the placeholder now rather than in a
-          // paragraph of description — visible exactly when it's needed.
-          control: {
-            type: "textarea",
-            key: "askMcp",
-            placeholder: '{"mcpServers": {"name": {"url": "https://…"}}}',
-          },
-        },
-        {
-          name: "Service status",
-          aliases: ["mcp status", "check connection", "sign in", "authorize", "oauth"],
-          render: (setting: Setting) => this.renderMcpStatus(setting),
-        },
-        {
           name: "Let AI assistants discover your libraries",
           aliases: ["skill", "announce", "agent skill", "claude code"],
           control: { type: "toggle", key: "announceAgents" },
-        },
-        {
-          name: "Ask before the agent acts",
-          aliases: ["approve", "permissions", "skip permissions", "dangerous", "shell", "cli"],
-          control: { type: "toggle", key: "askApprove" },
-        },
-        {
-          name: "Open conversations in",
-          aliases: ["window", "popout", "split", "pane", "tab", "sidebar", "dock", "layout", "position"],
-          // Hidden on mobile, where there is no second window to open and
-          // a split is the only thing this could mean.
-          visible: () => Platform.isDesktopApp,
-          control: {
-            type: "dropdown",
-            key: "askOpenIn",
-            options: {
-              split: "A pane beside the note",
-              sidebar: "The right sidebar",
-              window: "Their own window",
-            },
-          },
         },
       ],
     };

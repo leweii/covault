@@ -1,5 +1,5 @@
 /**
- * Local search across the whole vault — the tool half of Ask.
+ * Local search across the whole vault — the note tools automations use.
  * Plain filesystem walks and case-insensitive term matching; no index to
  * build or invalidate, which at vault scale (hundreds to a few thousand
  * notes, not millions) is fast enough and can never go stale.

@@ -17,6 +17,10 @@ export interface GitHubAppConnection {
   sessionId: string;
   /** GitHub login of the user who authorized. */
   login: string;
+  /** Commit email the backend resolved for this account: the verified
+   *  primary, else the public one, else GitHub's `<id>+<login>` no-reply
+   *  address. Absent on connections made before the backend reported it. */
+  email?: string;
   installations: GitHubAppInstallation[];
 }
 
@@ -30,10 +34,6 @@ export interface SharedRepoSetting {
   url: string;
   branch: string;
 }
-
-/** Ask's home: its own OS window, a pane beside the note, or the right
- *  sidebar. */
-export type AskOpenIn = "window" | "split" | "sidebar";
 
 export interface CovaultSettings {
   authMethod: AuthMethod;
@@ -72,29 +72,6 @@ export interface CovaultSettings {
   /** Commit identity ("who saved this"). Empty → derived from the login. */
   author: { name: string; email: string };
 
-  /** Ask's agent behavior. requireApproval=false is the
-   *  dangerously-skip-permissions mode: commands, connected services and
-   *  note edits run without asking. MCP servers are opt-in by config.
-   *  cliHints is free text listing extra command-line tools (and how to
-   *  use them here) that detection can't guess — it joins the detected
-   *  inventory in the agent's system prompt. */
-  ask: {
-    requireApproval: boolean;
-    mcpServers: string;
-    cliHints: string;
-    /** Height in px the user dragged the Ask composer to. 0 = follow the
-     *  text. Device-local taste, so it is deliberately not part of an
-     *  exported configuration. */
-    composerHeight: number;
-    /** Where opening Ask puts it: "split" is a pane beside the note,
-     *  "window" a popout parked on the right of the screen, "sidebar" the
-     *  right dock. Which one is right depends on the screen in front of
-     *  you — one monitor and the split wins, two and the window does — so
-     *  like composerHeight this is per-device and stays out of an exported
-     *  configuration. */
-    openIn: AskOpenIn;
-  };
-
   /** Write the library map as a standard Agent Skill, so AI coding
    *  assistants working in this vault discover the libraries on their own. */
   announceToAgents: boolean;
@@ -118,7 +95,6 @@ export const DEFAULT_SETTINGS: CovaultSettings = {
   sync: { auto: true, intervalMinutes: 10 },
   repos: [],
   author: { name: "", email: "" },
-  ask: { requireApproval: true, mcpServers: "", cliHints: "", composerHeight: 0, openIn: "split" },
   announceToAgents: true,
   debugMode: false,
   mainRepo: null,

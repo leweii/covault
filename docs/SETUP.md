@@ -10,7 +10,7 @@
 Obsidian 桌面版 + Covault 插件            ← 每个人的机器
    ├─ 笔记内容 ────────────→ 公司 GitHub org 的知识库 repo(附件走 Git LFS)
    ├─ 短时 installation token ← 授权后端(只存 KMS 加密的 refresh token)
-   └─ 冲突片段 / Ask 提问 ──→ 成员各自配置的 LLM provider
+   └─ 冲突片段 / 自动化 ───→ 成员各自配置的 LLM provider
 ```
 
 **必须有的东西**
@@ -21,7 +21,7 @@ Obsidian 桌面版 + Covault 插件            ← 每个人的机器
 | GitHub | 一个 GitHub App(注册在该 org 名下) | org 管理员 |
 | 后端 | 授权服务 zhiyu-sync 的一个部署 + 域名 + 证书 | 平台负责人 |
 | 本地 | Obsidian 桌面版 ≥ **1.13.0**,Covault ≥ **0.2.8** | 每个成员 |
-| 本地 | 一个 LLM provider 的 API key(可选,但冲突合并/Ask 依赖它) | 每个成员或公司统一发放 |
+| 本地 | 一个 LLM provider 的 API key(可选,但 AI 冲突合并依赖它) | 每个成员或公司统一发放 |
 
 **不需要的东西**:本机不用装 git、不用装 git-lfs、不用装 Node。git 引擎是纯 JS 的
 isomorphic-git,LFS 的 clean/smudge 由插件自己做,附件在 GitHub 上与 CLI 用户看到的完全一致。
@@ -182,7 +182,7 @@ Client ID 是公开信息(出现在授权 URL 里),可以安全入库。
 
 ### 4.4 加入团队知识库
 
-- 设置页 **Shared libraries → Add a library…**,或命令面板 `Covault: Add a shared library`。
+- 设置页 **Shared libraries → Add a library…**,或面板按钮行的「文件夹+」。
 - 三步:**选组织**(每次都要手动选,没有默认组织)→ 选仓库(或「Create a new library」)→ 选它在 vault 里的位置。
 - 组织下拉里的 **Other… (paste a link)** 用于列表里没有的库:选它以后只需粘一个 GitHub 链接(如 `https://github.com/ct-kb/platform-kb`),组织和库名从链接里解析。
 
@@ -210,30 +210,33 @@ Client ID 是公开信息(出现在授权 URL 里),可以安全入库。
 设置 → AI engine:
 
 - **Provider** → **Model** → **API key**(20+ provider 可选)。key 存在本机 OS 用户目录,**不在 vault 里**。
-- 需要自建/网关端点时,Provider 选 custom,填 **Endpoint**(OpenAI 兼容 baseURL)+ **Model name**,模型能读图就勾 **This model can read images**。
-- **Connected services (MCP)**:可选,JSON 配置外部服务(同 Claude Desktop 的 `mcpServers` 结构);**Service status** 里 Check / Sign in 验证连通。
-  - `url` 型远端服务点 **Sign in** 走 OAuth;`command` 型本地服务(`npx`、`uvx`)由插件用你登录 shell 的 PATH 启动,所以终端里能跑的命令这里也能跑,无需写绝对路径。真找不到时报错会告诉你用 `which <命令>` 填绝对路径。
-  - `uvx pkg@latest` 首次运行要下载包,Check 可能要等一会儿;想省这一步就先在终端里跑一次同样的命令做缓存。
-- **Skills**:Ask 直接复用本机 coding agent 的 Agent Skills,三家的目录都读,项目级优先:
-
-  | | 项目级(本 vault) | 用户级(本机) |
-  |---|---|---|
-  | Claude Code | `.claude/skills` | `~/.claude/skills` |
-  | pi | `.pi/skills` | `~/.pi/agent/skills`(认 `PI_CODING_AGENT_DIR`) |
-  | Codex | `.codex/skills` | `~/.codex/skills`(认 `CODEX_HOME`) |
-
-  标准 `SKILL.md` 格式,无需为 Covault 改写;同名以项目级为准。system prompt 只带 name + description,模型判断用得上时再用 `load_skill` 取正文(以及 skill 目录里被引用的附件)。每次提问重新扫盘,所以中途新写的 skill 下一问就生效。Codex 预装在 `~/.codex/skills/.system` 下的内置 skill 会跳过(它们依赖 Codex 自己的工具)。
-- **Let AI assistants discover your libraries**:默认开。把库地图写成一个标准 skill 放进 `.claude/skills/team-knowledge/SKILL.md`、`.pi/skills/team-knowledge/SKILL.md` 与 `.codex/skills/team-knowledge/SKILL.md`——Claude Code、pi 这些在 vault 里干活的 agent 读 skill 时于是自己就知道哪个库答哪类问题。这几个 skill 文件是**派生数据**(每台机器各自重建、随同步排除),你自己放在同目录下的 skill 不受影响,照常同步。关掉则删干净;插件自己的 Ask 不受影响(它的地图在内存里现算)。
+- 需要自建/网关端点时,Provider 选 custom,填 **Endpoint**(OpenAI 兼容 baseURL)+ **Model name**。
+- **Let AI assistants discover your libraries**:默认开。把库地图写成一个标准 skill 放进 `.claude/skills/team-knowledge/SKILL.md`、`.pi/skills/team-knowledge/SKILL.md` 与 `.codex/skills/team-knowledge/SKILL.md`——Claude Code、pi 这些在 vault 里干活的 agent 读 skill 时于是自己就知道哪个库答哪类问题。这几个 skill 文件是**派生数据**(每台机器各自重建、随同步排除),你自己放在同目录下的 skill 不受影响,照常同步。关掉则删干净。
 
   早先的版本还会在 vault 根目录的 AGENTS.md / CLAUDE.md 里维护一个托管块指向这个 skill。这部分已经去掉:插件不再写 vault 根目录的文件,升级后首次加载(以及之后每轮同步)会把旧的托管块清掉,块外你自己写的内容原样保留;文件里除了托管块什么都没有时,该文件一并删除。
-- **Ask before the agent acts**:默认开。关掉等于放开审批——命令、外部服务、笔记编辑都不再询问。合规口径上建议保持开启。
 - 没配 AI 也能用:同步照常,只是冲突不会自动合并,全部浮到人工界面。
 
 ### 4.8 同步
 
 - **Keep shared knowledge up to date automatically**:默认开。
 - **Check every**:默认 10 分钟。
-- 想立刻同步:命令面板 `Covault: Sync shared libraries now`。
+- 想立刻同步:面板按钮行的刷新按钮,或点状态栏。
+- **同步历史**:每次成功同步追加一条到 `<OS 用户配置目录>/covault/logs/<vault 哈希>/sync-history.log`(时间、库、手动/自动、做了什么、耗时,以及推上去的文件)。面板按钮行的「同步历史」直接查看。
+
+### 4.8.1 自动化(Automations)
+
+面板按钮行的闹钟图标打开主区域的 **Automations** 标签页:左边是已设置的自动化,右边是对话框。
+
+- **用对话设置**:直接说要做什么、多久做一次,比如「每天早上 9 点把团队库昨天的改动汇总到 Daily/团队日报.md」。AI 会先给出计划(名称、时间、给执行 agent 的说明),你同意后才创建;也能用对话修改、暂停、删除、试跑。
+- **时间**:只支持「每隔 N 小时」(1–168)和「每天 HH:MM」(本机时间)。
+- **执行**:到点由 pi agent 无人值守执行,可搜索、阅读、新建、编辑 vault 里**任意笔记**(包括团队库,改动随下一轮同步推给同事;git 历史可回退)。每次最多 30 步、10 分钟。用的是 AI engine 里配置的模型和 key。
+- **只在 Obsidian 开着时运行**;关着(或电脑睡眠)时错过的那次**直接跳过**,日志里记一条「已跳过」。
+- **日志**:点开某个自动化可看说明和运行日志;每次运行可展开看 AI 的报告、改了哪些笔记(可点开)、执行了哪些步骤。
+- **存储**:自动化定义和日志都在 `<OS 用户配置目录>/covault/automations/`,按 vault 区分,**不进 vault、不同步**——否则每台设备都会各跑一遍。
+
+### 4.8.2 推荐插件
+
+面板底部和设置页顶部的 **Recommended plugins** 列出与 Covault 搭配的社区插件(目前是 Claudian、Knowlery),一键跳到 Obsidian 插件市场安装,装好后可直接启用。清单在 `src/covault/recommendedPlugins.ts`,追加一项即可。
 
 ### 4.9 凭证与文件落在哪
 
@@ -249,10 +252,10 @@ OS 用户配置目录:macOS `~/Library/Application Support/`、Windows `%APPDATA
 
 设置 → **Export / import configuration**:
 
-- 老机器点 **Copy to clipboard**(命令面板同名命令也行),把 JSON 发给自己/同事。
+- 老机器点 **Copy to clipboard**(面板按钮行的上传图标也行),把 JSON 发给自己/同事。
 - 新机器点 **Import…**,确认要写入的字段。
-- 导出的:AI provider/model、同步设置、Ask 设置、库清单、个人库范围。
-- **不导出/不导入的**:API key、PAT、后端 session、deviceId、提交身份(name/email)、别人的个人库地址、登录方式、组织(每个库自己选)。MCP 配置里的 env 值会被打码,打码过的不会被导入。
+- 导出的:AI provider/model、同步设置、库清单、个人库范围。
+- **不导出/不导入的**:API key、PAT、后端 session、deviceId、提交身份(name/email)、别人的个人库地址、登录方式、组织(每个库自己选)。
 
 所以新机器上仍需自己做的三件事:**Connect 一次、填 API key、填 name/email**。
 
@@ -262,7 +265,7 @@ OS 用户配置目录:macOS `~/Library/Application Support/`、Windows `%APPDATA
 
 新装的客户端开箱即用:附件按扩展名自动转成 LFS 指针,字节走 LFS 存储,`.gitattributes` 由插件维护。
 
-**存量库要跑一次迁移**:全员升级到 ≥ 0.2.8 之后,命令面板 → `Covault: Move existing attachments to Git LFS`。它把仓库当前版本里的原始二进制换成指针,**只改 tip,不重写历史**。
+**存量附件**:LFS 支持之前就已提交的原始二进制不会被批量迁移;某个附件下次被修改时,会在正常同步里自动转成指针。
 
 - 明确**不做历史重写**:force push 会打断所有人的克隆。历史里的旧 blob 只是占存储,不再增长。个别库体积不可接受再单独评估、单独公告。
 - 验收:GitHub 上打开附件显示 "Stored with Git LFS";`.gitattributes` 就位;org 的 LFS 用量面板数字符合预期。
@@ -279,7 +282,6 @@ OS 用户配置目录:macOS `~/Library/Application Support/`、Windows `%APPDATA
 - [ ] 右键文件夹 Share… → 默认「My knowledge base」能分享成功;切到「A new team library」选 org 后,org 下出现新 repo,内容完整
 - [ ] 两台机器同时改同一段 → 冲突被 AI 合并,或浮出三栏界面能选/能改
 - [ ] 贴一张图片 → 推上去 → 另一台机器同步后能正常显示(GitHub 上显示 Stored with Git LFS)
-- [ ] 存量库跑过 Move existing attachments to Git LFS
 - [ ] 右键笔记 View history 能看到改动记录
 - [ ] 双机同步后两边内容一致
 
@@ -295,23 +297,35 @@ OS 用户配置目录:macOS `~/Library/Application Support/`、Windows `%APPDATA
 | 看不到某个仓库 | App 安装时的仓库范围没包含它 → Configure on GitHub 里加 |
 | 图片显示成一段 130 字节文本 | 该客户端版本 < 0.2.5,升级到 ≥ 0.2.8 |
 | 整个 org 突然推不上去 | LFS 额度超限 + org 没有支付方式(§1.1) |
-| 其他任何问题 | 命令面板 → `Covault: Copy the diagnostic log`,把日志贴给支持 |
+| 其他任何问题 | 面板按钮行的「复制诊断日志」,把日志贴给支持 |
 
 ---
 
-## 附录 A:命令面板一览
+## 附录 A:面板按钮一览
 
-| 命令 | 用途 |
+插件不注册任何命令面板命令。所有功能都在 Covault 面板(左侧边栏的 Covault 标签,或左侧图标栏的书架图标)顶部的按钮行里,按顺序:
+
+| 图标 | 用途 |
 |---|---|
+| 闹钟 | 打开自动化标签页(§4.8.1) |
+| 卷轴 | 同步历史(§4.8) |
+| 扳手 | 处理内容冲突(没有冲突时置灰) |
+| 文件夹+ | 添加共享库 |
+| 剪贴板 | 复制诊断日志 |
+| 橡皮擦 | 清空诊断日志 |
+| 刷新 | 立刻同步全部库 |
+| 上传 | 导出配置到剪贴板(§4.10) |
+
+另有:状态栏点击 = 有冲突时打开冲突界面、否则立刻同步;笔记/文件夹右键菜单里的分享、查看历史。
+
+---|---|
 | Open panel | 侧边栏:分享了什么、拉了哪些库、同步状态 |
 | Sync shared libraries now | 立刻同步 |
 | Add a shared library | 加库向导 |
 | Resolve conflicts | 打开待处理的内容出入 |
 | Export configuration (copy to clipboard) | 导出配置(§4.10) |
-| Ask your knowledge base | 基于知识库提问 |
-| Write AI descriptions for libraries | 给库生成 AI 描述 |
-| Update the AI knowledge skill | 刷新 team-knowledge skill(§4.7) |
-| Move existing attachments to Git LFS | 存量附件迁移(§5) |
+| Show sync history | 查看每次成功同步的记录(§4.8) |
+| Open automations | 打开自动化标签页(§4.8.1) |
 | Copy the diagnostic log / Clear the diagnostic log | 诊断日志 |
 
 ---
@@ -336,9 +350,8 @@ OS 用户配置目录:macOS `~/Library/Application Support/`、Windows `%APPDATA
 **B.4 分发与版本管理**——官方市场(已收录,自动更新)为主;若公司要控版本,评估 BRAT/内部分发 + 固定版本号。版本基线全员 ≥ 0.2.8。
 
 **B.5 LLM 层决策**——
-- **数据出境评估**:冲突合并会把冲突 hunk ± 上下文发给所配置的 LLM;Ask 会发问题和检索到的笔记片段。需要指定允许的 provider、签数据处理/零留存协议,或走公司代理端点。
+- **数据出境评估**:冲突合并会把冲突 hunk ± 上下文发给所配置的 LLM;自动化会把它读到的笔记内容发给模型。需要指定允许的 provider、签数据处理/零留存协议,或走公司代理端点。
 - key 管理:公司统一 key(经代理分发)还是成员各自配?当前设计是本机各配、存 vault 外。
-- Ask 的 MCP / 命令执行能力是否要求默认关审批(§4.7)。
 - 注意:**当前没有团队级合并规则下发机制**(`settings.llm` 只有 provider/model)。若合规要求下发术语表、「事实矛盾必须人工」这类规则,需要新增需求。
 
 **B.6 安全与合规审阅**——数据流文档(笔记 → 公司 GitHub;冲突片段 → 指定 LLM;凭证 → 仅 OS 用户目录,后端只存加密 refresh token);token 按 repositoryIds 收窄、设备绑定、session TTL 的现状评审;发布链完整性(GitHub Actions release + build provenance attestation,已有)。

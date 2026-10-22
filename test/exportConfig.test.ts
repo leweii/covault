@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildConfigExport, parseConfigImport, planConfigImport, redactMcpConfig } from "../src/covault/exportConfig";
+import { buildConfigExport, parseConfigImport, planConfigImport } from "../src/covault/exportConfig";
 import { DEFAULT_SETTINGS, isSignedIn, type CovaultSettings } from "../src/settings";
 import type { CovaultManifest } from "../src/covault/manifest";
 
@@ -12,11 +12,6 @@ function settings(): CovaultSettings {
     llmKeys: { anthropic: "sk-SECRET" },
     author: { name: "Jakob", email: "j@x.com" },
     llm: { provider: "anthropic", model: "claude-sonnet-5" },
-    ask: {
-      requireApproval: false,
-      mcpServers: '{"mcpServers": {"jira": {"command": "npx", "env": {"JIRA_TOKEN": "tok_SECRET"}}}}',
-      cliHints: "mycli — internal deploy tool",
-    },
     mainRepo: { url: "https://github.com/ct-kb/personal-kb-jakob.git", branch: "main" },
   };
 }
@@ -34,11 +29,11 @@ const manifest: CovaultManifest = {
 describe("buildConfigExport", () => {
   it("carries every setting a teammate needs to reproduce the setup", () => {
     const out = JSON.parse(JSON.stringify(buildConfigExport(settings(), manifest)));
-    expect(out.covaultExport).toBe(3);
+    expect(out.covaultExport).toBe(4);
     // No organization travels with a setup: it is picked per library.
     expect(out.settings).not.toHaveProperty("baseOrg");
     expect(out.settings.llm).toEqual({ provider: "anthropic", model: "claude-sonnet-5" });
-    expect(out.settings.ask.requireApproval).toBe(false);
+    expect(out.settings).not.toHaveProperty("ask");
     expect(out.settings.personalKb.url).toContain("personal-kb-jakob");
     expect(out.personalKbScope).toEqual({ scope: "vault", include: ["notes"] });
     expect(out.libraries).toHaveLength(2);
@@ -46,25 +41,11 @@ describe("buildConfigExport", () => {
     expect(out.libraries[1]).not.toHaveProperty("description");
   });
 
-  it("never leaks a secret, even via the MCP env", () => {
+  it("never leaks a secret", () => {
     const text = JSON.stringify(buildConfigExport(settings(), manifest));
-    for (const secret of ["ghp_SECRET", "DEVICE_SECRET", "SESSION_SECRET", "sk-SECRET", "tok_SECRET"]) {
+    for (const secret of ["ghp_SECRET", "DEVICE_SECRET", "SESSION_SECRET", "sk-SECRET"]) {
       expect(text).not.toContain(secret);
     }
-    expect(text).toContain("JIRA_TOKEN"); // the key survives, the value doesn't
-    expect(text).toContain("«redacted»");
-  });
-});
-
-describe("redactMcpConfig", () => {
-  it("masks env values in every config shape", () => {
-    expect(redactMcpConfig('[{"name": "a", "command": "x", "env": {"T": "s3cret"}}]')).not.toContain("s3cret");
-    expect(redactMcpConfig('{"direct": {"url": "https://x", "env": {"K": "v"}}}')).not.toContain('"v"');
-  });
-
-  it("passes empty and invalid JSON through untouched", () => {
-    expect(redactMcpConfig("")).toBe("");
-    expect(redactMcpConfig("{half-typed")).toBe("{half-typed");
   });
 });
 
@@ -81,7 +62,7 @@ describe("the export leaves personal identity out", () => {
 describe("parseConfigImport", () => {
   it("accepts a current export", () => {
     const text = JSON.stringify(buildConfigExport(settings(), manifest));
-    expect(parseConfigImport(text).covaultExport).toBe(3);
+    expect(parseConfigImport(text).covaultExport).toBe(4);
   });
 
   it("rejects text that isn't JSON", () => {
@@ -114,7 +95,7 @@ describe("planConfigImport", () => {
     const plan = planConfigImport(blank(), empty, file());
     const model = plan.changes.find((c) => c.key === "llmModel");
     expect(model).toMatchObject({ from: "(empty)", to: "claude-sonnet-5", value: "claude-sonnet-5" });
-    expect(plan.changes.find((c) => c.key === "askApprove")).toMatchObject({ from: "true", to: "false" });
+    expect(plan.changes.find((c) => c.key === "syncAuto")).toBeUndefined(); // same as the default
   });
 
   it("says nothing about fields that already match", () => {
@@ -127,19 +108,6 @@ describe("planConfigImport", () => {
     const plan = planConfigImport(blank(), { ...empty, repos: [manifest.repos[0]!] }, file());
     expect(plan.newLibraries.map((r) => r.path)).toEqual(["Z01/team-oms-kb"]);
     expect(plan.existingLibraries).toBe(1);
-  });
-
-  it("refuses the MCP config, because the export masked its tokens", () => {
-    const plan = planConfigImport(blank(), empty, file());
-    expect(plan.changes.find((c) => c.key === "askMcp")).toBeUndefined();
-    expect(plan.skipped.join(" ")).toContain("MCP");
-  });
-
-  it("imports an MCP config that carries no masked values", () => {
-    const raw = file();
-    raw.settings.ask.mcpServers = '{"mcpServers":{"docs":{"command":"npx"}}}';
-    const plan = planConfigImport(blank(), empty, raw);
-    expect(plan.changes.find((c) => c.key === "askMcp")?.to).toContain("docs");
   });
 
   it("never imports identity, the personal KB, or the sign-in method", () => {
@@ -160,6 +128,13 @@ describe("planConfigImport", () => {
     const plan = planConfigImport(blank(), empty, file());
     expect(plan.changes.find((c) => c.key === "personalKbScope")).toMatchObject({ from: "marked", to: "vault" });
     expect(plan.skipped.join(" ")).toContain("individually shared notes");
+  });
+
+  it("ignores the Ask settings an older (v3) export still carries", () => {
+    const raw = { ...file(), covaultExport: 3 };
+    raw.settings.ask = { requireApproval: false, mcpServers: "{}", cliHints: "x" };
+    const plan = planConfigImport(blank(), empty, raw);
+    expect(plan.changes.some((c) => (c.key as string).startsWith("ask"))).toBe(false);
   });
 
   it("survives a file with junk where the sections should be", () => {

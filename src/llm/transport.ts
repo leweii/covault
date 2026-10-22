@@ -125,3 +125,17 @@ export function createTransportProbe(
   };
   return probe;
 }
+
+/**
+ * The failure the model call reported, plus what the transport actually saw.
+ *
+ * "Connection error." on its own tells the user nothing they can act on;
+ * the probe's line names the proxy, the certificate or the refused host.
+ * Only appended when the transport genuinely failed, so a rejected API key
+ * or a model-side error keeps reading as itself.
+ */
+export function explainModelError(reported: string, transportFailure: string | null): string {
+  if (!transportFailure) return reported;
+  if (reported.includes(transportFailure)) return reported;
+  return `${reported.replace(/\.$/, "")} — the request never reached the model: ${transportFailure}`;
+}

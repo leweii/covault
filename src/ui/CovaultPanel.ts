@@ -6,6 +6,8 @@ import { AddLibraryModal } from "./AddLibraryModal";
 import { MainKbModal } from "./MainKbModal";
 import { ConfirmModal } from "./ConfirmModal";
 import { FileHistoryModal } from "./FileHistoryModal";
+import { RecommendedPluginsModal } from "./RecommendedPluginsModal";
+import { UpdatesModal } from "./UpdatesModal";
 
 export const COVAULT_VIEW_TYPE = "covault-panel";
 
@@ -65,6 +67,7 @@ export class CovaultPanel extends ItemView {
     setIcon(this.ghBtnEl, "history");
     this.ghBtnEl.onclick = () => this.ghOpenModal();
     this.ghApplyBtnState();
+    this.renderToolbar(scroll);
 
     const conflicts = this.plugin.sync.pendingConflicts();
     if (conflicts.length > 0) {
@@ -78,7 +81,37 @@ export class CovaultPanel extends ItemView {
 
     this.renderPersonalSection(scroll);
     this.renderLibrariesSection(scroll);
-    this.renderAskButton(root);
+    this.renderGuideButton(root);
+  }
+
+  /**
+   * Every feature has a button here — there are no commands in the
+   * palette, so this row is the way in. Order is fixed: most-used first.
+   */
+  private renderToolbar(root: HTMLElement): void {
+    const bar = root.createDiv("covault-panel-toolbar");
+    const conflicts = this.plugin.sync.pendingConflicts().length;
+    const items: { icon: string; label: string; run: () => void; disabled?: boolean }[] = [
+      { icon: "alarm-clock", label: "Automations", run: () => void this.plugin.activateAutomationView() },
+      { icon: "scroll-text", label: "Sync history", run: () => this.plugin.openSyncHistory() },
+      {
+        icon: "wrench",
+        label: conflicts > 0 ? `Resolve conflicts (${conflicts})` : "Resolve conflicts — none right now",
+        run: () => this.plugin.openConflictModal(),
+        disabled: conflicts === 0,
+      },
+      { icon: "folder-plus", label: "Add a shared library", run: () => new AddLibraryModal(this.app, this.plugin).open() },
+      { icon: "clipboard-copy", label: "Copy the diagnostic log", run: () => void this.plugin.copyDebugLog() },
+      { icon: "eraser", label: "Clear the diagnostic log", run: () => this.plugin.clearDebugLog() },
+      { icon: "refresh-cw", label: "Sync shared libraries now", run: () => void this.plugin.sync.syncAll("manual") },
+      { icon: "upload", label: "Export configuration (copy to clipboard)", run: () => void this.plugin.exportConfiguration() },
+    ];
+    for (const item of items) {
+      const btn = bar.createEl("button", { cls: "covault-panel-icon-btn", attr: { "aria-label": item.label } });
+      setIcon(btn, item.icon);
+      btn.disabled = item.disabled ?? false;
+      btn.onclick = item.run;
+    }
   }
 
   /**
@@ -86,18 +119,18 @@ export class CovaultPanel extends ItemView {
    * fills the panel, and a button that scrolls away is a button that isn't
    * there when it's wanted.
    */
-  private renderAskButton(root: HTMLElement): void {
-    const bar = root.createDiv("covault-panel-ask-bar");
+  private renderGuideButton(root: HTMLElement): void {
+    const bar = root.createDiv("covault-panel-guide-bar");
     // mod-cta, not a hand-painted accent: themes style Obsidian's own CTA
     // class deliberately, and a private background is what left this
     // reading as an inert grey slab under Blue Topaz.
-    const ask = bar.createEl("button", {
-      cls: "covault-panel-ask mod-cta",
-      attr: { "aria-label": "Ask your knowledge base" },
+    const guide = bar.createEl("button", {
+      cls: "covault-panel-guide mod-cta",
+      attr: { "aria-label": "Recommended plugins" },
     });
-    setIcon(ask.createSpan({ cls: "covault-panel-ask-icon" }), "message-circle-question");
-    ask.createSpan({ text: "Ask your knowledge base" });
-    ask.onclick = () => void this.plugin.activateAskView();
+    setIcon(guide.createSpan({ cls: "covault-panel-guide-icon" }), "puzzle");
+    guide.createSpan({ text: "Recommended plugins" });
+    guide.onclick = () => new RecommendedPluginsModal(this.app).open();
   }
 
   /**
@@ -115,6 +148,29 @@ export class CovaultPanel extends ItemView {
           : "Waiting for first sync"
         : (state.detail ?? state.phase),
     );
+  }
+
+  /**
+   * "3 new" on a row whose teammates changed things since the user last
+   * looked. Quiet on purpose — no popup per sync round; it waits here
+   * until clicked, which lists the notes and clears it.
+   */
+  private addUpdatesBadge(row: HTMLElement, repoPath: string, label: string): void {
+    const updates = this.plugin.sync.unseenUpdates(repoPath);
+    if (!updates) return;
+    const authors = [...updates.authors];
+    const badge = row.createEl("button", {
+      cls: "covault-panel-updates",
+      text: `${updates.files.size} new`,
+      attr: {
+        "aria-label": `${updates.files.size} note(s) changed${authors.length ? ` by ${authors.join(", ")}` : ""} — show`,
+      },
+    });
+    badge.onclick = () => {
+      // Snapshot before clearing: the modal shows what was unseen.
+      new UpdatesModal(this.app, label, repoPath, updates).open();
+      this.plugin.sync.markSeen(repoPath);
+    };
   }
 
   // ── Section 3: history of the current note ─────────────────
@@ -306,6 +362,7 @@ export class CovaultPanel extends ItemView {
 
       const name = row.createSpan({ cls: "covault-panel-row-name", text: repo.path });
       name.setAttribute("title", `${repo.url} (${repo.branch})`);
+      this.addUpdatesBadge(row, repo.path, repo.path);
 
       this.addSyncButton(row, repo.path, `Sync ${repo.path} now`);
 

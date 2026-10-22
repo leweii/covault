@@ -4,8 +4,7 @@
  * (provider/model/key from settings) instead of hand-rolled providers.
  */
 import { contentText, type MutableModels } from "@earendil-works/pi-ai";
-import { explainAskError } from "./ask";
-import { createTransportProbe, describeError, type DiagnoseFn, type TransportProbe } from "./transport";
+import { createTransportProbe, describeError, explainModelError, type DiagnoseFn, type TransportProbe } from "./transport";
 
 export interface AISuggestionRequest {
   filePath?: string;
@@ -169,7 +168,7 @@ export class ConflictResolver {
         { fetch: this.probe.fetch },
       );
     } catch (e) {
-      throw new Error(explainAskError(describeError(e), this.probe.lastFailure));
+      throw new Error(explainModelError(describeError(e), this.probe.lastFailure));
     }
 
     const parsed = parseAIResponse(contentText(reply.content));

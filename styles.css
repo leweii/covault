@@ -1351,605 +1351,6 @@
   justify-content: flex-end;
 }
 
-/* ── Ask view ─────────────────────────────────────────────── */
-
-.covault-ask {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  padding: 0;
-}
-
-.covault-ask-list-wrap {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-/* Only there while the reader has scrolled away from the tail — a
-   permanent one would be furniture. */
-.covault-ask-tail {
-  position: absolute;
-  right: 14px;
-  bottom: 12px;
-  display: none;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border-radius: 50%;
-  border: 1px solid var(--background-modifier-border);
-  background: var(--background-secondary);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
-.covault-ask-tail.is-visible {
-  display: flex;
-}
-
-.covault-ask-tail:hover {
-  background: var(--background-modifier-hover);
-  color: var(--text-normal);
-}
-
-.covault-ask-tail .svg-icon {
-  width: 16px;
-  height: 16px;
-}
-
-.covault-ask-list {
-  flex: 1;
-  overflow-y: auto;
-  /* Narrow gutter: even in its own window this is a chat column, not a
-     document page. */
-  padding: 12px 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  /* Obsidian disables selection app-wide and only content areas opt back
-     in; a plugin view has to do it itself. Answers quote real facts from
-     the notes, so they have to be copyable. */
-  user-select: text;
-  -webkit-user-select: text;
-  cursor: text;
-}
-
-/* The history list is a set of click targets, not prose — selecting there
-   fights with opening a chat. */
-.covault-ask-session {
-  user-select: none;
-  -webkit-user-select: none;
-  cursor: default;
-}
-
-/* The text cursor above shouldn't bleed onto things you click. */
-.covault-ask-list button,
-.covault-ask-list a,
-.covault-ask-list summary,
-.covault-ask-list img {
-  cursor: pointer;
-}
-
-.covault-ask-empty {
-  color: var(--text-muted);
-  font-size: 0.88em;
-  padding: 12px 4px;
-}
-
-.covault-ask-q {
-  align-self: flex-end;
-  max-width: 88%;
-  background: var(--interactive-accent);
-  color: var(--text-on-accent);
-  border-radius: 10px 10px 2px 10px;
-  padding: 6px 10px;
-  font-size: 0.92em;
-  white-space: pre-wrap;
-}
-
-/* A background command reporting back is not a question and must not
-   look like one: a quiet full-width note, not an accent bubble. The
-   output it carried stays folded away — the verdict is the message. */
-.covault-ask-wake {
-  align-self: stretch;
-  font-size: 0.8em;
-  color: var(--text-muted);
-  background: var(--background-secondary);
-  border-left: 2px solid var(--text-faint);
-  border-radius: 4px;
-  padding: 4px 8px;
-}
-
-.covault-ask-wake summary {
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.covault-ask-wake-icon {
-  display: inline-flex;
-  flex: none;
-}
-
-.covault-ask-wake-icon .svg-icon {
-  width: 12px;
-  height: 12px;
-}
-
-.covault-ask-wake-body {
-  margin: 6px 0 2px;
-  max-height: 260px;
-  overflow: auto;
-  font-size: 0.92em;
-  white-space: pre-wrap;
-  color: var(--text-faint);
-}
-
-/* A queued question is the same bubble as a sent one at 55% ink: sending
-   it turns the ink solid and moves nothing. */
-.covault-ask-queued {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  opacity: 0.55;
-}
-
-.covault-ask-queued.is-paused {
-  opacity: 0.4;
-}
-
-.covault-ask-queued-icon {
-  display: inline-flex;
-  flex: none;
-}
-
-.covault-ask-queued-icon .svg-icon {
-  width: 12px;
-  height: 12px;
-}
-
-.covault-ask-queued-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.covault-ask-queued-drop {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  margin-left: 2px;
-  border: none;
-  box-shadow: none;
-  border-radius: 4px;
-  background: none;
-  color: inherit;
-  cursor: pointer;
-  opacity: 0;
-}
-
-.covault-ask-queued:hover .covault-ask-queued-drop {
-  opacity: 0.8;
-}
-
-.covault-ask-queued-drop .svg-icon {
-  width: 12px;
-  height: 12px;
-}
-
-.covault-ask-a {
-  align-self: stretch;
-  background: var(--background-secondary);
-  border-radius: 10px 10px 10px 2px;
-  padding: 2px 10px;
-  font-size: 0.92em;
-}
-
-.covault-ask-a p {
-  margin: 7px 0;
-}
-
-/* Rendered markdown in a chat column. Obsidian's defaults are sized for a
-   document column: a 2em list indent and full heading margins spent a
-   fifth of every wrapped line on empty space, and nesting compounded it. */
-.covault-ask-md :is(ul, ol) {
-  padding-inline-start: 1.15em;
-  margin: 5px 0;
-}
-
-.covault-ask-md li {
-  margin: 2px 0;
-}
-
-.covault-ask-md li > :is(ul, ol) {
-  padding-inline-start: 0.95em;
-  margin: 2px 0;
-}
-
-.covault-ask-md :is(h1, h2, h3, h4, h5, h6) {
-  margin: 11px 0 3px;
-  line-height: 1.35;
-}
-
-/* No leading or trailing gap inside the bubble — its own padding is the
-   breathing room. */
-.covault-ask-md > :first-child {
-  margin-top: 3px;
-}
-
-.covault-ask-md > :last-child {
-  margin-bottom: 3px;
-}
-
-.covault-ask-md blockquote {
-  margin: 6px 0;
-  padding: 0 0 0 9px;
-  border-inline-start: 2px solid var(--background-modifier-border);
-}
-
-.covault-ask-md :is(pre, table) {
-  margin: 6px 0;
-}
-
-.covault-ask-md pre {
-  padding: 8px;
-}
-
-.covault-ask-pending {
-  color: var(--text-muted);
-  white-space: pre-wrap;
-  /* Same gutters as the finished answer, so the text doesn't shift
-     sideways the moment streaming ends. */
-  padding: 6px 10px;
-}
-
-.covault-ask-activity {
-  align-self: flex-start;
-  color: var(--text-faint);
-  font-size: 0.78em;
-  padding: 0 4px;
-}
-
-.covault-ask-err {
-  align-self: flex-start;
-  color: var(--text-error);
-  font-size: 0.88em;
-  padding: 2px 4px;
-}
-
-.covault-ask-status {
-  min-height: 18px;
-  padding: 2px 12px;
-  color: var(--text-muted);
-  font-size: 0.82em;
-}
-
-/* Pasted screenshots: chips above the composer, thumbnails in the thread */
-
-.covault-ask-attach {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 6px 12px 0;
-}
-
-.covault-ask-attach.is-empty {
-  display: none;
-}
-
-.covault-ask-chip {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 6px;
-  background: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
-}
-
-.covault-ask-chip img {
-  width: 40px;
-  height: 40px;
-  object-fit: cover;
-  border-radius: 4px;
-  display: block;
-}
-
-.covault-ask-chip-meta {
-  color: var(--text-faint);
-  font-size: 0.75em;
-}
-
-.covault-ask-chip-x {
-  padding: 2px;
-  background: transparent;
-  box-shadow: none;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
-.covault-ask-chip-x:hover {
-  color: var(--text-normal);
-}
-
-.covault-ask-q-images {
-  align-self: flex-end;
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 4px;
-  max-width: 88%;
-}
-
-.covault-ask-q-images img {
-  max-width: 180px;
-  max-height: 180px;
-  border-radius: 8px;
-  border: 1px solid var(--background-modifier-border);
-  display: block;
-}
-
-.covault-ask-input {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 8px 12px 10px;
-  border-top: 1px solid var(--background-modifier-border);
-}
-
-.covault-ask-grip {
-  flex: none;
-  height: 10px;
-  /* Full panel width, sunk into the composer's own padding: easy to hit,
-     adds no visible bulk. */
-  margin: -5px -12px 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: ns-resize;
-  touch-action: none;
-}
-
-.covault-ask-grip::before {
-  content: "";
-  width: 26px;
-  height: 2px;
-  border-radius: 2px;
-  background: var(--background-modifier-border);
-  transition: background 120ms ease;
-}
-
-.covault-ask-grip:hover::before {
-  background: var(--text-faint);
-}
-
-.covault-ask-input textarea {
-  box-sizing: border-box;
-  width: 100%;
-  resize: none;
-  font-size: 0.92em;
-  line-height: 1.45;
-  /* Four lines to start; AskView.autoGrow() takes it from there and the
-     max turns the rest into a scroll rather than eating the transcript. */
-  min-height: 5.2em;
-  max-height: 45vh;
-  overflow-y: auto;
-}
-
-/* Dragged by hand: the cap above is there to stop autoGrow from eating
-   the transcript, and a height someone chose deliberately is not
-   autoGrow's doing. AskView.applyHeight clamps it to 75% of the panel,
-   so lifting the cap cannot swallow the conversation either. */
-.covault-ask-input textarea.is-dragged {
-  max-height: none;
-}
-
-/* The row under the composer: keyboard hints on the left, the history
-   and new-chat buttons on the right. The buttons sit here rather than in
-   a header, so the conversation keeps that row of height. */
-.covault-ask-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.covault-ask-bar-actions {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 2px;
-}
-
-.covault-ask-hint {
-  display: flex;
-  /* Yields to the buttons: a long job pill may be clipped, they may not. */
-  min-width: 0;
-  /* Centred, because the row mixes glyphs of three different heights —
-     an icon, a kbd and running text — and only the box each sits in
-     lines them up. */
-  align-items: center;
-  gap: 12px;
-  font-size: 0.74em;
-  color: var(--text-faint);
-  user-select: none;
-}
-
-/* One key and what it does, held together so the gap above never falls
-   between them. */
-.covault-ask-hint-pair {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  white-space: nowrap;
-}
-
-.covault-ask-hint kbd {
-  /* Obsidian gives kbd a chip look; here it should read as one quiet
-     line, not two badges. */
-  background: none;
-  border: none;
-  box-shadow: none;
-  padding: 0;
-  font-family: inherit;
-  font-size: 1.05em;
-  color: var(--text-muted);
-}
-
-/* A command still running. A pill, so it reads as state rather than as
-   one more keyboard hint, and the only thing on this row allowed to
-   shrink — a long job name may be clipped, the hints may not. */
-.covault-ask-hint-job {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-  padding: 1px 7px;
-  border-radius: var(--radius-s);
-  background: var(--background-modifier-hover);
-  color: var(--text-muted);
-}
-
-.covault-ask-hint-job-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.covault-ask-hint-job-icon {
-  display: inline-flex;
-  flex: none;
-  /* Turning, because "still running" is exactly the thing a still image
-     cannot say. Same keyframes as the panel's sync spinner, defined with
-     it at the bottom of this file. */
-  animation: covault-spin 1.4s linear infinite;
-}
-
-.covault-ask-hint-job-icon .svg-icon {
-  width: 11px;
-  height: 11px;
-}
-
-
-/* ── Diff approval (Ask note edits) ───────────────────────── */
-
-.modal.covault-diff-approve {
-  max-width: 720px;
-  width: 90vw;
-}
-
-.covault-diff-body {
-  max-height: 55vh;
-  overflow: auto;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
-  font-family: var(--font-monospace);
-  font-size: 0.8em;
-  line-height: 1.45;
-  padding: 4px 0;
-  background: var(--background-primary-alt);
-}
-
-.covault-diff-line {
-  padding: 0 10px;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.covault-diff-line.add {
-  background: rgba(var(--color-green-rgb), 0.14);
-  color: var(--color-green);
-}
-
-.covault-diff-line.del {
-  background: rgba(var(--color-red-rgb), 0.12);
-  color: var(--color-red);
-}
-
-.covault-diff-line.hunk {
-  color: var(--text-faint);
-  padding-top: 4px;
-}
-
-.covault-diff-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-/* ── Ask sessions & answer chrome ─────────────────────────── */
-
-.covault-ask-session {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 8px;
-  cursor: pointer;
-}
-
-.covault-ask-session:hover {
-  background: var(--background-secondary);
-}
-
-.covault-ask-session-label {
-  flex: 1;
-  min-width: 0;
-}
-
-.covault-ask-session-title {
-  font-size: 0.9em;
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.covault-ask-session-date {
-  font-size: 0.75em;
-  color: var(--text-faint);
-}
-
-.covault-ask-steps {
-  align-self: flex-start;
-  font-size: 0.78em;
-  color: var(--text-faint);
-  padding: 0 4px;
-}
-
-.covault-ask-steps summary {
-  cursor: pointer;
-}
-
-.covault-ask-foot {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
-  color: var(--text-faint);
-  font-size: 0.75em;
-  padding: 0 0 6px;
-  opacity: 0;
-  transition: opacity 0.15s;
-}
-
-.covault-ask-a:hover .covault-ask-foot {
-  opacity: 1;
-}
-
 /* ── Config import ────────────────────────────────────────── */
 
 .covault-import-input {
@@ -1986,106 +1387,6 @@
   color: var(--text-faint);
 }
 
-/* ── Connected services (MCP) status ──────────────────────── */
-
-.covault-mcp-status {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 0.85em;
-}
-
-.covault-mcp-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.covault-mcp-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex: 0 0 auto;
-}
-
-.covault-mcp-dot.is-ok {
-  background: var(--color-green);
-}
-
-.covault-mcp-dot.is-bad {
-  background: var(--color-red);
-}
-
-/* Needs sign-in: an action to take, not a failure. */
-.covault-mcp-dot.is-auth {
-  background: var(--color-yellow);
-}
-
-.covault-mcp-signin {
-  margin-left: auto;
-  padding: 2px 8px;
-  font-size: 0.85em;
-  cursor: pointer;
-}
-
-.covault-mcp-name {
-  font-weight: var(--font-medium);
-}
-
-.covault-mcp-detail,
-.covault-mcp-none {
-  color: var(--text-muted);
-}
-
-/* ── Connected-service chips in the chat ──────────────────── */
-
-.covault-ask-mcp {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 6px 12px 0;
-}
-
-.covault-ask-mcp.is-empty {
-  display: none;
-}
-
-.covault-ask-mcp-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 8px;
-  border-radius: 12px;
-  font-size: 0.78em;
-  border: 1px solid var(--background-modifier-border);
-  background: var(--background-secondary);
-  color: var(--text-muted);
-}
-
-button.covault-ask-mcp-chip {
-  cursor: pointer;
-  box-shadow: none;
-  height: auto;
-}
-
-button.covault-ask-mcp-chip:hover {
-  color: var(--text-normal);
-  border-color: var(--interactive-accent);
-}
-
-.covault-ask-mcp-chip.is-broken {
-  color: var(--text-error);
-}
-
-.covault-ask-mcp-icon {
-  display: inline-flex;
-}
-
-.covault-ask-mcp-icon .svg-icon {
-  width: 13px;
-  height: 13px;
-}
-
 /* ── Settings tab layout ──────────────────────────────────────
    Scoped to Covault's tab (class added in getSettingDefinitions).
    With the explanatory paragraphs gone, the page is a list of short
@@ -2098,13 +1399,11 @@ button.covault-ask-mcp-chip:hover {
   padding-bottom: 10px;
 }
 
-/* A textarea (or a status list) in the right-hand control column ends up
-   ~3 lines tall and half the width; JSON and one-per-line rows are
-   unreadable like that. Stack the label above a full-width box instead.
-   The marker class is applied in SettingsTab (markStackedRows for the
-   declarative rows, renderMcpStatus for ours) rather than matched with
-   :has(), which would make the style engine re-test every row on every
-   invalidation. */
+/* A textarea in the right-hand control column ends up ~3 lines tall and
+   half the width; multi-line rows are unreadable like that. Stack the
+   label above a full-width box instead. The marker class is applied in
+   SettingsTab (markStackedRows) rather than matched with :has(), which
+   would make the style engine re-test every row on every invalidation. */
 .covault-settings .setting-item.covault-setting-stacked {
   display: block;
 }
@@ -2128,34 +1427,15 @@ button.covault-ask-mcp-chip:hover {
   resize: vertical;
 }
 
-/* The status list stacks its rows and shares the column with the Check
-   button, which stays button-sized rather than stretching across the
-   panel. Width and padding come from covault-setting-stacked above. */
-.covault-settings .covault-mcp-control {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 6px;
-}
-
-.covault-settings .covault-mcp-control > button {
-  align-self: flex-start;
-}
-
-.covault-mcp-row {
-  min-height: 22px;
-}
-
 .covault-import-blocked {
   color: var(--text-error);
   font-size: 0.88em;
 }
 
-/* ── Panel: Ask row and per-repo sync ─────────────────────────
-   Asking is what the panel is mostly for, so it gets a full-width row
-   instead of a small icon competing with the header controls. */
+/* ── Panel: guide row and per-repo sync ─────────────────────── */
 
 /* Pinned between the scrolling list and the history pane. */
-.covault-panel-ask-bar {
+.covault-panel-guide-bar {
   flex: 0 0 auto;
   padding: 7px 10px 6px;
   border-top: 1px solid var(--background-modifier-border);
@@ -2163,7 +1443,7 @@ button.covault-ask-mcp-chip:hover {
 
 /* Colour comes from .mod-cta so the active theme decides what a primary
    action looks like; only the shape is ours. */
-.covault-panel-ask {
+.covault-panel-guide {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2176,11 +1456,11 @@ button.covault-ask-mcp-chip:hover {
   cursor: pointer;
 }
 
-.covault-panel-ask-icon {
+.covault-panel-guide-icon {
   display: inline-flex;
 }
 
-.covault-panel-ask-icon .svg-icon {
+.covault-panel-guide-icon .svg-icon {
   width: 15px;
   height: 15px;
 }
@@ -2207,3 +1487,504 @@ button.covault-ask-mcp-chip:hover {
   }
 }
 
+
+/* ── Recommended plugins guide ────────────────────────────── */
+
+.covault-rec-intro {
+  margin-top: 0;
+  color: var(--text-muted);
+  font-size: 0.9em;
+}
+
+.covault-rec-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.covault-rec-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+}
+
+.covault-rec-info {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.covault-rec-name {
+  font-weight: var(--font-semibold);
+}
+
+.covault-rec-desc {
+  color: var(--text-muted);
+  font-size: 0.85em;
+}
+
+.covault-rec-done {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-success);
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+.covault-rec-done .svg-icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* ── Sync history dialog ──────────────────────────────────── */
+
+.modal.covault-synchist-modal {
+  width: min(860px, 92vw);
+}
+
+.covault-synchist-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.covault-synchist-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-family: var(--font-monospace);
+  font-size: 0.8em;
+}
+
+.covault-synchist-body {
+  max-height: 60vh;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--background-secondary);
+  font-size: 0.8em;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+/* ── Teammates' updates: panel badge and list ─────────────── */
+
+.covault-panel-updates {
+  flex: 0 0 auto;
+  height: auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  font-size: 0.78em;
+  font-weight: var(--font-semibold);
+  line-height: 1.5;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.covault-panel-updates:hover {
+  background: var(--interactive-accent-hover);
+}
+
+.covault-updates-intro {
+  margin-top: 0;
+  color: var(--text-muted);
+  font-size: 0.9em;
+}
+
+.covault-updates-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.covault-updates-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 0.88em;
+}
+
+.covault-updates-row.is-openable {
+  cursor: pointer;
+}
+
+.covault-updates-row.is-openable:hover {
+  background: var(--background-modifier-hover);
+}
+
+.covault-updates-icon {
+  display: inline-flex;
+  color: var(--text-muted);
+}
+
+.covault-updates-icon .svg-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.covault-updates-kind {
+  flex: 0 0 64px;
+  color: var(--text-muted);
+  font-size: 0.85em;
+}
+
+.covault-updates-row.is-added .covault-updates-kind {
+  color: var(--text-success);
+}
+
+.covault-updates-row.is-deleted .covault-updates-path {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+
+.covault-updates-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Automations tab ──────────────────────────────────────── */
+
+/* .view-content.covault-auto (0-2-0) beats Obsidian's own .view-content
+   padding without !important. */
+.workspace-leaf-content[data-type="covault-automations"] {
+  container-type: inline-size;
+}
+
+.view-content.covault-auto {
+  display: flex;
+  gap: 16px;
+  height: 100%;
+  padding: 12px 16px;
+  overflow: hidden;
+}
+
+.covault-auto-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.covault-auto-list-col {
+  flex: 1 1 55%;
+  overflow-y: auto;
+}
+
+.covault-auto-chat-col {
+  flex: 1 1 45%;
+  min-width: 300px;
+  border-left: 1px solid var(--background-modifier-border);
+  padding-left: 16px;
+}
+
+/* Narrow pane: stack the chat under the list. */
+@container (max-width: 760px) {
+  .view-content.covault-auto {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .covault-auto-chat-col {
+    min-height: 420px;
+    border-left: none;
+    padding-left: 0;
+    border-top: 1px solid var(--background-modifier-border);
+    padding-top: 12px;
+  }
+}
+
+.covault-auto-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.covault-auto-title {
+  font-weight: var(--font-semibold);
+  font-size: 1.05em;
+}
+
+.covault-auto-hint {
+  flex: 1;
+  color: var(--text-faint);
+  font-size: 0.8em;
+}
+
+.covault-auto-chat-col .covault-auto-head .clickable-icon {
+  margin-left: auto;
+}
+
+.covault-auto-empty {
+  color: var(--text-muted);
+  font-size: 0.88em;
+  padding: 8px 2px;
+}
+
+.covault-auto-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.covault-auto-card {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary);
+}
+
+.covault-auto-card.is-paused .covault-auto-name {
+  color: var(--text-muted);
+}
+
+.covault-auto-card-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  cursor: pointer;
+}
+
+.covault-auto-card-row:hover {
+  background: var(--background-modifier-hover);
+  border-radius: 8px;
+}
+
+.covault-auto-chevron {
+  display: inline-flex;
+  color: var(--text-faint);
+}
+
+.covault-auto-chevron .svg-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.covault-auto-dot {
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.covault-auto-dot.is-ok { background: var(--color-green); }
+.covault-auto-dot.is-error { background: var(--color-red); }
+.covault-auto-dot.is-skipped { background: var(--color-yellow); }
+.covault-auto-dot.is-running {
+  background: var(--color-blue);
+  animation: covault-pulse 1.2s ease-in-out infinite;
+}
+
+.covault-auto-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.covault-auto-name {
+  font-weight: var(--font-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.covault-auto-meta {
+  color: var(--text-muted);
+  font-size: 0.8em;
+}
+
+.covault-auto-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.covault-auto-actions .svg-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.covault-auto-body {
+  padding: 0 12px 12px 34px;
+}
+
+.covault-auto-instructions summary,
+.covault-auto-steps summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 0.85em;
+}
+
+.covault-auto-instructions pre {
+  white-space: pre-wrap;
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--background-secondary);
+  font-size: 0.82em;
+}
+
+.covault-auto-section {
+  margin: 12px 0 6px;
+  color: var(--text-muted);
+  font-size: 0.78em;
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.covault-auto-runs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.covault-auto-run-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 5px;
+  font-size: 0.85em;
+  cursor: pointer;
+}
+
+.covault-auto-run-line:hover {
+  background: var(--background-modifier-hover);
+}
+
+.covault-auto-badge {
+  flex: 0 0 auto;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 0.85em;
+  line-height: 1.6;
+  background: var(--background-modifier-border);
+}
+.covault-auto-badge.is-ok { background: rgba(var(--color-green-rgb), 0.18); color: var(--color-green); }
+.covault-auto-badge.is-error { background: rgba(var(--color-red-rgb), 0.18); color: var(--color-red); }
+.covault-auto-badge.is-skipped { color: var(--text-muted); }
+
+.covault-auto-run-meta {
+  color: var(--text-faint);
+}
+
+.covault-auto-run-detail {
+  margin: 2px 0 8px 6px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--background-modifier-border);
+  font-size: 0.86em;
+}
+
+.covault-auto-report > :first-child { margin-top: 0; }
+.covault-auto-report > :last-child { margin-bottom: 0; }
+
+.covault-auto-changed {
+  margin-top: 6px;
+  color: var(--text-muted);
+}
+
+.covault-auto-link {
+  margin-right: 8px;
+  cursor: pointer;
+}
+
+.covault-auto-steps ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  color: var(--text-muted);
+}
+
+.covault-auto-chat {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 8px;
+}
+
+.covault-auto-msg {
+  max-width: 92%;
+  padding: 8px 11px;
+  border-radius: 10px;
+  font-size: 0.9em;
+  user-select: text;
+}
+
+.covault-auto-msg.is-user {
+  align-self: flex-end;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  white-space: pre-wrap;
+}
+
+.covault-auto-msg.is-assistant {
+  align-self: flex-start;
+  background: var(--background-secondary);
+}
+
+.covault-auto-msg.is-pending {
+  color: var(--text-muted);
+  white-space: pre-wrap;
+}
+
+.covault-auto-msg.is-error {
+  align-self: flex-start;
+  color: var(--text-error);
+  background: rgba(var(--color-red-rgb), 0.08);
+}
+
+.covault-auto-msg > :first-child { margin-top: 0; }
+.covault-auto-msg > :last-child { margin-bottom: 0; }
+
+.covault-auto-activity {
+  min-height: 1.4em;
+  color: var(--text-faint);
+  font-size: 0.8em;
+}
+
+.covault-auto-composer {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.covault-auto-composer textarea {
+  flex: 1;
+  resize: vertical;
+  min-height: 60px;
+  font-size: 0.9em;
+}
+
+/* ── Panel toolbar: one button per feature ────────────────── */
+
+.covault-panel-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px 0 8px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.covault-panel-toolbar .covault-panel-icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}

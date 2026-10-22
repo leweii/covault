@@ -11,7 +11,7 @@
 │  UI 层        CovaultPanel · 设置页(声明式 API) · ConflictModal · FileHistory   │
 │  同步层       SyncController(定时静默轮询 · per-repo 锁 · watchdog · 续轮)      │
 │  git 引擎     GitEngine(isomorphic-git 封装 · LFS clean/smudge · 冲突管道)      │
-│  智能层       pi sdk(冲突合并 · Ask 问答 · commit message)                      │
+│  智能层       pi sdk(冲突合并 · 自动化 · commit message)                      │
 │  授权层       AppAuth(GitHub App session / PAT 双模)                            │
 └────────┬──────────────────────┬───────────────────────────┬─────────────────────┘
          │ git smart-HTTP        │ HTTPS                      │ HTTPS
@@ -58,7 +58,7 @@ isomorphic-git 没有 clean/smudge filter,转换在 GitEngine 的每个内容出
 | 冲突 | 像素没有"合并"可言:附件冲突自动保留本地版本(对方版本在历史里),不进 LLM 管道 |
 | 互操作 | 指针格式 + 托管 `.gitattributes` 块都是标准 git-lfs,命令行 git + git-lfs 的用户看到完全一致的行为 |
 
-实战教训(已固化进测试):GitHub 对**无 User-Agent 的请求一律 403**(`lfs.github.com` 的 verify 端点强制);S3 PUT 成功但 verify 未过的对象仍算"不存在",所以任何失败都可安全重试;存量原始 blob 由「Move existing attachments to Git LFS」命令一次性转换(只改 tip,不重写历史)。
+实战教训(已固化进测试):GitHub 对**无 User-Agent 的请求一律 403**(`lfs.github.com` 的 verify 端点强制);S3 PUT 成功但 verify 未过的对象仍算"不存在",所以任何失败都可安全重试;存量原始 blob 不批量迁移,被修改时在正常同步里转成指针,历史从不重写。
 
 ## GitHub 集成与授权
 
@@ -72,11 +72,10 @@ isomorphic-git 没有 clean/smudge filter,转换在 GitEngine 的每个内容出
 
 ## 智能层:pi sdk
 
-- 基座:`@earendil-works/pi-ai` + `@earendil-works/pi-agent-core`。provider 是**精选列表**(Anthropic/OpenAI/DeepSeek/Groq/OpenRouter/xAI/Mistral 等十余家,刻意排除 Google/Vertex/Bedrock——它们的 SDK 会触发 Obsidian 扫描器的身份探测警告,还让 bundle 膨胀 2MB)。
+- 基座:`@earendil-works/pi-ai` + `@earendil-works/pi-agent-core`(自动化的 agent 循环)。provider 是**精选列表**(Anthropic/OpenAI/DeepSeek/Groq/OpenRouter/xAI/Mistral 等十余家,刻意排除 Google/Vertex/Bedrock——它们的 SDK 会触发 Obsidian 扫描器的身份探测警告,还让 bundle 膨胀 2MB)。
 - **冲突解决**(`src/llm/resolver.ts`):系统唯一内置 prompt。按 hunk 调用,返回 merged + confidence(0–5)+ reasoning;**全部 hunk ≥3 分才静默应用**,否则进 ConflictModal 三栏人工评审。内置启发式:事实矛盾且无证据时不许猜,保持本地版并说明需人工决策;团队可通过设置追加自定义规则。
-- **Ask 问答**:面板内直接问知识库,带 MCP server 接入、本机 CLI 探测(agent 可 run_command)、库地图(自动维护各库的描述,告诉 agent 什么问题去哪个库找;在内存里现算后进 system prompt,不依赖磁盘文件)。
-- **Skills 双向打通**(`src/llm/skills.ts` + `src/covault/skill.ts`):没有 covault 私有格式或私有目录——**读**用 `pi-agent-core` 的 loadSkills 扫三家六个目录——项目级 `.claude/skills`、`.pi/skills`、`.codex/skills`,用户级 `~/.claude/skills`、`~/.pi/agent/skills`、`~/.codex/skills`(后两个分别认 `PI_CODING_AGENT_DIR`、`CODEX_HOME`)——项目级优先、同名去重,system prompt 只列 name/description,正文由 `load_skill` 按需取(附件读取限制在该 skill 自己的目录内;`read_note` 拒绝点目录,用户级 skill 更在 vault 之外,所以这个工具是唯一入口);**写**把库地图生成成标准 `SKILL.md` 落到同样那三个项目级目录,老版本的 `.covault/skills/` 在启动/同步时删除迁移。生成的那一个是派生数据(gitignore 托管块 + GitEngine `ALWAYS_EXCLUDED` 双重排除,每台机器各自重建,永不产生冲突),用户自己的 skill 在同目录里正常同步。
-- **长任务不靠等**(`src/llm/backgroundJobs.ts`):前台 run_command 30 秒封顶,超时的正确解法不是加大超时或让模型 `sleep` 轮询(一次轮询烧一个 turn,十分钟的流水线能把整轮对话耗光),而是 `run_in_background: true`——进程 detach 到自己的进程组、输出落盘,工具立刻返回,turn 就此结束;进程 exit 事件回调把对话唤醒:运行中用 `agent.steer()` 塞进当前 loop,已空闲则由 AskView 开一个 wake turn。turn 预算(16)在每次唤醒时清零——等待不是失控;撞上限时走 loop 自己的 `shouldStopAfterTurn`(完整跑完当前 turn 再停)而不是 abort,所以模型已经写出的正文不会跟着丢。
+- **Skills**(`src/covault/skill.ts`):把库地图生成成标准 `SKILL.md`,落到项目级 `.claude/skills`、`.pi/skills`、`.codex/skills`,让 vault 里干活的 coding agent(如通过 Claudian)自己知道哪个库答哪类问题;派生数据,gitignore 托管块 + GitEngine `ALWAYS_EXCLUDED` 双重排除,每台机器各自重建。
+- **自动化**(`src/automation/`):`schedule.ts` 纯函数算时间槽(每 N 小时以上一个槽为锚,每天 HH:MM 按本机时间);`runner.ts` 每 30 秒 tick,槽到期 10 分钟内则运行、更晚则记 skipped(不补跑),job 全局串行、30 轮/10 分钟上限;`noteTools.ts` 是 search/read/list/write/edit 五个工具,路径一律经 `agentPathAllowed`(vault 内、无点目录),写入走 Obsidian vault API 后交给同步循环;`designer.ts` 是设置对话的 agent,工具为增删改查/试跑自动化 + 只读笔记工具,提示词要求先在对话里确认再落地。定义与日志存 OS 用户配置目录,不同步。测试用 pi-ai 的 faux provider 脚本化模型,端到端覆盖写笔记与对话建自动化。
 - **transport 诊断**:给 pi-ai 注入自定义 fetch,把 provider SDK 吞掉的失败原因(代理拒绝 CONNECT、TLS 拦截、DNS、区域封锁)还原成人话,并写入诊断日志;CORS 吞掉状态码的场景用免 CORS 的二次探测补全。
 
 ## 同步引擎
@@ -106,8 +105,8 @@ isomorphic-git 没有 clean/smudge filter,转换在 GitEngine 的每个内容出
 | 依赖 | 用途 |
 |---|---|
 | `isomorphic-git` | 纯 JS git 实现 |
-| `@earendil-works/pi-ai` / `pi-agent-core` | LLM 抽象与 agent 循环 |
-| `@modelcontextprotocol/sdk` | Ask 的 MCP server 接入 |
+| `@earendil-works/pi-ai` | LLM 抽象(冲突合并、自动化) |
+| `@earendil-works/pi-agent-core` / `typebox` | 自动化的 agent 循环与工具参数 schema |
 | `diff` | 冲突/历史界面的 diff 渲染 |
 
 其余全部来自 Node 内置模块与 Obsidian API。GitHub LFS、zhiyu-sync 后端、LLM API 是仅有的三个网络依赖。

@@ -7,46 +7,16 @@
  * leak by being forgotten here, and a hostile file can't reach a setting
  * import was never meant to touch. Out by design: the PAT, API keys,
  * backend sessions, the device id, and the commit identity (name/email),
- * which belongs to a person rather than to a setup. MCP server configs are
- * exported but their env values (a favourite place for tokens) are masked,
- * which is also why import refuses to restore a masked one.
+ * which belongs to a person rather than to a setup.
  */
 import type { CovaultSettings } from "../settings";
 import type { CovaultManifest, ManifestRepo } from "./manifest";
 
 /** 2 dropped `settings.author`; 3 dropped `settings.baseOrg` (there is no
- *  stored organization any more — it is chosen per library). An older file may
- *  still carry either; import ignores both. */
-export const EXPORT_VERSION = 3;
-
-const REDACTED = "«redacted»";
-
-/** MCP config with every env value masked; invalid JSON passes through
- *  untouched (it holds no parseable secrets and the user may be mid-edit). */
-export function redactMcpConfig(json: string): string {
-  const trimmed = json.trim();
-  if (!trimmed) return "";
-  let raw: unknown;
-  try {
-    raw = JSON.parse(trimmed);
-  } catch {
-    return json;
-  }
-  const maskEnv = (server: unknown): unknown => {
-    if (!server || typeof server !== "object") return server;
-    const s = server as Record<string, unknown>;
-    if (s.env && typeof s.env === "object") {
-      s.env = Object.fromEntries(Object.keys(s.env).map((k) => [k, REDACTED]));
-    }
-    return s;
-  };
-  if (Array.isArray(raw)) raw.forEach(maskEnv);
-  else if (raw && typeof raw === "object") {
-    const table = ((raw as Record<string, unknown>).mcpServers ?? raw) as Record<string, unknown>;
-    for (const key of Object.keys(table)) maskEnv(table[key]);
-  }
-  return JSON.stringify(raw, null, 2);
-}
+ *  stored organization any more — it is chosen per library); 4 dropped
+ *  `settings.ask` (the built-in Ask agent is gone). An older file may still
+ *  carry any of them; import ignores them. */
+export const EXPORT_VERSION = 4;
 
 export function buildConfigExport(settings: CovaultSettings, manifest: CovaultManifest): object {
   return {
@@ -58,11 +28,6 @@ export function buildConfigExport(settings: CovaultSettings, manifest: CovaultMa
       // login on sign-in anyway.
       llm: { provider: settings.llm.provider, model: settings.llm.model },
       sync: { auto: settings.sync.auto, intervalMinutes: settings.sync.intervalMinutes },
-      ask: {
-        requireApproval: settings.ask.requireApproval,
-        mcpServers: redactMcpConfig(settings.ask.mcpServers),
-        cliHints: settings.ask.cliHints,
-      },
       announceToAgents: settings.announceToAgents,
       personalKb: settings.mainRepo ? { url: settings.mainRepo.url, branch: settings.mainRepo.branch } : null,
     },
@@ -91,9 +56,6 @@ export type ImportKey =
   | "llmModel"
   | "syncAuto"
   | "syncInterval"
-  | "askApprove"
-  | "askMcp"
-  | "askCliHints"
   | "announceAgents"
   | "personalKbScope";
 
@@ -118,8 +80,6 @@ export interface ImportPlan {
   /** Things in the file that import refuses to touch, and why. */
   skipped: string[];
 }
-
-const MASK_MARKER = REDACTED;
 
 function asString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
@@ -167,7 +127,6 @@ export function planConfigImport(
   const settings = (file.settings ?? {}) as Record<string, unknown>;
   const llm = (settings.llm ?? {}) as Record<string, unknown>;
   const sync = (settings.sync ?? {}) as Record<string, unknown>;
-  const ask = (settings.ask ?? {}) as Record<string, unknown>;
 
   const add = (
     key: ImportKey,
@@ -188,18 +147,7 @@ export function planConfigImport(
     current.sync.intervalMinutes,
     typeof sync.intervalMinutes === "number" ? sync.intervalMinutes : null,
   );
-  add("askApprove", "Ask approval required", current.ask.requireApproval, asBool(ask.requireApproval));
-  add("askCliHints", "Extra CLI notes for Ask", current.ask.cliHints, asString(ask.cliHints));
   add("announceAgents", "Announce libraries to AI assistants", current.announceToAgents, asBool(settings.announceToAgents));
-
-  // Exported with its env values masked, so restoring it would write
-  // "«redacted»" in place of real tokens and quietly break the servers.
-  const mcp = asString(ask.mcpServers);
-  if (mcp && mcp.includes(MASK_MARKER)) {
-    skipped.push("Connected services (MCP) — the export masks their tokens, so they must be re-entered by hand.");
-  } else {
-    add("askMcp", "Connected services (MCP)", current.ask.mcpServers, mcp);
-  }
 
   const scope = (file.personalKbScope ?? {}) as Record<string, unknown>;
   const wanted = asString(scope.scope);

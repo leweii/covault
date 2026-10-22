@@ -2,11 +2,10 @@ import {
   apiVersion,
   FileSystemAdapter,
   Notice,
+  normalizePath,
   Plugin,
   TFile,
   TFolder,
-  type WorkspaceLeaf,
-  type WorkspaceWindowInitData,
 } from "obsidian";
 import * as fs from "fs";
 import * as path from "path";
@@ -15,6 +14,13 @@ import { DEFAULT_SETTINGS, isSignedIn, type CovaultSettings } from "./settings";
 import { GitEngine } from "./git/GitEngine";
 import { createNodeHttp } from "./git/nodeHttp";
 import { DebugLog } from "./debug/logger";
+import { SyncHistory } from "./debug/syncHistory";
+import { AutomationStore } from "./automation/store";
+import { AutomationRunner } from "./automation/runner";
+import { AutomationDesigner } from "./automation/designer";
+import { modelReady, type ModelDeps } from "./automation/agent";
+import type { NoteToolDeps } from "./automation/noteTools";
+import { AutomationView, COVAULT_AUTOMATION_VIEW_TYPE } from "./ui/AutomationView";
 import { SyncController, type RepoState, type SyncItem } from "./sync/SyncController";
 import { AppAuth } from "./auth/AppAuth";
 import { PROTOCOL_ACTION } from "./auth/constants";
@@ -25,29 +31,18 @@ import { sameRemote } from "./git/urls";
 import { FolderLinkedError } from "./covault/errors";
 import {
   buildKnowledgeSkill,
-  gatherFacts,
   migrateLegacySkill,
   removeKnowledgeSkill,
   writeKnowledgeSkill,
-  SKILL_TARGETS,
 } from "./covault/skill";
 import { purgeLegacyAgentBlock } from "./covault/legacyAgentBlock";
-import { loadAskSkills } from "./llm/skills";
 import { buildConfigExport, type ImportPlan } from "./covault/exportConfig";
-import { LibraryDescriber } from "./llm/describe";
-import { AddLibraryModal } from "./ui/AddLibraryModal";
 import { ShareFolderModal } from "./ui/ShareFolderModal";
 import { ConflictModal, type ConflictOps } from "./ui/ConflictModal";
 import { FileHistoryModal } from "./ui/FileHistoryModal";
+import { SyncHistoryModal } from "./ui/SyncHistoryModal";
 import { CovaultPanel, COVAULT_VIEW_TYPE } from "./ui/CovaultPanel";
-import { AskView, COVAULT_ASK_VIEW_TYPE } from "./ui/AskView";
-import { AskEngine } from "./llm/ask";
 import { describeEndpoint } from "./llm/reachability";
-import { makeJobTools, makeReadTool, makeRunCommandTool, makeSearchTool, type AskTool } from "./llm/agentTools";
-import { BackgroundJobs } from "./llm/backgroundJobs";
-import { makeEditTools } from "./llm/editTools";
-import { McpManager } from "./llm/mcp";
-import { CliInventory } from "./llm/cliInventory";
 import { ConflictResolver } from "./llm/resolver";
 import { createOrgRepo, fetchUserIdentity, noreplyEmail, type GitHubIdentity } from "./git/githubApi";
 import type { RepoRef } from "./git/GitEngine";
@@ -73,10 +68,10 @@ export default class CovaultPlugin extends Plugin {
   appAuth!: AppAuth;
   libraryManifest!: ManifestStore;
   resolver!: ConflictResolver;
-  describer!: LibraryDescriber;
-  mcp!: McpManager;
-  cliInventory!: CliInventory;
   debugLog!: DebugLog;
+  syncHistory!: SyncHistory;
+  automations!: AutomationStore;
+  automationRunner!: AutomationRunner;
   private settingsTab: CovaultSettingTab | null = null;
   private statusBarEl!: HTMLElement;
   private syncIntervalId: number | null = null;
@@ -120,6 +115,10 @@ export default class CovaultPlugin extends Plugin {
       // are per-device; keyed by vault so two vaults here stay apart.
       logDir: () => path.join(appConfigDir(), "logs", vaultKey(this.vaultBasePath())),
     });
+    this.syncHistory = new SyncHistory({
+      fs,
+      logDir: () => path.join(appConfigDir(), "logs", vaultKey(this.vaultBasePath())),
+    });
 
     // AppAuth delegates per-call: GitHub App when connected, PAT otherwise.
     this.engine = new GitEngine({
@@ -145,30 +144,22 @@ export default class CovaultPlugin extends Plugin {
       diagnose: describeEndpoint,
     });
 
-    // Probed lazily on the first question, then cached: the agent is told
-    // which CLIs this machine has, and run_command inherits the same PATH.
-    this.cliInventory = new CliInventory({
-      cwd: () => this.vaultBasePath(),
-      declared: () => this.settings.ask.cliHints,
+
+    this.automations = new AutomationStore({
+      fs,
+      dir: () => path.join(appConfigDir(), "automations"),
+      vaultKey: () => vaultKey(this.vaultBasePath()),
     });
-    // Built after the inventory: an MCP server started as a command needs
-    // the same real PATH, or `npx`/`uvx` is not found. envReady, not env:
-    // spawning cannot use the bare-PATH fallback, and Settings' Check
-    // button runs before any question has warmed the probe.
-    this.mcp = new McpManager(
-      () => this.settings.ask.mcpServers,
-      () => this.cliInventory.envReady(),
-      (url) => window.open(url, "_blank"),
-      // Always recorded: a server that starts slowly or dies on startup
-      // leaves no other trace, and debug mode is off when it happens.
-      (line) => this.debugLog.op("mcp", line),
-    );
-    this.describer = new LibraryDescriber({
-      models: this.models,
-      getSelection: () => this.settings.llm,
-      hasKey: (provider) => this.hasModelAccess(provider),
-      onTransport: (line, failed) => (failed ? this.debugLog.op("llm", line) : this.debugLog.log("llm", line)),
-      diagnose: describeEndpoint,
+    this.automationRunner = new AutomationRunner({
+      store: this.automations,
+      model: this.automationModelDeps(),
+      notes: this.automationNoteDeps(),
+      repos: () => this.libraryManifest.load().repos,
+      vaultName: () => this.app.vault.getName(),
+      // Written notes are committed and shared like hand-made edits.
+      onNotesChanged: () => void this.sync.syncAll("auto"),
+      onChange: () => this.refreshAutomationViews(),
+      log: (message, data) => this.debugLog.op("automation", message, data),
     });
 
     this.sync = new SyncController(
@@ -183,6 +174,7 @@ export default class CovaultPlugin extends Plugin {
         // Libraries may have pulled new content — keep the routing skill
         // describing what is actually on disk.
         onSyncPass: () => this.refreshKnowledgeSkill(),
+        onSynced: (record) => this.syncHistory.append(record),
       },
       this.resolver,
       this.debugLog,
@@ -195,19 +187,19 @@ export default class CovaultPlugin extends Plugin {
     this.addSettingTab(this.settingsTab);
 
     this.registerView(COVAULT_VIEW_TYPE, (leaf) => new CovaultPanel(leaf, this));
-    this.registerView(COVAULT_ASK_VIEW_TYPE, (leaf) => new AskView(leaf, this));
-    // The ribbon is the one always-visible entry point, and what people
-    // come here to do is ask — not watch repositories tick over. Sync
-    // status is a thing you go looking for when something looks wrong, so
-    // it lives behind a command and the status bar instead.
-    this.addRibbonIcon("message-circle-question", "Ask your knowledge base", () =>
-      void this.activateAskView(),
+    this.registerView(COVAULT_AUTOMATION_VIEW_TYPE, (leaf) => new AutomationView(leaf, this));
+    // The scheduler: cheap when nothing is due (a pass over a short list).
+    // The list re-renders too, so "next in 5 min" stays honest.
+    this.registerInterval(
+      window.setInterval(() => {
+        this.automationRunner.tick();
+        this.refreshAutomationViews();
+      }, 30_000),
     );
-    this.addCommand({
-      id: "open-panel",
-      name: "Show sync status",
-      callback: () => void this.activatePanel(),
-    });
+    this.addRibbonIcon("library", "Open Covault panel", () => void this.activatePanel());
+    // The panel lives in the left sidebar as its own tab, beside Files and
+    // Search, so its icon is always there to click.
+    this.app.workspace.onLayoutReady(() => void this.ensurePanelInLeftSidebar());
 
     this.statusBarEl = this.addStatusBarItem();
     this.statusBarEl.addClass("mod-clickable");
@@ -217,73 +209,6 @@ export default class CovaultPlugin extends Plugin {
     });
     this.renderStatusBar(new Map());
 
-    this.addCommand({
-      id: "sync-now",
-      name: "Sync shared libraries now",
-      callback: () => void this.sync.syncAll("manual"),
-    });
-    this.addCommand({
-      id: "add-library",
-      name: "Add a shared library",
-      callback: () => new AddLibraryModal(this.app, this).open(),
-    });
-    this.addCommand({
-      id: "resolve-conflicts",
-      name: "Resolve conflicts",
-      callback: () => this.openConflictModal(),
-    });
-    this.addCommand({
-      id: "export-config",
-      name: "Export configuration (copy to clipboard)",
-      callback: () => void this.exportConfiguration(),
-    });
-    this.addCommand({
-      id: "ask",
-      name: "Ask your knowledge base",
-      callback: () => void this.activateAskView(),
-    });
-    this.addCommand({
-      id: "ask-in-new-tab",
-      name: "Ask in a new tab",
-      // Next to the Ask you are in when there is one — that is what keeps
-      // a popped-out window's tabs in that window.
-      callback: () => void this.openAskTab(this.app.workspace.getActiveViewOfType(AskView)?.leaf),
-    });
-    this.addCommand({
-      id: "describe-libraries",
-      name: "Write AI descriptions for libraries",
-      callback: () => void this.describeAllLibraries(),
-    });
-    this.addCommand({
-      id: "update-knowledge-skill",
-      name: "Update the AI knowledge skill",
-      callback: () => {
-        this.refreshKnowledgeSkill();
-        new Notice(
-          this.settings.announceToAgents
-            ? `Covault: knowledge skill updated (${SKILL_TARGETS.join(", ")}).`
-            : "Covault: the knowledge skill is off — turn on “Let AI assistants discover your libraries” in Settings.",
-        );
-      },
-    });
-    this.addCommand({
-      id: "migrate-attachments",
-      name: "Move existing attachments to Git LFS",
-      callback: () => void this.migrateAttachments(),
-    });
-    this.addCommand({
-      id: "copy-debug-log",
-      name: "Copy the diagnostic log",
-      callback: () => void this.copyDebugLog(),
-    });
-    this.addCommand({
-      id: "clear-debug-log",
-      name: "Clear the diagnostic log",
-      callback: () => {
-        this.debugLog.clear();
-        new Notice("Covault: diagnostic log cleared.");
-      },
-    });
 
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
@@ -367,6 +292,9 @@ export default class CovaultPlugin extends Plugin {
     );
 
     this.applySyncSchedule();
+    // Accounts connected before identity filling existed have empty
+    // fields; the repo warm-up below brings the backend's email if new.
+    void this.refreshAuthorFromGitHub();
     // Warm the repo list so the pickers open without a spinner.
     this.app.workspace.onLayoutReady(() => {
       void this.fetchAccessibleRepos();
@@ -581,6 +509,88 @@ export default class CovaultPlugin extends Plugin {
     this.refreshPanels();
   }
 
+  /** Model plumbing for automations — the same AI settings as conflict merging. */
+  private automationModelDeps(): ModelDeps {
+    return {
+      models: this.models,
+      getSelection: () => this.settings.llm,
+      hasKey: (provider) => this.hasModelAccess(provider),
+      onTransport: (line, failed) => (failed ? this.debugLog.op("llm", line) : this.debugLog.log("llm", line)),
+      diagnose: describeEndpoint,
+    };
+  }
+
+  automationModelReady(): boolean {
+    return modelReady(this.automationModelDeps());
+  }
+
+  private automationNoteDeps(): NoteToolDeps {
+    return {
+      vaultBase: () => this.vaultBasePath(),
+      repos: () => this.libraryManifest.load().repos,
+      writeNote: (vaultPath, content) => this.writeVaultNote(vaultPath, content),
+    };
+  }
+
+  /** Create or overwrite a note through the vault, so editors and the
+   *  explorer see it at once. Falls back to the adapter for a file that
+   *  exists on disk but isn't indexed yet (just pulled by a sync). */
+  private async writeVaultNote(vaultPath: string, content: string): Promise<void> {
+    const p = normalizePath(vaultPath);
+    const { vault } = this.app;
+    const existing = vault.getAbstractFileByPath(p);
+    if (existing instanceof TFile) {
+      await vault.modify(existing, content);
+      return;
+    }
+    const dir = p.split("/").slice(0, -1).join("/");
+    if (dir && !vault.getAbstractFileByPath(dir)) {
+      try {
+        await vault.createFolder(dir);
+      } catch {
+        /* created meanwhile, or exists unindexed — the write below decides */
+      }
+    }
+    try {
+      await vault.create(p, content);
+    } catch {
+      await vault.adapter.write(p, content);
+    }
+  }
+
+  newAutomationDesigner(): AutomationDesigner {
+    return new AutomationDesigner({
+      store: this.automations,
+      runner: this.automationRunner,
+      model: this.automationModelDeps(),
+      notes: this.automationNoteDeps(),
+      vaultName: () => this.app.vault.getName(),
+      onChange: () => this.refreshAutomationViews(),
+    });
+  }
+
+  refreshAutomationViews(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(COVAULT_AUTOMATION_VIEW_TYPE)) {
+      if (leaf.view instanceof AutomationView) leaf.view.refresh();
+    }
+  }
+
+  /** The Automations tab, in the main area like a note. */
+  async activateAutomationView(): Promise<void> {
+    const existing = this.app.workspace.getLeavesOfType(COVAULT_AUTOMATION_VIEW_TYPE)[0];
+    if (existing) {
+      await this.app.workspace.revealLeaf(existing);
+      return;
+    }
+    const leaf = this.app.workspace.getLeaf("tab");
+    await leaf.setViewState({ type: COVAULT_AUTOMATION_VIEW_TYPE, active: true });
+    await this.app.workspace.revealLeaf(leaf);
+  }
+
+  onunload(): void {
+    this.automationRunner?.stop();
+  }
+
   refreshPanels(): void {
     for (const leaf of this.app.workspace.getLeavesOfType(COVAULT_VIEW_TYPE)) {
       if (leaf.view instanceof CovaultPanel) leaf.view.render();
@@ -591,16 +601,26 @@ export default class CovaultPlugin extends Plugin {
    *  more — it is somewhere you go when a library looks wrong, not
    *  something to keep an eye on. */
   async activatePanel(): Promise<void> {
-    const existing = this.app.workspace.getLeavesOfType(COVAULT_VIEW_TYPE)[0];
-    if (existing) {
-      await this.app.workspace.revealLeaf(existing);
-      return;
-    }
-    const leaf = this.app.workspace.getRightLeaf(false);
-    if (!leaf) return;
-    await leaf.setViewState({ type: COVAULT_VIEW_TYPE, active: true });
-    await this.app.workspace.revealLeaf(leaf);
+    await this.ensurePanelInLeftSidebar();
+    const leaf = this.app.workspace.getLeavesOfType(COVAULT_VIEW_TYPE)[0];
+    if (leaf) await this.app.workspace.revealLeaf(leaf);
   }
+
+  /**
+   * Keep exactly one panel, in the left sidebar. Earlier versions put it
+   * in the right one; a panel found anywhere else is moved over, quietly
+   * (not revealed — this runs at startup).
+   */
+  private async ensurePanelInLeftSidebar(): Promise<void> {
+    const { workspace } = this.app;
+    const leaves = workspace.getLeavesOfType(COVAULT_VIEW_TYPE);
+    const inLeft = leaves.find((l) => l.getRoot() === workspace.leftSplit);
+    for (const l of leaves) if (l !== inLeft) l.detach();
+    if (inLeft) return;
+    const leaf = workspace.getLeftLeaf(false);
+    await leaf?.setViewState({ type: COVAULT_VIEW_TYPE, active: false });
+  }
+
 
   /** Register an existing shared library and start syncing it. The
    *  branch recorded is the remote's actual default — pinning "main"
@@ -686,9 +706,7 @@ export default class CovaultPlugin extends Plugin {
       }
       this.sharedRepos(); // one .gitignore refresh for the batch
       this.refreshSettingsUI();
-      void this.sync
-        .syncAll("manual")
-        .then(() => Promise.all(added.map((r) => this.generateLibraryDescription(r.path))));
+      void this.sync.syncAll("manual");
     }
     return { added, failures };
   }
@@ -701,9 +719,7 @@ export default class CovaultPlugin extends Plugin {
     this.libraryManifest.add({ ...repo, branch: remoteBranch ?? repo.branch });
     this.sharedRepos(); // refresh .gitignore
     this.refreshSettingsUI();
-    // Describe after the sync pass — a cloned library has no content
-    // to describe until then.
-    void this.sync.syncAll("manual").then(() => this.generateLibraryDescription(repo.path));
+    void this.sync.syncAll("manual");
   }
 
   /** Rebuild the knowledge-routing skill from what's on disk right now.
@@ -711,8 +727,6 @@ export default class CovaultPlugin extends Plugin {
    *
    *  The skill is for the *other* agents on this machine, so the toggle
    *  governs it: off means nothing of ours in the shared skill folders.
-   *  The plugin's own Ask agent builds the map in memory and is
-   *  unaffected either way.
    *
    *  Both cleanups run regardless of the toggle — they undo things past
    *  versions wrote, and a vault should not have to turn a feature on to
@@ -754,16 +768,6 @@ export default class CovaultPlugin extends Plugin {
         case "syncInterval":
           this.settings.sync.intervalMinutes = Number(change.value);
           break;
-        case "askApprove":
-          this.settings.ask.requireApproval = Boolean(change.value);
-          break;
-        case "askMcp":
-          this.settings.ask.mcpServers = String(change.value);
-          break;
-        case "askCliHints":
-          this.settings.ask.cliHints = String(change.value);
-          this.cliInventory.refresh();
-          break;
         case "announceAgents":
           await this.setAnnounceToAgents(Boolean(change.value));
           break;
@@ -802,246 +806,6 @@ export default class CovaultPlugin extends Plugin {
     const data = buildConfigExport(this.settings, this.libraryManifest.load());
     await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
     new Notice("Covault: configuration copied to the clipboard (no keys, tokens or personal details included).");
-  }
-
-  /** Each Ask view gets its own engine — its own conversation, and its
-   *  own background commands, which end when it does. */
-  newAskEngine(): AskEngine {
-    const libraryDeps = {
-      vaultBase: () => this.vaultBasePath(),
-      repos: () => this.libraryManifest.load().repos,
-    };
-    const jobs = new BackgroundJobs({
-      cwd: () => this.vaultBasePath(),
-      env: () => this.cliInventory.env(),
-    });
-    return new AskEngine({
-      jobs,
-      models: this.models,
-      getSelection: () => this.settings.llm,
-      hasKey: (provider) => this.hasModelAccess(provider),
-      // Assembled fresh per question: the toggles and MCP config are live.
-      requireApproval: () => this.settings.ask.requireApproval,
-      tools: async () => {
-        const tools: AskTool[] = [
-          makeSearchTool(libraryDeps),
-          makeReadTool(libraryDeps),
-          // Edits ride the normal sync loop — committed and shared like
-          // hand-made changes, undoable through File History.
-          ...makeEditTools({ ...libraryDeps, onMutation: () => void this.sync.syncAll("auto") }),
-          makeRunCommandTool(
-            () => this.vaultBasePath(),
-            () => this.cliInventory.env(),
-            jobs,
-          ),
-          ...makeJobTools(jobs),
-        ];
-        tools.push(...(await this.mcp.tools()));
-        return tools;
-      },
-      // Built in memory, not read back from disk: the Ask agent always
-      // knows the map, whether or not the user shares it with the other
-      // agents on this machine.
-      libraryMap: () => {
-        try {
-          return buildKnowledgeSkill(this.vaultBasePath(), this.libraryManifest.load().repos);
-        } catch {
-          return null;
-        }
-      },
-      // The user's own skills, from the folders Claude Code and pi use.
-      // Ours is left out — the model already has it as the library map.
-      skills: () =>
-        loadAskSkills(this.vaultBasePath(), {
-          exclude: SKILL_TARGETS.map((t) => path.join(this.vaultBasePath(), t)),
-        }),
-      cliManifest: () => this.cliInventory.manifest(),
-      // A failure is recorded whether or not debug mode was on — it is the
-      // only record of why a question couldn't reach the model.
-      onTransport: (line, failed) =>
-        failed ? this.debugLog.op("llm", line) : this.debugLog.log("llm", line),
-      // Second look at a failed request, outside the renderer's CORS rules.
-      diagnose: describeEndpoint,
-    });
-  }
-
-  /**
-   * Several Ask conversations can run at once; five is the ceiling. Each
-   * one is a live agent with its own tool loop, hitting the same vault,
-   * the same MCP servers and the same rate limits — past a handful the
-   * machine, not the model, becomes the bottleneck.
-   */
-  private static readonly MAX_ASK_VIEWS = 5;
-
-  /**
-   * Another Ask conversation, beside the one asking for it.
-   *
-   * `from` is the view that asked. Making it the active leaf first is
-   * what keeps a popped-out Ask window self-contained: getLeaf("tab")
-   * builds the new tab in the active leaf's own tab group, so tabs opened
-   * from a separate window stay in that window instead of scattering back
-   * into the main one.
-   */
-  async openAskTab(from?: WorkspaceLeaf): Promise<void> {
-    if (!this.askRoomLeft()) return;
-    if (from) this.app.workspace.setActiveLeaf(from, { focus: true });
-    const leaf = this.app.workspace.getLeaf("tab");
-    await leaf.setViewState({ type: COVAULT_ASK_VIEW_TYPE, active: true });
-    await this.app.workspace.revealLeaf(leaf);
-  }
-
-  /**
-   * A conversation in a window of its own, parked against the right edge
-   * of the screen.
-   *
-   * The default home, and the pane menu's explicit "new window". Parked on
-   * the right edge because that is where the sidebar split it replaces
-   * used to be — same place on screen, without stealing width from the
-   * note. Popouts are desktop-only, so mobile gets a tab instead.
-   */
-  async openAskWindow(): Promise<void> {
-    if (!this.askRoomLeft()) return;
-    let leaf: WorkspaceLeaf;
-    try {
-      leaf = this.app.workspace.openPopoutLeaf(CovaultPlugin.rightEdgeWindow());
-    } catch {
-      await this.openAskTab(this.app.workspace.getActiveViewOfType(AskView)?.leaf);
-      return;
-    }
-    await leaf.setViewState({ type: COVAULT_ASK_VIEW_TYPE, active: true });
-    await this.app.workspace.revealLeaf(leaf);
-  }
-
-  /**
-   * Geometry for that window: a column on the right, full working height.
-   *
-   * Screen metrics are per-display and the numbers Electron wants are
-   * global desktop coordinates, so availLeft/availTop — Chromium's, not in
-   * the DOM typings — are what keep this on the monitor Obsidian is on
-   * rather than the primary one.
-   */
-  private static rightEdgeWindow(): WorkspaceWindowInitData {
-    const s = window.screen as Screen & { availLeft?: number; availTop?: number };
-    const width = Math.min(720, Math.max(420, Math.round(s.availWidth * 0.35)));
-    return {
-      x: (s.availLeft ?? 0) + s.availWidth - width,
-      y: s.availTop ?? 0,
-      size: { width, height: s.availHeight },
-    };
-  }
-
-  /** False, with the reason said out loud, once the ceiling is reached. */
-  private askRoomLeft(): boolean {
-    const open = this.app.workspace.getLeavesOfType(COVAULT_ASK_VIEW_TYPE);
-    if (open.length < CovaultPlugin.MAX_ASK_VIEWS) return true;
-    new Notice(
-      `Covault: ${CovaultPlugin.MAX_ASK_VIEWS} Ask conversations at once is the limit — close one first.`,
-    );
-    return false;
-  }
-
-  /**
-   * A new conversation wherever the user said new conversations go.
-   *
-   * The choice is a screen-shaped one, not a right answer — one monitor
-   * and the split wins, two and the window does, and a sidebar keeps the
-   * note full-width at the cost of a narrow chat — so it is a setting,
-   * and every entry point honours it.
-   */
-  async openAskWhereConfigured(): Promise<void> {
-    if (this.settings.ask.openIn === "sidebar") await this.openAskSidebar();
-    else if (this.settings.ask.openIn === "window") await this.openAskWindow();
-    else await this.openAskSplit();
-  }
-
-  /**
-   * Ask in the right dock, sharing it with whatever else lives there.
-   *
-   * Narrow, but it costs the note no width and it is where an Obsidian
-   * reader expects a companion pane to be — so it is offered, not
-   * imposed.
-   */
-  async openAskSidebar(): Promise<void> {
-    if (!this.askRoomLeft()) return;
-    const leaf = this.app.workspace.getRightLeaf(false);
-    if (!leaf) return;
-    await leaf.setViewState({ type: COVAULT_ASK_VIEW_TYPE, active: true });
-    await this.app.workspace.revealLeaf(leaf);
-  }
-
-  /**
-   * Ask as a pane beside the note, Obsidian's own "split right".
-   *
-   * The anchoring matters: getLeaf("split") splits whatever leaf is
-   * active, and the button that lands here is in the sidebar — splitting
-   * that would wedge the chat into the dock, which is the layout this
-   * whole change moved away from. So point the split at the main area
-   * first, without stealing focus from what the user was reading.
-   */
-  async openAskSplit(): Promise<void> {
-    if (!this.askRoomLeft()) return;
-    const main = this.app.workspace.getMostRecentLeaf(this.app.workspace.rootSplit);
-    if (main) this.app.workspace.setActiveLeaf(main, { focus: false });
-    const leaf = this.app.workspace.getLeaf("split", "vertical");
-    await leaf.setViewState({ type: COVAULT_ASK_VIEW_TYPE, active: true });
-    await this.app.workspace.revealLeaf(leaf);
-  }
-
-  /**
-   * Open Ask, or go to the one already open.
-   *
-   * Reveal-first is deliberate — this is the "open Ask" button, so a
-   * second press should find the conversation, not start a rival to it.
-   */
-  async activateAskView(): Promise<void> {
-    const existing = this.app.workspace.getLeavesOfType(COVAULT_ASK_VIEW_TYPE)[0];
-    if (existing) {
-      await this.app.workspace.revealLeaf(existing);
-      return;
-    }
-    await this.openAskWhereConfigured();
-  }
-
-  /** Backfill: describe every library that doesn't have a line yet. */
-  async describeAllLibraries(): Promise<void> {
-    if (!this.describer.isEnabled()) {
-      new Notice("Covault: configure an AI provider and key in Settings first.");
-      return;
-    }
-    const missing = this.libraryManifest.load().repos.filter((r) => !r.description);
-    if (missing.length === 0) {
-      new Notice("Covault: every library already has a description.");
-      return;
-    }
-    new Notice(`Covault: describing ${missing.length} librar${missing.length === 1 ? "y" : "ies"}…`);
-    let done = 0;
-    for (const repo of missing) {
-      if (await this.generateLibraryDescription(repo.path)) done += 1;
-    }
-    this.refreshSettingsUI();
-    new Notice(`Covault: described ${done} of ${missing.length} librar${missing.length === 1 ? "y" : "ies"}.`);
-  }
-
-  /**
-   * Draft a library's one-line description and store it in the manifest.
-   * Fire-and-forget: runs only on this device (the one that created or
-   * added the library — a single writer, so devices never race), only
-   * once (existing descriptions are kept), and only when a model is
-   * configured. Failures just leave the description empty.
-   */
-  async generateLibraryDescription(folderPath: string): Promise<boolean> {
-    try {
-      const repo = this.libraryManifest.load().repos.find((r) => r.path === folderPath);
-      if (!repo || repo.description || !this.describer.isEnabled()) return false;
-      const line = await this.describer.describe(gatherFacts(this.vaultBasePath(), repo));
-      if (!line) return false;
-      this.libraryManifest.setDescription(folderPath, line);
-      this.refreshKnowledgeSkill(); // the skill renders the new description
-      return true;
-    } catch (e) {
-      console.warn(`[covault] couldn't describe "${folderPath}":`, e);
-      return false;
-    }
   }
 
   /** Toggle handler: on → write the skill now; off → remove it. */
@@ -1172,7 +936,6 @@ export default class CovaultPlugin extends Plugin {
     this.libraryManifest.add({ path: folderPath, url, branch: remoteBranch });
     this.sharedRepos(); // refresh .gitignore
     this.refreshSettingsUI();
-    void this.generateLibraryDescription(folderPath);
     if (backedUp.length > 0) {
       new Notice(`Covault: kept your versions of ${backedUp.length} note(s) as "(local copy)".`, 10_000);
     }
@@ -1240,15 +1003,9 @@ export default class CovaultPlugin extends Plugin {
     this.libraryManifest.add({ path: folderPath, url, branch: ref.branch });
     this.sharedRepos(); // refresh .gitignore
     this.refreshSettingsUI();
-    void this.generateLibraryDescription(folderPath);
   }
 
   /** (Re)arm the background sync timer from current settings. */
-  onunload(): void {
-    // MCP stdio servers are child processes — they must not outlive us.
-    void this.mcp.dispose();
-  }
-
   applySyncSchedule(): void {
     if (this.syncIntervalId !== null) {
       window.clearInterval(this.syncIntervalId);
@@ -1279,24 +1036,17 @@ export default class CovaultPlugin extends Plugin {
     });
   }
 
-  /**
-   * Move the attachment backlog to Git LFS: everything committed as raw
-   * bytes before LFS support existed. One pass over every repo; new
-   * attachments convert on their own during normal syncs.
-   */
-  private async migrateAttachments(): Promise<void> {
-    new Notice("Covault: checking libraries for attachments to move to LFS…");
-    const { files, repos, skipped } = await this.sync.migrateAttachments();
-    const outcome =
-      files > 0
-        ? `moved ${files} attachment(s) to Git LFS in ${repos} librar${repos === 1 ? "y" : "ies"}`
-        : "all attachments are already on Git LFS";
-    const skips = skipped.length > 0 ? ` Skipped (busy or failed): ${skipped.join(", ")}.` : "";
-    new Notice(`Covault: ${outcome}.${skips}`, 10_000);
+  clearDebugLog(): void {
+    this.debugLog.clear();
+    new Notice("Covault: diagnostic log cleared.");
+  }
+
+  openSyncHistory(): void {
+    new SyncHistoryModal(this.app, this.syncHistory).open();
   }
 
   /** Hand the collected log to the user — the point of collecting it. */
-  private async copyDebugLog(): Promise<void> {
+  async copyDebugLog(): Promise<void> {
     const text = this.debugLog.format();
     if (!text) {
       new Notice("Covault: nothing logged yet — reproduce the problem, then copy again.", 8_000);
@@ -1313,51 +1063,69 @@ export default class CovaultPlugin extends Plugin {
 
   private gitAuthor(): { name: string; email: string } {
     const custom = this.settings.author;
-    const login = this.settings.githubApp.connections[0]?.login;
+    const conn = this.settings.githubApp.connections[0];
     return {
-      name: custom.name || login || "Covault",
-      email: custom.email || (login ? noreplyEmail(login) : "covault@users.noreply.github.com"),
+      name: custom.name || conn?.login || "Covault",
+      email: custom.email || conn?.email || (conn ? noreplyEmail(conn.login) : "covault@users.noreply.github.com"),
     };
   }
 
+  /** AppAuthHost: the backend told us (or updated) the account's email. */
+  onIdentity(): void {
+    void this.refreshAuthorFromGitHub();
+  }
+
   /**
-   * Fill the commit identity from GitHub after signing in.
+   * Fill the commit identity from the GitHub account: the name is the
+   * login, the email the account's own — its verified primary, else its
+   * public address, else GitHub's `<id>+<login>` no-reply address.
    *
-   * Only fills what is empty — a name the user typed themselves is theirs
-   * to keep. The real profile is readable only with a user-scoped token
-   * (PAT mode); a GitHub App installation token acts as the app and gets
-   * 403 on /user, so App mode derives from the login it already has.
+   * Only fills what is empty — a name or email the user typed themselves
+   * is theirs to keep. The one exception is the bare
+   * `<login>@users.noreply.github.com` earlier versions filled in as a
+   * stand-in: that was never the user's choice, so the real address
+   * replaces it once known.
+   *
+   * App mode gets the email from the backend (an installation token acts
+   * as the app and can't read the user's emails); PAT mode reads it with
+   * the PAT itself.
    */
   async refreshAuthorFromGitHub(): Promise<void> {
-    const login = this.settings.githubApp.connections[0]?.login;
-    let identity: GitHubIdentity | null = null;
-    if (this.settings.authMethod === "pat" && this.settings.githubToken) {
+    const author = this.settings.author;
+    // `<login>@users.noreply…` without the numeric id is the stand-in.
+    const standIn = /^[^+@]+@users\.noreply\.github\.com$/i.test(author.email);
+    if (author.name && author.email && !standIn) return; // nothing to fill — skip the network
+    const conn = this.settings.githubApp.connections[0];
+    let login: string | undefined;
+    let email: string | null = null;
+    if (this.settings.authMethod === "pat") {
+      if (!this.settings.githubToken) return;
       try {
-        identity = await fetchUserIdentity(this.settings.githubToken);
+        const identity: GitHubIdentity | null = await fetchUserIdentity(this.settings.githubToken);
+        login = identity?.login;
+        email = identity?.email ?? null;
       } catch (e) {
-        // Never block sign-in on this: the fallback below is always valid.
+        // Never block sign-in on this: the commit identity has fallbacks.
         this.debugLog.log("auth", "couldn't read the GitHub profile", { error: e });
       }
+    } else {
+      login = conn?.login;
+      email = conn?.email ?? null;
     }
-    const name = identity?.name || identity?.login || login;
-    const email = identity?.email || (identity?.login ?? login ? noreplyEmail(identity?.login ?? login ?? "") : null);
-    if (!name && !email) return;
+    if (!login) return;
 
     let changed = false;
-    if (!this.settings.author.name && name) {
-      this.settings.author.name = name;
+    if (!author.name) {
+      author.name = login;
       changed = true;
     }
-    if (!this.settings.author.email && email) {
-      this.settings.author.email = email;
+    if (email && (!author.email || (standIn && email !== author.email))) {
+      author.email = email;
       changed = true;
     }
     if (!changed) return;
     await this.saveSettings();
-    this.debugLog.log("auth", "commit identity filled from GitHub", {
-      source: identity ? "profile" : "login",
-      email: this.settings.author.email,
-    });
+    this.debugLog.log("auth", "commit identity filled from GitHub", { name: author.name, email: author.email });
     this.refreshSettingsUI();
   }
 
@@ -1401,10 +1169,11 @@ export default class CovaultPlugin extends Plugin {
       llm: { ...DEFAULT_SETTINGS.llm, ...raw?.llm },
       llmKeys: { ...raw?.llmKeys },
       sync: { ...DEFAULT_SETTINGS.sync, ...raw?.sync },
-      ask: { ...DEFAULT_SETTINGS.ask, ...raw?.ask },
       repos: raw?.repos ?? [],
       author: { ...DEFAULT_SETTINGS.author, ...raw?.author },
     };
+    // Left behind by versions that had the built-in Ask agent.
+    delete (this.settings as { ask?: unknown }).ask;
 
     const secrets = readSecrets(this.vaultBasePath());
     if (secrets) {

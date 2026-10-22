@@ -86,6 +86,16 @@ export interface SyncResult {
    * another round — each one bounded — until this reaches zero.
    */
   lfsPending: number;
+  /** What teammates changed that this round brought into the working
+   *  tree — null when nothing came in. */
+  incoming: IncomingChanges | null;
+}
+
+/** Teammates' changes a sync round pulled in. */
+export interface IncomingChanges {
+  files: LocalChange[];
+  /** Names on the commits that carried them, this device's author excluded. */
+  authors: string[];
 }
 
 /** "notes/plan.md" → "notes/plan (local copy 2026-08-13 17-42).md" — the
@@ -503,37 +513,6 @@ export class GitEngine {
     }
     done?.({ uploaded, pending });
     return pending;
-  }
-
-  /**
-   * One-off backlog migration: convert attachments that earlier versions
-   * committed as raw blobs into LFS pointers, in a single commit. Only the
-   * branch tip changes — history keeps the old blobs, because rewriting it
-   * would force-push over every teammate's clone. New and edited
-   * attachments convert on their own during normal syncs; this exists for
-   * what was already tracked. Commits only — the caller runs a normal sync
-   * round afterwards so pushing (and any merge) follows the usual path.
-   * Returns how many files were converted.
-   */
-  async migrateAttachments(ref: RepoRef): Promise<number> {
-    const { fs } = this.deps;
-    const head = await this.resolve(ref, "HEAD");
-    if (!head) return 0;
-    const raw: LocalChange[] = [];
-    for (const filepath of (await git.listFiles({ fs, dir: ref.dir, gitdir: ref.gitdir })).filter(isLfsPath)) {
-      if (await this.readPointerAt(ref, head, filepath)) continue; // already a pointer
-      try {
-        await fs.promises.access(`${ref.dir}/${filepath}`);
-      } catch {
-        continue; // deleted locally — the next sync owns that story
-      }
-      raw.push({ filepath, kind: "modified" });
-    }
-    if (raw.length === 0) return 0;
-    const done = this.deps.log?.opTime("lfs", `${ref.dir} — migrate attachments`, { files: raw.length });
-    await this.commitAll(ref, `Move ${raw.length} attachment(s) to Git LFS`, raw);
-    done?.();
-    return raw.length;
   }
 
   /** An object's bytes: the cache, else a working-tree file that still matches. */
@@ -961,6 +940,62 @@ export class GitEngine {
     return oid;
   }
 
+  /**
+   * What moving the branch from `before` (this device's tip, its own work
+   * already committed) to `after` brought in: the tree difference is
+   * exactly what teammates changed, merge or fast-forward alike. Authors
+   * come from the commits reachable from `after` but not `before`.
+   *
+   * Best-effort — it only feeds the panel and the sync history, so any
+   * failure reads as "nothing to report", never as a failed sync.
+   */
+  private async incomingChanges(ref: RepoRef, before: string, after: string | null): Promise<IncomingChanges | null> {
+    if (!after || after === before) return null;
+    const { fs } = this.deps;
+    try {
+      const files: LocalChange[] = [];
+      await git.walk({
+        fs,
+        dir: ref.dir,
+        gitdir: ref.gitdir,
+        trees: [git.TREE({ ref: before }), git.TREE({ ref: after })],
+        map: async (filepath, [a, b]) => {
+          if (filepath === ".") return true;
+          // Covault's own bookkeeping isn't anyone's note.
+          if (filepath === ".covault" || filepath.startsWith(".covault/") || filepath === ".gitattributes" || filepath === ".gitignore") {
+            return null;
+          }
+          const aType = a ? await a.type() : null;
+          const bType = b ? await b.type() : null;
+          if (aType === "tree" || bType === "tree") return true; // descend
+          const aOid = a ? await a.oid() : null;
+          const bOid = b ? await b.oid() : null;
+          if (aOid === bOid) return null;
+          files.push({ filepath, kind: !aOid ? "added" : !bOid ? "deleted" : "modified" });
+          return null;
+        },
+      });
+      if (files.length === 0) return null;
+
+      // Bounded walks: a long-lived library has thousands of commits, and
+      // this only needs the handful a round brings in.
+      const DEPTH = 200;
+      const seen = new Set((await git.log({ fs, dir: ref.dir, gitdir: ref.gitdir, ref: before, depth: DEPTH })).map((c) => c.oid));
+      const me = this.deps.author().email.toLowerCase();
+      const authors = new Set<string>();
+      for (const c of await git.log({ fs, dir: ref.dir, gitdir: ref.gitdir, ref: after, depth: DEPTH })) {
+        // Not break: log interleaves both sides of a merge by date, so a
+        // commit we already had can come before teammates' older ones.
+        if (seen.has(c.oid)) continue;
+        if (c.commit.author.email.toLowerCase() !== me) authors.add(c.commit.author.name);
+      }
+      return { files, authors: [...authors] };
+    } catch (e) {
+      this.deps.log?.log("sync", `${ref.dir} — couldn't list incoming changes`, { error: e });
+      return null;
+    }
+  }
+
   private async resolve(ref: RepoRef, gitRef: string): Promise<string | null> {
     try {
       return await git.resolveRef({ fs: this.deps.fs, dir: ref.dir, gitdir: ref.gitdir, ref: gitRef });
@@ -1012,7 +1047,14 @@ export class GitEngine {
     },
   ): Promise<SyncResult> {
     const lfsBudget = opts.lfsBudgetBytes ?? GitEngine.LFS_ROUND_BUDGET_BYTES;
-    const result: SyncResult = { committed: [], pulled: false, pushed: false, conflictFilepaths: [], lfsPending: 0 };
+    const result: SyncResult = {
+      committed: [],
+      pulled: false,
+      pushed: false,
+      conflictFilepaths: [],
+      lfsPending: 0,
+      incoming: null,
+    };
     const { fs } = this.deps;
 
     // Repair pass: an attachment download that failed in an earlier round
@@ -1088,6 +1130,7 @@ export class GitEngine {
       ffDone?.();
       await this.smudge(ref);
       result.pulled = true;
+      result.incoming = await this.incomingChanges(ref, local, remote);
       return result;
     }
 
@@ -1129,6 +1172,7 @@ export class GitEngine {
             await this.completeMerge(ref, attachments, `merge: kept this device's attachment(s)`);
             result.pulled = true;
             result.pushed = true;
+            result.incoming = await this.incomingChanges(ref, local, await this.resolve(ref, `refs/heads/${ref.branch}`));
             return result;
           }
         }
@@ -1146,6 +1190,7 @@ export class GitEngine {
     await this.smudge(ref);
     mergeDone?.({ merged: true });
     result.pulled = true;
+    result.incoming = await this.incomingChanges(ref, local, await this.resolve(ref, `refs/heads/${ref.branch}`));
     // A deferred push here is safe: the merge commit stays local, the next
     // round sees "local strictly ahead" and keeps uploading from there.
     result.lfsPending = await this.push(ref, { uploadBudgetBytes: lfsBudget });

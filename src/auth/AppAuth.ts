@@ -25,6 +25,8 @@ import { listInstallationRepos } from "../git/githubApi";
 export interface AppAuthHost {
   settings: CovaultSettings;
   saveSettings: () => Promise<void>;
+  /** A connection's GitHub identity (login / commit email) was learned or changed. */
+  onIdentity?: () => void;
 }
 
 function randomB64url(bytes = 32): string {
@@ -51,6 +53,7 @@ export interface ProtocolParams {
   action?: string;
   session?: string;
   login?: string;
+  email?: string;
   installation?: string;
   state?: string;
 }
@@ -148,7 +151,7 @@ export class AppAuth implements TokenProvider {
     const connections = this.host.settings.githubApp.connections.filter(
       (c) => c.login.toLowerCase() !== login.toLowerCase(),
     );
-    const conn: GitHubAppConnection = { sessionId, login, installations: [] };
+    const conn: GitHubAppConnection = { sessionId, login, installations: [], ...(params.email ? { email: params.email } : {}) };
     connections.push(conn);
     this.host.settings.githubApp = { connections };
     this.host.settings.authMethod = "githubApp";
@@ -158,7 +161,9 @@ export class AppAuth implements TokenProvider {
     // Populate the installation list (best-effort — the connection is
     // already usable, this just enriches the owner→installation map).
     try {
-      conn.installations = await BackendClient.listInstallations(sessionId, this.host.settings.deviceId);
+      const listed = await BackendClient.listInstallations(sessionId, this.host.settings.deviceId);
+      conn.installations = listed.installations;
+      if (listed.email) conn.email = listed.email;
       await this.host.saveSettings();
     } catch {
       /* will be refreshed lazily on first token mint / manual refresh */
@@ -173,9 +178,13 @@ export class AppAuth implements TokenProvider {
       (c) => c.login.toLowerCase() === login.toLowerCase(),
     );
     if (!conn) return;
-    conn.installations = await BackendClient.listInstallations(conn.sessionId, this.host.settings.deviceId);
+    const listed = await BackendClient.listInstallations(conn.sessionId, this.host.settings.deviceId);
+    conn.installations = listed.installations;
+    const learned = listed.email !== null && listed.email !== conn.email;
+    if (learned) conn.email = listed.email ?? undefined;
     await this.host.saveSettings();
     this.appProvider.clearCache();
+    if (learned) this.host.onIdentity?.();
   }
 
   /** Disconnect one identity (best-effort backend revoke + local removal). */
