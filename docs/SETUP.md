@@ -303,7 +303,7 @@ OS 用户配置目录:macOS `~/Library/Application Support/`、Windows `%APPDATA
 
 ## 附录 A:面板按钮一览
 
-插件不注册任何命令面板命令。所有功能都在 Covault 面板(左侧边栏的 Covault 标签,或左侧图标栏的书架图标)顶部的按钮行里,按顺序:
+命令面板(Cmd/Ctrl+P)只有一条 `Covault: Open Covault panel`,可在 设置 → 快捷键 里给它绑快捷键。其余功能都在 Covault 面板(左侧边栏的 Covault 标签,或左侧图标栏的书架图标)顶部的按钮行里,按顺序:
 
 | 图标 | 用途 |
 |---|---|

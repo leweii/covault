@@ -197,6 +197,14 @@ export default class CovaultPlugin extends Plugin {
       }, 30_000),
     );
     this.addRibbonIcon("library", "Open Covault panel", () => void this.activatePanel());
+    // The one palette entry: everything else is a button in the panel,
+    // so finding the panel has to be easy. No default hotkey (Obsidian's
+    // guidelines) — users can bind one in Settings → Hotkeys.
+    this.addCommand({
+      id: "open-panel",
+      name: "Open Covault panel",
+      callback: () => void this.activatePanel(),
+    });
     // The panel lives in the left sidebar as its own tab, beside Files and
     // Search, so its icon is always there to click.
     this.app.workspace.onLayoutReady(() => void this.ensurePanelInLeftSidebar());
