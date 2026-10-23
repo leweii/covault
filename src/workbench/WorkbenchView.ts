@@ -20,16 +20,17 @@ import { rootKey, type LogTab, type RefreshScope, type WbState, type WorkbenchCo
 import { renderConflicts } from "./sections/Conflicts";
 import { DocTree } from "./sections/DocTree";
 import { renderFailures } from "./sections/Failures";
-import { renderHeader, tickHeader } from "./sections/Header";
+import { renderFooter, renderHeader, tickHeader } from "./sections/Header";
 import { renderInspector } from "./sections/Inspector";
 import { renderJobs, tickJobs } from "./sections/JobsTab";
 import { renderLibraries } from "./sections/Libraries";
 import { renderSyncLog } from "./sections/SyncLogTab";
+import { TimeMachine } from "./sections/TimeMachine";
 
 export const COVAULT_WORKBENCH_VIEW_TYPE = "covault-workbench";
 
 const TREE_W: ResizeSpec = { key: "covault-wb-tree-w", cssVar: "--covault-wb-tree-w", defaultPx: 330, minPx: 220, maxPx: 560, grows: "right" };
-const INSP_W: ResizeSpec = { key: "covault-wb-insp-w", cssVar: "--covault-wb-insp-w", defaultPx: 320, minPx: 260, maxPx: 600, grows: "left" };
+const INSP_W: ResizeSpec = { key: "covault-wb-insp-w", cssVar: "--covault-wb-insp-w", defaultPx: 340, minPx: 260, maxPx: 600, grows: "left" };
 
 interface Sections {
   header: HTMLElement;
@@ -40,6 +41,7 @@ interface Sections {
   tabs: HTMLElement;
   tabBody: HTMLElement;
   inspector: HTMLElement;
+  footer: HTMLElement;
 }
 
 export class WorkbenchView extends ItemView {
@@ -47,6 +49,7 @@ export class WorkbenchView extends ItemView {
   private readonly state: WbState;
   private els: Sections | null = null;
   private tree = new DocTree(() => this.context());
+  private tm: TimeMachine | null = null;
   private unsubscribeIndex: (() => void) | null = null;
   private metadataTimer: number | null = null;
   /** The newest sync record seen — a newer one arriving opens itself. */
@@ -69,6 +72,7 @@ export class WorkbenchView extends ItemView {
       openDirs: new Set(Array.isArray(openDirs) ? openDirs.filter((k): k is string => typeof k === "string") : []),
       errOpen: new Set(),
       expandedLog: new Set(),
+      logPage: 0,
       expandedJobs: new Set(),
       expandedRuns: new Set(),
       selectedPath: null,
@@ -107,7 +111,10 @@ export class WorkbenchView extends ItemView {
     const tabBody = logCard.createDiv("covault-wb-tabbody");
     const inspector = body.createDiv("covault-wb-insp");
     installResizer(this.app, root, inspector.createDiv(), INSP_W);
-    this.els = { header, tree, libs, failures, conflicts, tabs, tabBody, inspector };
+    const footer = root.createDiv("covault-wb-footer");
+    this.els = { header, tree, libs, failures, conflicts, tabs, tabBody, inspector, footer };
+    // Over the body, under the header: the countdown stays in view.
+    this.tm = new TimeMachine(() => this.context(), body);
 
     this.unsubscribeIndex = this.index.onChange(() => this.refresh("index"));
     // Document statuses live in frontmatter: the cache catching up with an
@@ -130,6 +137,8 @@ export class WorkbenchView extends ItemView {
   onClose(): Promise<void> {
     this.unsubscribeIndex?.();
     this.unsubscribeIndex = null;
+    this.tm?.close();
+    this.tm = null;
     this.els = null;
     return Promise.resolve();
   }
@@ -140,7 +149,10 @@ export class WorkbenchView extends ItemView {
     const els = this.els;
     if (!els) return;
     const ctx = this.context();
-    if (scope === "all" || scope === "state" || scope === "index" || scope === "jobs") renderHeader(ctx, els.header);
+    if (scope === "all" || scope === "state" || scope === "index" || scope === "jobs") {
+      renderHeader(ctx, els.header);
+      renderFooter(ctx, els.footer);
+    }
     if (scope === "all" || scope === "state" || scope === "index") {
       renderLibraries(ctx, els.libs);
       renderFailures(ctx, els.failures);
@@ -184,6 +196,7 @@ export class WorkbenchView extends ItemView {
     if (top === null || top === this.newestLogAt) return;
     this.newestLogAt = top;
     this.state.expandedLog = new Set([top]);
+    this.state.logPage = 0;
   }
 
   // ── What the sections can ask of the view ──────────────────
@@ -201,6 +214,7 @@ export class WorkbenchView extends ItemView {
         this.tree.reveal(repoPath, repoPath);
         this.els?.tree.scrollIntoView({ behavior: "smooth", block: "nearest" });
       },
+      openTimeMachine: (path) => void this.openTimeMachine(path),
       persistTree: () => this.app.saveLocalStorage("covault-wb-open-dirs", [...this.state.openDirs]),
       scrollToFailures: () => this.els?.failures.scrollIntoView({ behavior: "smooth", block: "center" }),
       openClaudianFor: (item, error) => this.plugin.handToClaudian(item, error),
@@ -214,6 +228,11 @@ export class WorkbenchView extends ItemView {
         this.refresh("tree");
       },
     };
+  }
+
+  /** The Time Machine on one note (also how the file menu gets here). */
+  async openTimeMachine(vaultPath: string): Promise<void> {
+    await this.tm?.open(vaultPath);
   }
 
   /** Select a note: reveal it in the tree, open the inspector on it. */

@@ -40,7 +40,6 @@ import { libraryAttachmentFolder } from "./covault/attachments";
 import { buildConfigExport, type ImportPlan } from "./covault/exportConfig";
 import { ShareFolderModal } from "./ui/ShareFolderModal";
 import { ConflictModal, type ConflictOps } from "./ui/ConflictModal";
-import { FileHistoryModal } from "./ui/FileHistoryModal";
 import { RecommendedPluginsModal } from "./ui/RecommendedPluginsModal";
 import { WorkbenchView, COVAULT_WORKBENCH_VIEW_TYPE } from "./workbench/WorkbenchView";
 import { RetiredPanelView, RETIRED_PANEL_VIEW_TYPE } from "./workbench/RetiredPanelView";
@@ -242,16 +241,7 @@ export default class CovaultPlugin extends Plugin {
               item
                 .setTitle("View history")
                 .setIcon("history")
-                .onClick(() =>
-                  new FileHistoryModal(
-                    this.app,
-                    this.engine,
-                    ctx.ref,
-                    ctx.relPath,
-                    file.path,
-                    this.gitAuthor().email,
-                  ).open(),
-                ),
+                .onClick(() => void this.openTimeMachine(file.path)),
             );
           }
         }
@@ -668,6 +658,13 @@ export default class CovaultPlugin extends Plugin {
     for (const leaf of this.app.workspace.getLeavesOfType(COVAULT_WORKBENCH_VIEW_TYPE)) {
       if (leaf.view instanceof WorkbenchView) leaf.view.refresh(scope);
     }
+  }
+
+  /** The workbench's Time Machine on one note: history, combined changes, restore. */
+  async openTimeMachine(vaultPath: string): Promise<void> {
+    await this.activateWorkbench();
+    const leaf = this.app.workspace.getLeavesOfType(COVAULT_WORKBENCH_VIEW_TYPE)[0];
+    if (leaf?.view instanceof WorkbenchView) await leaf.view.openTimeMachine(vaultPath);
   }
 
   /** The workbench, in the main area like a note: reveal it, or open one. */

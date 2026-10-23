@@ -15,7 +15,6 @@ import type { SyncItem } from "../../sync/SyncController";
 import { isLfsPath } from "../../git/lfs";
 import { AddLibraryModal } from "../../ui/AddLibraryModal";
 import { ConfirmModal } from "../../ui/ConfirmModal";
-import { FileHistoryModal } from "../../ui/FileHistoryModal";
 import { MainKbModal } from "../../ui/MainKbModal";
 import { SharePickerModal } from "../../ui/SharePickerModal";
 import { readDocStatus } from "../docStatus";
@@ -240,7 +239,7 @@ export class DocTree {
     const ds = this.docStatusOf(entry.path);
     if (ds) this.docTag(row, ds.def, ds.raw);
     row.onclick = () => ctx.showFile(entry.path);
-    row.ondblclick = () => this.openNote(entry.path);
+    row.ondblclick = () => ctx.openTimeMachine(entry.path);
     row.oncontextmenu = (e) => this.fileMenu(entry).showAtMouseEvent(e);
   }
 
@@ -295,15 +294,7 @@ export class DocTree {
     const { plugin, app } = ctx;
     const menu = new Menu();
     if (!entry.ghost) menu.addItem((i) => i.setTitle("Open note").setIcon("file").onClick(() => this.openNote(entry.path)));
-    menu.addItem((i) =>
-      i
-        .setTitle("History")
-        .setIcon("history")
-        .onClick(() => {
-          const h = plugin.historyContextFor(entry.path);
-          if (h) new FileHistoryModal(app, plugin.engine, h.ref, h.relPath, entry.path, plugin.gitAuthorEmail()).open();
-        }),
-    );
+    menu.addItem((i) => i.setTitle("Time machine").setIcon("history").onClick(() => ctx.openTimeMachine(entry.path)));
     menu.addItem((i) =>
       i
         .setTitle("Copy path")

@@ -1,9 +1,11 @@
 /**
- * The top of the workbench: a one-line status strip, the counters, and
- * the countdown to the next automatic sync with "Sync now".
+ * The top of the workbench — the counters and the countdown to the next
+ * automatic sync with "Sync now" — and its footer: the one-line status
+ * ("Everything is shared", or what isn't) at the bottom right, the
+ * overflow menu at the bottom left.
  *
  * While a sync runs the counters keep their cards and show a spinner in
- * place of the number — recounted when the round ends — and the strip
+ * place of the number — recounted when the round ends — and the footer
  * keeps naming the problems. Nothing here vanishes because work started.
  */
 import { Menu, Notice, setIcon } from "obsidian";
@@ -25,24 +27,6 @@ export function renderHeader(ctx: WorkbenchContext, el: HTMLElement): void {
   const jobs = plugin.automations.list();
   const running = jobs.filter((j) => plugin.automationRunner.isRunning(j.id)).length;
   const jobsFailed = jobs.filter((j) => plugin.automations.runs(j.id)[0]?.status === "error").length;
-
-  // ── Strip: the tab title can't be live, so the live line is here ──
-  const strip = el.createDiv("covault-wb-strip");
-  setIcon(strip.createSpan("covault-wb-strip-icon"), "library");
-  strip.createSpan({ cls: "covault-wb-strip-name", text: "Covault" });
-  const problems = [
-    failed.length ? `${failed.length} ${failed.length === 1 ? "library" : "libraries"} couldn't sync` : "",
-    counts.conflict ? `${counts.conflict} note(s) need your input` : "",
-  ].filter(Boolean);
-  const mood = failed.length ? "error" : counts.conflict ? "conflict" : "idle";
-  strip.createSpan({ cls: `covault-wb-strip-dot is-${syncing ? "syncing" : mood}` });
-  strip.createSpan({
-    cls: "covault-wb-strip-text",
-    text: [syncing ? "Syncing…" : "", ...problems].filter(Boolean).join(" · ") || "Everything is shared",
-  });
-  const more = strip.createEl("button", { cls: "clickable-icon covault-wb-strip-more", attr: { "aria-label": "More" } });
-  setIcon(more, "ellipsis");
-  more.onclick = (e) => moreMenu(ctx).showAtMouseEvent(e);
 
   // ── Counters ──
   const top = el.createDiv("covault-wb-top");
@@ -91,6 +75,27 @@ export function renderHeader(ctx: WorkbenchContext, el: HTMLElement): void {
     },
   });
   tickHeader(ctx, el);
+}
+
+/** The footer: overflow menu left, the live status line right. */
+export function renderFooter(ctx: WorkbenchContext, el: HTMLElement): void {
+  el.empty();
+  const { plugin, index } = ctx;
+  const items = plugin.syncItems();
+  const syncing = plugin.sync.isSweeping() || items.some((i) => plugin.sync.isSyncing(i.path));
+  const counts = index.counts();
+  const failed = items.filter((i) => repoOutcome(plugin.sync.state(i.path)) === "error").length;
+  const more = el.createEl("button", { cls: "clickable-icon covault-wb-foot-more", attr: { "aria-label": "More" } });
+  setIcon(more, "ellipsis");
+  more.onclick = (e) => moreMenu(ctx).showAtMouseEvent(e);
+  const status = el.createDiv("covault-wb-foot-status");
+  const problems = [
+    failed ? `${failed} ${failed === 1 ? "library" : "libraries"} couldn't sync` : "",
+    counts.conflict ? `${counts.conflict} note(s) need your input` : "",
+  ].filter(Boolean);
+  const mood = failed ? "error" : counts.conflict ? "conflict" : "idle";
+  status.createSpan({ cls: `covault-wb-foot-dot is-${syncing ? "syncing" : mood}` });
+  status.createSpan({ text: [syncing ? "Syncing…" : "", ...problems].filter(Boolean).join(" · ") || "Everything is shared" });
 }
 
 /** Once a second: only the ring and its text, so the rest stays put. */

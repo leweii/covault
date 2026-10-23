@@ -12,16 +12,19 @@ import type { WorkbenchContext } from "./context";
 import { button, clockWithSeconds } from "./util";
 
 const KIND_MARK: Record<LocalChange["kind"], string> = { added: "A", modified: "M", deleted: "D" };
-const SHOWN = 200;
+const PAGE = 25;
 
 export function renderSyncLog(ctx: WorkbenchContext, el: HTMLElement): void {
   el.empty();
   const { plugin, state } = ctx;
-  const records = plugin.syncHistory.records(SHOWN);
-  if (records.length === 0) {
+  const all = plugin.syncHistory.records();
+  if (all.length === 0) {
     el.createDiv({ cls: "covault-wb-empty", text: "No syncs recorded yet — the first round will show up here." });
     return;
   }
+  const pages = Math.max(1, Math.ceil(all.length / PAGE));
+  state.logPage = Math.min(state.logPage, pages - 1);
+  const records = all.slice(state.logPage * PAGE, (state.logPage + 1) * PAGE);
   const items = plugin.syncItems();
   for (const r of records) {
     const entry = el.createDiv("covault-wb-log-entry");
@@ -61,6 +64,22 @@ export function renderSyncLog(ctx: WorkbenchContext, el: HTMLElement): void {
     }
     if (hasFiles && state.expandedLog.has(r.at)) renderFiles(ctx, entry.createDiv("covault-wb-log-files"), r);
   }
+  if (pages > 1) renderPager(ctx, el, all.length, pages);
+}
+
+function renderPager(ctx: WorkbenchContext, el: HTMLElement, total: number, pages: number): void {
+  const { state } = ctx;
+  const pager = el.createDiv("covault-wb-pager");
+  const first = state.logPage * PAGE + 1;
+  const last = Math.min(total, (state.logPage + 1) * PAGE);
+  pager.createSpan({ cls: "is-muted", text: `${first}–${last} of ${total} rounds` });
+  const go = (page: number) => {
+    state.logPage = page;
+    ctx.refresh("log");
+  };
+  button(pager, { text: "Newer", icon: "chevron-left", cls: "covault-wb-btn-sm", disabled: state.logPage === 0, onClick: () => go(state.logPage - 1) });
+  pager.createSpan({ cls: "covault-wb-pager-n", text: `${state.logPage + 1} / ${pages}` });
+  button(pager, { text: "Older", icon: "chevron-right", cls: "covault-wb-btn-sm", disabled: state.logPage >= pages - 1, onClick: () => go(state.logPage + 1) });
 }
 
 function renderFiles(ctx: WorkbenchContext, el: HTMLElement, r: SyncRecord): void {

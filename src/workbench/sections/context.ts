@@ -28,6 +28,8 @@ export interface WbState {
   errOpen: Set<string>;
   /** Sync-log records (by `at`) shown with their file lists. */
   expandedLog: Set<number>;
+  /** Sync-log page, 0-based; back to the first page when a new round lands. */
+  logPage: number;
   expandedJobs: Set<string>;
   expandedRuns: Set<string>;
   selectedPath: string | null;
@@ -49,6 +51,8 @@ export interface WorkbenchContext {
   closeInspector: () => void;
   /** Expand and scroll to a repo's root row. */
   revealInTree: (repoPath: string) => void;
+  /** A note's whole history, over the workbench. */
+  openTimeMachine: (vaultPath: string) => void;
   /** Open-folder state changed — remember it. */
   persistTree: () => void;
   /** Bring the failure alerts into view (from a failed log row or the KPI). */

@@ -10,7 +10,6 @@
  */
 import { Notice, TFile, setIcon } from "obsidian";
 import type { FileCommit } from "../../git/GitEngine";
-import { FileHistoryModal } from "../../ui/FileHistoryModal";
 import { writeDocStatus, readDocStatus } from "../docStatus";
 import { STATUS_TEXT, type FileEntry, type FileSyncStatus } from "../model";
 import type { WorkbenchContext } from "./context";
@@ -79,19 +78,15 @@ export function renderInspector(ctx: WorkbenchContext, el: HTMLElement, path: st
   }
   const history = plugin.historyContextFor(path);
   if (history) {
-    button(actions, {
-      text: "History",
-      icon: "history",
-      onClick: () => new FileHistoryModal(app, plugin.engine, history.ref, history.relPath, path, plugin.gitAuthorEmail()).open(),
-    });
+    button(actions, { text: "Time machine", title: "Time machine", onClick: () => ctx.openTimeMachine(path) });
   }
   if (status === "conflict") {
-    button(actions, { text: "Resolve", icon: "wrench", cls: "covault-wb-btn-danger", onClick: () => plugin.openConflictModal(repoPath, rel) });
+    button(actions, { text: "Resolve", title: "Resolve", cls: "covault-wb-btn-danger", onClick: () => plugin.openConflictModal(repoPath, rel) });
   }
   if (status === "local" || status === "pending") {
     button(actions, {
       text: "Share now",
-      icon: "refresh-cw",
+      title: "Share now",
       disabled: plugin.sync.isSyncing(repoPath),
       onClick: async () => {
         await plugin.sync.syncJust(repoPath);
@@ -133,7 +128,7 @@ export function renderInspector(ctx: WorkbenchContext, el: HTMLElement, path: st
   if (file && path.toLowerCase().endsWith(".md")) {
     const seg = dsSec.createDiv("covault-wb-ds-seg");
     for (const def of defs) {
-      const b = seg.createEl("button", { cls: `covault-wb-ds-opt ${current?.def?.id === def.id ? "is-on" : ""}` });
+      const b = seg.createEl("button", { cls: `covault-wb-ds-opt ${current?.def?.id === def.id ? "is-on" : ""}`, attr: { title: def.label } });
       b.style.setProperty("--c", def.color);
       b.createSpan("covault-wb-ds-dot");
       b.createSpan({ text: def.label });
@@ -233,9 +228,9 @@ export function renderInspector(ctx: WorkbenchContext, el: HTMLElement, path: st
     }
     if (versions.length > 0) {
       const link = recSec.createEl("button", { cls: "covault-wb-ix-link" });
-      link.createSpan({ text: `See all ${versions.length}${log.length >= HISTORY_DEPTH ? "+" : ""} versions` });
+      link.createSpan({ text: `See all ${versions.length}${log.length >= HISTORY_DEPTH ? "+" : ""} versions in Time machine` });
       setIcon(link.createSpan(), "chevron-right");
-      link.onclick = () => new FileHistoryModal(app, plugin.engine, history.ref, history.relPath, path, plugin.gitAuthorEmail()).open();
+      link.onclick = () => ctx.openTimeMachine(path);
     }
   })();
 }
