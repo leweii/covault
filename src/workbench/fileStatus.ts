@@ -26,13 +26,24 @@ export interface FileStatusDeps {
   log?: (message: string, data?: Record<string, unknown>) => void;
   /** Debounce for vault events; tests shrink it. */
   debounceMs?: number;
+  /** Timer source — the window's in the plugin, Node's in tests. */
+  timers?: Timers;
+}
+
+export interface Timers {
+  set: (fn: () => void, ms: number) => unknown;
+  clear: (handle: unknown) => void;
 }
 
 const DEFAULT_DEBOUNCE_MS = 800;
+const windowTimers: Timers = {
+  set: (fn, ms) => window.setTimeout(fn, ms),
+  clear: (handle) => window.clearTimeout(handle as number),
+};
 
 export class FileStatusIndex {
   private entries = new Map<string, FileEntry[]>();
-  private timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private timers = new Map<string, unknown>();
   private running = new Map<string, Promise<void>>();
   private dirty = new Set<string>();
   /** Repos whose recompute waits for their round to end. */
@@ -106,8 +117,9 @@ export class FileStatusIndex {
       this.deferred.add(repoPath);
       return;
     }
+    const t = this.deps.timers ?? windowTimers;
     const pending = this.timers.get(repoPath);
-    if (pending) clearTimeout(pending);
+    if (pending !== undefined) t.clear(pending);
     if (immediate) {
       this.timers.delete(repoPath);
       void this.compute(repoPath);
@@ -115,7 +127,7 @@ export class FileStatusIndex {
     }
     this.timers.set(
       repoPath,
-      setTimeout(() => {
+      t.set(() => {
         this.timers.delete(repoPath);
         void this.compute(repoPath);
       }, this.deps.debounceMs ?? DEFAULT_DEBOUNCE_MS),
@@ -124,7 +136,8 @@ export class FileStatusIndex {
 
   dispose(): void {
     this.disposed = true;
-    for (const t of this.timers.values()) clearTimeout(t);
+    const t = this.deps.timers ?? windowTimers;
+    for (const handle of this.timers.values()) t.clear(handle);
     this.timers.clear();
     this.listeners.clear();
   }

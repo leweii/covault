@@ -8,7 +8,16 @@ import type { App } from "obsidian";
 import type CovaultPlugin from "../../main";
 import type { SyncItem } from "../../sync/SyncController";
 import type { FileStatusIndex } from "../fileStatus";
+import type { Schedule } from "../../automation/schedule";
 import type { SyncFilter } from "../model";
+
+/** An automation being edited in place, before Save. */
+export interface JobDraft {
+  name: string;
+  instructions: string;
+  schedule: Schedule;
+  enabled: boolean;
+}
 
 export type LogTab = "sync" | "jobs";
 
@@ -24,14 +33,16 @@ export interface WbState {
   query: string;
   /** Open tree nodes: repo roots by their root key, folders by vault path. */
   openDirs: Set<string>;
-  /** Repos whose failure alert shows the full error. */
-  errOpen: Set<string>;
   /** Sync-log records (by `at`) shown with their file lists. */
   expandedLog: Set<number>;
   /** Sync-log page, 0-based; back to the first page when a new round lands. */
   logPage: number;
   expandedJobs: Set<string>;
   expandedRuns: Set<string>;
+  /** The job open in the inline editor, and its unsaved draft. While one
+   *  is open the jobs tab doesn't re-render under the user's typing. */
+  editingJob: string | null;
+  jobDraft: JobDraft | null;
   selectedPath: string | null;
 }
 

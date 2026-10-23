@@ -182,7 +182,7 @@ Client ID 是公开信息(出现在授权 URL 里),可以安全入库。
 
 ### 4.4 加入团队知识库
 
-- 设置页 **Shared libraries → Add a library…**,或面板按钮行的「文件夹+」。
+- 设置页 **Shared libraries → Add a library…**,或工作台目录树标题旁的「+」。
 - 三步:**选组织**(每次都要手动选,没有默认组织)→ 选仓库(或「Create a new library」)→ 选它在 vault 里的位置。
 - 组织下拉里的 **Other… (paste a link)** 用于列表里没有的库:选它以后只需粘一个 GitHub 链接(如 `https://github.com/ct-kb/platform-kb`),组织和库名从链接里解析。
 
@@ -220,23 +220,24 @@ Client ID 是公开信息(出现在授权 URL 里),可以安全入库。
 
 - **Keep shared knowledge up to date automatically**:默认开。
 - **Check every**:默认 10 分钟。
-- 想立刻同步:面板按钮行的刷新按钮,或点状态栏。
-- **同步历史**:每次成功同步追加一条到 `<OS 用户配置目录>/covault/logs/<vault 哈希>/sync-history.log`(时间、库、手动/自动、做了什么、耗时,以及推上去的文件)。面板按钮行的「同步历史」直接查看。
+- 想立刻同步:工作台右上角的 **Sync now**(跑完后下一次自动同步的倒计时重新开始),或点状态栏。
+- **同步历史**:每轮同步——成功、失败、停在冲突——都记一条。文本版在 `<OS 用户配置目录>/covault/logs/<vault 哈希>/sync-history.log`,结构化版在同目录的 `sync-history.jsonl`(最近 500 条)。工作台的 **Sync log** 标签页分页查看,每条可展开看本机推上去的(↑)和同事带来的(↓,带作者),失败的那条有 **Fix with Claudian**。工作台见附录 A。
 
 ### 4.8.1 自动化(Automations)
 
-面板按钮行的闹钟图标打开主区域的 **Automations** 标签页:左边是已设置的自动化,右边是对话框。
+工作台页脚 ⋯ 菜单里的 **Automations**(或 Jobs 标签页底部的链接)打开主区域的 **Automations** 标签页:左边是已设置的自动化,右边是对话框。
 
 - **用对话设置**:直接说要做什么、多久做一次,比如「每天早上 9 点把团队库昨天的改动汇总到 Daily/团队日报.md」。AI 会先给出计划(名称、时间、给执行 agent 的说明),你同意后才创建;也能用对话修改、暂停、删除、试跑。
 - **时间**:只支持「每隔 N 小时」(1–168)和「每天 HH:MM」(本机时间)。
 - **执行**:到点由 pi agent 无人值守执行,可搜索、阅读、新建、编辑 vault 里**任意笔记**(包括团队库,改动随下一轮同步推给同事;git 历史可回退)。每次最多 30 步、10 分钟。用的是 AI engine 里配置的模型和 key。
 - **只在 Obsidian 开着时运行**;关着(或电脑睡眠)时错过的那次**直接跳过**,日志里记一条「已跳过」。
 - **日志**:点开某个自动化可看说明和运行日志;每次运行可展开看 AI 的报告、改了哪些笔记(可点开)、执行了哪些步骤。
+- **在工作台里改**:工作台的 **Jobs** 标签页列出所有自动化(状态、下次运行倒计时、试跑、运行日志),每条的铅笔按钮可就地改名称、时间(每 N 小时 / 每天几点)、启用状态和说明;改时间或恢复启用后从当下重新计时。新建仍在 Automations 的对话里做。
 - **存储**:自动化定义和日志都在 `<OS 用户配置目录>/covault/automations/`,按 vault 区分,**不进 vault、不同步**——否则每台设备都会各跑一遍。
 
 ### 4.8.2 推荐插件
 
-面板底部和设置页顶部的 **Recommended plugins** 列出与 Covault 搭配的社区插件(目前是 Claudian、Knowlery),一键跳到 Obsidian 插件市场安装,装好后可直接启用。清单在 `src/covault/recommendedPlugins.ts`,追加一项即可。
+工作台页脚 ⋯ 菜单和设置页顶部的 **Recommended plugins** 列出与 Covault 搭配的社区插件(目前是 Claudian、Knowlery),一键跳到 Obsidian 插件市场安装,装好后可直接启用。清单在 `src/covault/recommendedPlugins.ts`,追加一项即可。
 
 ### 4.9 凭证与文件落在哪
 
@@ -245,6 +246,8 @@ Client ID 是公开信息(出现在授权 URL 里),可以安全入库。
 | 后端 session、deviceId、PAT、LLM key | `<OS 用户配置目录>/covault/vault-<vault 路径哈希>.json` |
 | 非敏感的机器状态 | `<vault>/.obsidian/plugins/covault/data.json` |
 | 库清单 / 个人库范围 | `<vault>/.covault/covault.json`(随 vault 同步) |
+| 同步历史(文本 + JSONL)、诊断日志 | `<OS 用户配置目录>/covault/logs/<vault 哈希>/` |
+| 自动化定义与运行日志 | `<OS 用户配置目录>/covault/automations/` |
 
 OS 用户配置目录:macOS `~/Library/Application Support/`、Windows `%APPDATA%`、Linux `$XDG_CONFIG_HOME`(默认 `~/.config`)。**一个 vault 一个密钥文件,永不进 vault、永不同步。**
 
@@ -252,12 +255,20 @@ OS 用户配置目录:macOS `~/Library/Application Support/`、Windows `%APPDATA
 
 设置 → **Export / import configuration**:
 
-- 老机器点 **Copy to clipboard**(面板按钮行的上传图标也行),把 JSON 发给自己/同事。
+- 老机器点 **Copy to clipboard**(工作台页脚 ⋯ 菜单里的 Export configuration 也行),把 JSON 发给自己/同事。
 - 新机器点 **Import…**,确认要写入的字段。
-- 导出的:AI provider/model、同步设置、库清单、个人库范围。
+- 导出的:AI provider/model、同步设置、文档状态列表(§4.11)、库清单、个人库范围。
 - **不导出/不导入的**:API key、PAT、后端 session、deviceId、提交身份(name/email)、别人的个人库地址、登录方式、组织(每个库自己选)。
 
 所以新机器上仍需自己做的三件事:**Connect 一次、填 API key、填 name/email**。
+
+### 4.11 文档状态(Document statuses)
+
+和 Covault 自动算出的同步状态(✓ ● ↑ ↓ !)不同,文档状态是**人设的**:默认 Draft / In review / Approved / Outdated,在 设置 → Covault → **Document statuses** 里增删、改名、改颜色,并随配置导出导入(§4.10),所以团队用同一套。
+
+- 在工作台详情栏点一下即可设置或清除。它写进笔记 frontmatter 的三个字段:`status`(名称)、`status_by`、`status_at`(ISO 时间);Obsidian 自带的属性面板看到和修改的是同一个 `status`。
+- 改状态等于一次普通编辑:笔记先变 ●,下次同步后变 ✓ 并到达同事那里。
+- 目录树里按状态筛选、看彩色标签;名字不在团队列表里的状态显示为灰色。改名一个状态不会改已有笔记里的旧名字,它们会显示为灰色直到重新设置。
 
 ---
 
@@ -299,36 +310,28 @@ OS 用户配置目录:macOS `~/Library/Application Support/`、Windows `%APPDATA
 | 看不到某个仓库 | App 安装时的仓库范围没包含它 → Configure on GitHub 里加 |
 | 图片显示成一段 130 字节文本 | 该客户端版本 < 0.2.5,升级到 ≥ 0.2.8 |
 | 整个 org 突然推不上去 | LFS 额度超限 + org 没有支付方式(§1.1) |
-| 其他任何问题 | 面板按钮行的「复制诊断日志」,把日志贴给支持 |
+| 某个库一直同步失败 | 工作台顶部的红色告警:**Retry**;仍不行就 **Open in Claudian**,让 Claude Code 在终端语境里把这个库的 commit / pull / push 做完(不会改写历史) |
+| 其他任何问题 | 工作台页脚 ⋯ 菜单里的「Copy the diagnostic log」,把日志贴给支持 |
 
 ---
 
-## 附录 A:面板按钮一览
+## 附录 A:工作台一览
 
-命令面板(Cmd/Ctrl+P)只有一条 `Covault: Open Covault panel`,可在 设置 → 快捷键 里给它绑快捷键。其余功能都在 Covault 面板(左侧边栏的 Covault 标签,或左侧图标栏的书架图标)顶部的按钮行里,按顺序:
+命令面板(Cmd/Ctrl+P)只有一条 `Covault: Open workbench`(可在 设置 → 快捷键 里给它绑快捷键);左侧图标栏的书架图标也打开它。工作台是主区域里的一个全页标签页:
 
-| 图标 | 用途 |
+| 区域 | 内容 |
 |---|---|
-| 闹钟 | 打开自动化标签页(§4.8.1) |
-| 卷轴 | 同步历史(§4.8) |
-| 扳手 | 处理内容冲突(没有冲突时置灰) |
-| 文件夹+ | 添加共享库 |
-| 剪贴板 | 复制诊断日志 |
-| 橡皮擦 | 清空诊断日志 |
-| 刷新 | 立刻同步全部库 |
-| 上传 | 导出配置到剪贴板(§4.10) |
+| 顶部 | 计数卡——同步失败的库、需要处理、未分享、同事新更新、Jobs——点击即筛选目录树或切到 Jobs;右侧是到下一次自动同步的倒计时环和 **Sync now**。同步进行中数字变转圈,卡片和告警都不消失 |
+| Libraries | 收起是一行名称胶囊(有问题的排最前),展开是每库一张卡:状态、上次同步、笔记数、单库同步按钮 |
+| 同步失败告警 | 失败几次、上次成功时间、报错(Details 展开);**Retry** 只重试这个库;**Open in Claudian** 打开 Claudian 新对话并把修复请求填好(不自动发送;Claudian 没装时复制到剪贴板并提示安装) |
+| 需要处理的笔记 | 每篇冲突笔记一行,写明和谁冲突;**Resolve** 打开解决器并停在那篇;Resolve all |
+| Sync log / Jobs | 同步轮次分页(每页 25),可展开看 ↑↓ 文件和作者;Jobs 列出自动化、下次运行倒计时、试跑、运行日志,铅笔按钮就地编辑(§4.8.1) |
+| 目录树(左) | 每个库和个人库的文件夹树:文件带同步标记(✓ ● ↑ ↓ !)和文档状态标签,附件带回形针,文件夹带汇总徽标;两行筛选(同步状态 / 文档状态)+ 搜索,有筛选时全部展开、Collapse 置灰;双击或右键进 Time Machine;右键还有分享 / 停止分享 / 移除库 |
+| 详情栏(右) | 点文件打开:编辑→保存→上传→同事 的进度轨道、文档状态选择(§4.11)、最后修改人、GitHub 上的版本、版本数、最近三次修改;Open note / Time machine / Resolve / Share now |
+| Time Machine | 一篇笔记的全部版本按天分组;选中版本以文档形式显示并标出改动;勾选多个连续版本看合并改动,每行新增内容标注作者;**Restore** 把旧版本作为一次新修改写回,下次同步分享;浅克隆的库可 **Load older history** |
+| 页脚 | 右下角状态("Everything is shared",或具体问题,同步中为 "Syncing…");左下角 ⋯ 菜单:Automations、Recommended plugins、Export configuration、Copy sync-history file path、Copy / Clear the diagnostic log |
 
-另有:状态栏点击 = 有冲突时打开冲突界面、否则立刻同步;笔记/文件夹右键菜单里的分享、查看历史。
-
----|---|
-| Open panel | 侧边栏:分享了什么、拉了哪些库、同步状态 |
-| Sync shared libraries now | 立刻同步 |
-| Add a shared library | 加库向导 |
-| Resolve conflicts | 打开待处理的内容出入 |
-| Export configuration (copy to clipboard) | 导出配置(§4.10) |
-| Show sync history | 查看每次成功同步的记录(§4.8) |
-| Open automations | 打开自动化标签页(§4.8.1) |
-| Copy the diagnostic log / Clear the diagnostic log | 诊断日志 |
+左右两栏和 Time Machine 的时间轴都可拖边调宽(双击复原,宽度按设备记住)。另有:状态栏点击 = 有冲突时打开冲突界面、否则立刻同步;笔记/文件夹右键菜单里的分享、View history(进 Time Machine)。
 
 ---
 

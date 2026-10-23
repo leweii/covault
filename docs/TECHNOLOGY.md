@@ -8,7 +8,7 @@
 ┌─────────────────────── Obsidian (Electron, desktop-only) ───────────────────────┐
 │  Covault 插件 (TypeScript 5 strict / ES2022, esbuild 打包为单文件 main.js)        │
 │                                                                                  │
-│  UI 层        CovaultPanel · 设置页(声明式 API) · ConflictModal · FileHistory   │
+│  UI 层        工作台(Workbench + Time Machine) · 设置页(声明式) · ConflictModal │
 │  同步层       SyncController(定时静默轮询 · per-repo 锁 · watchdog · 续轮)      │
 │  git 引擎     GitEngine(isomorphic-git 封装 · LFS clean/smudge · 冲突管道)      │
 │  智能层       pi sdk(冲突合并 · 自动化 · commit message)                      │
@@ -39,7 +39,7 @@
 - **repo 模型:manifest + 虚拟 submodule**。团队库是 vault 子文件夹里的**独立嵌套 repo**,主库通过托管的 `.gitignore` 块屏蔽它们(不用真 submodule/subtree——gitlink 对非工程用户是事故源)。清单是 `.covault/covault.json`(注意不叫 manifest.json,那个名字会触发 Obsidian 扫描器误报),随主库同步传播。
 - **个人主库用分离 gitdir**:`<vault>/.covault/main.git`,工作区是 vault 根。这样与 vault 自身可能存在的 `.git`(其他工具)完全隔离,也保证从零 init 的库只包含 opt-in 内容。
 - **opt-in 白名单在引擎层实现**(statusMatrix filter 的 include/exclude),不玩 .gitignore 取反。
-- **首次下载 depth=1**:知识库在 head 上读写,历史按需(`fileLog`)加深;350MB 历史曾让首次设置直接失败。
+- **首次下载 depth=1**:知识库在 head 上读写;350MB 历史曾让首次设置直接失败。历史按需加深:Time Machine 的 Load older history 调 `deepenHistory`(fetch depth=2³¹−1,即 git 的 `--unshallow`);`fileLog` 对浅克隆的边界提交打 `shallowBoundary` 标记——git 会把它列进每个文件的历史,但它是不是真改了该文件无从知道,所以不当成一个版本。
 - 已知坑的防御:statusMatrix 嵌套库误报(#761,按清单排除)、merge 成功后必须显式 checkout 落盘、origin 劫持守卫(`existingOrigin` + `sameRemote`)。
 
 ## 附件:Git LFS
@@ -86,17 +86,19 @@ isomorphic-git 没有 clean/smudge filter,转换在 GitEngine 的每个内容出
 - 每轮的形状:修复扫描(smudge)→ 本地变更提交 → fetch → fast-forward / push / merge → 冲突进管道。
 - **watchdog**:每轮 10 分钟上限,防的是"卡死的轮永远持锁";附件积压走**预算续轮**——每轮有界、上传持久、pending 必须递减,不减即真停滞报错。
 - 冲突文件的兜底:带冲突标记的文件永远不会被当作"编辑"推送(重启丢失内存状态后会重新入管道)。
+- **每轮都留记录**(成功 / 失败 / 停在冲突,`SyncRecord.status`),`SyncHistory` 同时写文本日志和 JSONL(最近 500 条)供工作台读;同事带来的文件逐个归因到作者(`changesInRange`:按提交逐个 tree diff 取并集,分叉时也正确,merge 提交只补无人认领的文件)。
+- **`RepoState` 保留 `lastSyncedAt`、累计 `failures`,并记 `lastOutcome`**(上一轮结束的结果):同步进行中 `phase` 是 syncing,但 UI 用 `lastOutcome` 画状态、用 `isSyncing` 叠加加载态——一个在失败的库重试时显示"仍在失败 + 重试中",而不是把失败盖成同步中。
+- **下一次自动同步时间**由插件记录(`nextAutoSyncAt`),只有设置变化和工作台的 Sync now 会重置它;单库重试、自动化触发的同步不会。
 
 ## UI
 
-- **右侧面板**(`CovaultPanel`):My knowledge base / Team libraries 两区(行内增删、同步状态灯)+ 当前笔记的提交历史区(可拖拽调高、可折叠)。
-- **ConflictModal**:本地/远端/AI 建议三栏 diff(`diff` 包渲染),置信度标点、手动编辑、汇总页。
-- **FileHistoryModal**:文件右键看历史,commit 列表 + 范围 diff。
+- **工作台**(`src/workbench/`,主区域全页标签页,替代了早期的侧栏面板和历史弹窗):`WorkbenchView` 持有 UI 状态(展开、选中、筛选、分页、编辑中的 job)并按区块独立重绘,所以每次同步 tick 只重绘变化的区块,用户的展开/输入不丢。纯逻辑模块:`model.ts`(文件状态优先级 conflict > local > pending > incoming > synced、目录聚合与徽标、筛选、计数、库排序)、`lineDiff.ts`(行 diff、合并范围的逐行归因、连续多选规则)、`versions.ts`(版本列表组装、按天分组)、`docStatus.ts`(frontmatter 文档状态读写与校验)、`claudian.ts`(走 Claudian 自己的 "Add to Claudian" 路径:`views.activateView` → `startNewConversation` → `appendToActiveInput`,不自动发送,任一步缺失回退剪贴板)。`fileStatus.ts` 的 `FileStatusIndex` 只在工作台打开时按库计算每个文件的状态(`localChanges` + `refOids`/`changesInRange` + 控制器的冲突与未读),防抖 800ms,库同步期间延后到轮结束再算。`resizable.ts` 拖拽调宽并用 `saveLocalStorage` 按设备记住。原则:**同步中只叠加加载态,状态只在结果确定后变**。
+- **ConflictModal**:本地/远端/AI 建议三栏 diff(`diff` 包渲染),置信度标点、手动编辑、汇总页;工作台可指定从哪一篇开始。
 - 语言原则:**UI 零 git 术语**——share / update / resolve,不说 commit / branch / merge。
 
 ## 测试与发布
 
-- **vitest**,250+ 测试。集成测试的关键基建在 `test/gitHttpServer.ts`:一个 Node HTTP 服务器,CGI 方式调系统 `git http-backend` 当真实远端,并附带**迷你 LFS 服务器**(batch 端点 + 对象存储 + 要求带认证的 verify 端点)——引擎的全部同步/LFS 行为都对着真 git 协议验证,不 mock。
+- **vitest**,230+ 测试。集成测试的关键基建在 `test/gitHttpServer.ts`:一个 Node HTTP 服务器,CGI 方式调系统 `git http-backend` 当真实远端,并附带**迷你 LFS 服务器**(batch 端点 + 对象存储 + 要求带认证的 verify 端点)——引擎的全部同步/LFS 行为都对着真 git 协议验证,不 mock。
 - **`test/loadHarness.cjs` 冒烟测试**(并入 build):用 mock Obsidian 驱动真实构建产物走完 onload + 声明式设置索引——纯 require 测不出 onload 期崩溃,这个能。
 - **发布**:tag 触发 GitHub Actions(`release.yml`),产出 `main.js`/`manifest.json`/`styles.css` 三资产 + build provenance attestation;已上架 Obsidian 官方市场(id `covault`)。
 

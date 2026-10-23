@@ -1,7 +1,7 @@
 /**
  * One compact alert per library that couldn't sync: how often, since
- * when, the error (one line, expandable), and the two ways out — Retry
- * here, or hand it to Claudian with the request already written.
+ * when, the error, and the two ways out — Retry here, or hand it to
+ * Claudian with the request already written.
  *
  * While the library is syncing again the alert turns into a loading
  * state and stays; it only leaves when a round ends clean.
@@ -13,7 +13,7 @@ import { button, relative } from "./util";
 
 export function renderFailures(ctx: WorkbenchContext, el: HTMLElement): void {
   el.empty();
-  const { plugin, state } = ctx;
+  const { plugin } = ctx;
   for (const item of plugin.syncItems()) {
     const s = plugin.sync.state(item.path);
     if (repoOutcome(s) !== "error") continue;
@@ -37,15 +37,8 @@ export function renderFailures(ctx: WorkbenchContext, el: HTMLElement): void {
         text: ` · failed ${times}× · ${s.lastSyncedAt ? `last success ${relative(s.lastSyncedAt)}` : "never synced yet"} · your notes are safe here`,
       });
     }
-    const err = msg.createDiv({ cls: `covault-wb-alert-err ${state.errOpen.has(item.path) ? "is-full" : ""}`, text: s.detail ?? "" });
-    err.setAttribute("title", s.detail ?? "");
+    msg.createDiv({ cls: "covault-wb-alert-err", text: s.detail ?? "" });
 
-    const details = alert.createEl("button", { cls: "covault-wb-alert-more", text: state.errOpen.has(item.path) ? "Less" : "Details" });
-    details.onclick = () => {
-      if (state.errOpen.has(item.path)) state.errOpen.delete(item.path);
-      else state.errOpen.add(item.path);
-      ctx.refresh("state");
-    };
     button(alert, {
       text: "Retry",
       icon: "refresh-cw",

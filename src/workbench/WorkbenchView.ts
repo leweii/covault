@@ -16,7 +16,7 @@ import type CovaultPlugin from "../main";
 import type { FileStatusIndex } from "./fileStatus";
 import type { SyncFilter } from "./model";
 import { applySavedWidth, installResizer, type ResizeSpec } from "./resizable";
-import { rootKey, type LogTab, type RefreshScope, type WbState, type WorkbenchContext } from "./sections/context";
+import type { LogTab, RefreshScope, WbState, WorkbenchContext } from "./sections/context";
 import { renderConflicts } from "./sections/Conflicts";
 import { DocTree } from "./sections/DocTree";
 import { renderFailures } from "./sections/Failures";
@@ -70,11 +70,12 @@ export class WorkbenchView extends ItemView {
       statusFilter: "all",
       query: "",
       openDirs: new Set(Array.isArray(openDirs) ? openDirs.filter((k): k is string => typeof k === "string") : []),
-      errOpen: new Set(),
       expandedLog: new Set(),
       logPage: 0,
       expandedJobs: new Set(),
       expandedRuns: new Set(),
+      editingJob: null,
+      jobDraft: null,
       selectedPath: null,
     };
   }
@@ -166,7 +167,9 @@ export class WorkbenchView extends ItemView {
       this.openNewestRecord();
       this.renderTabs(ctx, els.tabs);
       if (this.state.tab === "sync" && scope !== "jobs") renderSyncLog(ctx, els.tabBody);
-      if (this.state.tab === "jobs") renderJobs(ctx, els.tabBody, this);
+      // Not while a job is being edited: the 30 s automation tick would
+      // rebuild the editor under the user's typing.
+      if (this.state.tab === "jobs" && (this.state.editingJob === null || scope === "all")) renderJobs(ctx, els.tabBody, this);
     }
   }
 

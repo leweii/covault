@@ -64,15 +64,14 @@ describe("formatSyncRecord", () => {
 describe("SyncHistory", () => {
   const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "covault-hist-"));
 
-  it("appends rounds to the text file and reads back the tail", () => {
+  it("appends rounds to the text file, newest last", () => {
     const dir = tmp();
     const history = new SyncHistory({ fs, logDir: () => dir });
     history.append(record());
     history.append({ ...record(), library: "team-oms-kb" });
-    const tail = history.tail();
-    expect(tail.split("\n")).toHaveLength(2);
-    expect(tail).toContain("team-oms-kb");
-    expect(history.tail(1)).toContain("team-oms-kb");
+    const lines = fs.readFileSync(history.filePath(), "utf8").trimEnd().split("\n");
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain("team-oms-kb");
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -111,8 +110,6 @@ describe("SyncHistory", () => {
   });
 
   it("is empty, not an error, before anything synced", () => {
-    const history = new SyncHistory({ fs, logDir: () => "/nonexistent/covault" });
-    expect(history.tail()).toBe("");
-    expect(history.records()).toEqual([]);
+    expect(new SyncHistory({ fs, logDir: () => "/nonexistent/covault" }).records()).toEqual([]);
   });
 });

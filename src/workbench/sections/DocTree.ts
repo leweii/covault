@@ -291,7 +291,7 @@ export class DocTree {
 
   private fileMenu(entry: FileEntry): Menu {
     const ctx = this.ctx();
-    const { plugin, app } = ctx;
+    const { plugin } = ctx;
     const menu = new Menu();
     if (!entry.ghost) menu.addItem((i) => i.setTitle("Open note").setIcon("file").onClick(() => this.openNote(entry.path)));
     menu.addItem((i) => i.setTitle("Time machine").setIcon("history").onClick(() => ctx.openTimeMachine(entry.path)));

@@ -19,6 +19,7 @@ function deps(overrides: Partial<FileStatusDeps> = {}) {
     sync: { pendingConflicts: () => [], unseenUpdates: () => null, isSyncing: (p) => syncing.has(p) },
     listFiles: (item) => (item.path ? ["README.md", "a.md"] : ["Inbox/x.md"]),
     debounceMs: 5,
+    timers: { set: (fn, ms) => setTimeout(fn, ms), clear: (h) => clearTimeout(h as NodeJS.Timeout) },
     ...overrides,
   };
   return { d, syncing };

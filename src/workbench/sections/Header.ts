@@ -77,7 +77,7 @@ export function renderHeader(ctx: WorkbenchContext, el: HTMLElement): void {
   tickHeader(ctx, el);
 }
 
-/** The footer: overflow menu left, the live status line right. */
+/** The footer: the live status line left, the overflow menu right. */
 export function renderFooter(ctx: WorkbenchContext, el: HTMLElement): void {
   el.empty();
   const { plugin, index } = ctx;
@@ -85,9 +85,6 @@ export function renderFooter(ctx: WorkbenchContext, el: HTMLElement): void {
   const syncing = plugin.sync.isSweeping() || items.some((i) => plugin.sync.isSyncing(i.path));
   const counts = index.counts();
   const failed = items.filter((i) => repoOutcome(plugin.sync.state(i.path)) === "error").length;
-  const more = el.createEl("button", { cls: "clickable-icon covault-wb-foot-more", attr: { "aria-label": "More" } });
-  setIcon(more, "ellipsis");
-  more.onclick = (e) => moreMenu(ctx).showAtMouseEvent(e);
   const status = el.createDiv("covault-wb-foot-status");
   const problems = [
     failed ? `${failed} ${failed === 1 ? "library" : "libraries"} couldn't sync` : "",
@@ -96,6 +93,9 @@ export function renderFooter(ctx: WorkbenchContext, el: HTMLElement): void {
   const mood = failed ? "error" : counts.conflict ? "conflict" : "idle";
   status.createSpan({ cls: `covault-wb-foot-dot is-${syncing ? "syncing" : mood}` });
   status.createSpan({ text: [syncing ? "Syncing…" : "", ...problems].filter(Boolean).join(" · ") || "Everything is shared" });
+  const more = el.createEl("button", { cls: "clickable-icon covault-wb-foot-more", attr: { "aria-label": "More" } });
+  setIcon(more, "ellipsis");
+  more.onclick = (e) => moreMenu(ctx).showAtMouseEvent(e);
 }
 
 /** Once a second: only the ring and its text, so the rest stays put. */

@@ -145,14 +145,4 @@ export class SyncHistory {
     }
     return limit >= this.cache.length ? this.cache : this.cache.slice(0, limit);
   }
-
-  /** The newest `maxLines` text lines, oldest first. */
-  tail(maxLines = 300): string {
-    try {
-      const text = this.deps.fs.readFileSync(this.filePath(), "utf8");
-      return text.trimEnd().split("\n").slice(-maxLines).join("\n");
-    } catch {
-      return "";
-    }
-  }
 }
