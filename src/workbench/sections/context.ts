@@ -18,6 +18,12 @@ export interface WbState {
   tab: LogTab;
   libsOpen: boolean;
   filter: SyncFilter;
+  /** Document-status filter: "all" or a DocStatusDef id. */
+  statusFilter: string;
+  /** Tree search, lower-cased. */
+  query: string;
+  /** Open tree nodes: repo roots by their root key, folders by vault path. */
+  openDirs: Set<string>;
   /** Repos whose failure alert shows the full error. */
   errOpen: Set<string>;
   /** Sync-log records (by `at`) shown with their file lists. */
@@ -27,7 +33,10 @@ export interface WbState {
   selectedPath: string | null;
 }
 
-export type RefreshScope = "all" | "state" | "index" | "jobs" | "log";
+export type RefreshScope = "all" | "state" | "index" | "jobs" | "log" | "tree" | "inspector";
+
+/** Tree key of a repo's root row ("" is the personal KB). */
+export const rootKey = (repoPath: string): string => (repoPath === "" ? "~personal" : repoPath);
 
 export interface WorkbenchContext {
   app: App;
@@ -35,8 +44,13 @@ export interface WorkbenchContext {
   index: FileStatusIndex;
   state: WbState;
   refresh: (scope: RefreshScope) => void;
-  /** A file name was clicked anywhere: show it (the inspector, once it exists). */
+  /** A file name was clicked anywhere: select it, reveal it in the tree, open the inspector. */
   showFile: (vaultPath: string) => void;
+  closeInspector: () => void;
+  /** Expand and scroll to a repo's root row. */
+  revealInTree: (repoPath: string) => void;
+  /** Open-folder state changed — remember it. */
+  persistTree: () => void;
   /** Bring the failure alerts into view (from a failed log row or the KPI). */
   scrollToFailures: () => void;
   /** Hand a library's failed sync to Claudian. */

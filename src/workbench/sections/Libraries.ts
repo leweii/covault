@@ -6,7 +6,6 @@
  */
 import { setIcon } from "obsidian";
 import { MainKbModal } from "../../ui/MainKbModal";
-import { UpdatesModal } from "../../ui/UpdatesModal";
 import type { SyncItem } from "../../sync/SyncController";
 import { countStatuses, repoOutcome, repoRank, type StatusCounts } from "../model";
 import type { WorkbenchContext } from "./context";
@@ -78,7 +77,7 @@ export function renderLibraries(ctx: WorkbenchContext, el: HTMLElement): void {
       stateDot(pill, dotState(item));
       pill.createSpan({ text: label(item) });
       badges(pill, countsOf(item));
-      pill.onclick = () => ctx.showFile(item.path); // Phase 2: reveal in the tree
+      pill.onclick = () => ctx.revealInTree(item.path);
     }
     return;
   }
@@ -95,9 +94,8 @@ export function renderLibraries(ctx: WorkbenchContext, el: HTMLElement): void {
       const n = row1.createEl("button", { cls: "covault-wb-updates", text: `${unseen.files.size} new`, attr: { "aria-label": "Show what changed" } });
       n.onclick = (e) => {
         e.stopPropagation();
-        new UpdatesModal(ctx.app, label(item), item.path, unseen).open();
-        plugin.sync.markSeen(item.path);
-        ctx.index.markedSeen(item.path);
+        ctx.setFilter("incoming");
+        ctx.revealInTree(item.path);
       };
     }
     button(row1, {

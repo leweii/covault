@@ -11,15 +11,17 @@
  * re-render. "Syncing" is drawn as a loading state on top of a repo's
  * last known state — never as a blank where the state used to be.
  */
-import { ItemView, Notice, TFile, type WorkspaceLeaf } from "obsidian";
+import { ItemView, Notice, type WorkspaceLeaf } from "obsidian";
 import type CovaultPlugin from "../main";
 import type { FileStatusIndex } from "./fileStatus";
 import type { SyncFilter } from "./model";
 import { applySavedWidth, installResizer, type ResizeSpec } from "./resizable";
-import type { LogTab, RefreshScope, WbState, WorkbenchContext } from "./sections/context";
+import { rootKey, type LogTab, type RefreshScope, type WbState, type WorkbenchContext } from "./sections/context";
 import { renderConflicts } from "./sections/Conflicts";
+import { DocTree } from "./sections/DocTree";
 import { renderFailures } from "./sections/Failures";
 import { renderHeader, tickHeader } from "./sections/Header";
+import { renderInspector } from "./sections/Inspector";
 import { renderJobs, tickJobs } from "./sections/JobsTab";
 import { renderLibraries } from "./sections/Libraries";
 import { renderSyncLog } from "./sections/SyncLogTab";
@@ -44,7 +46,9 @@ export class WorkbenchView extends ItemView {
   private readonly index: FileStatusIndex;
   private readonly state: WbState;
   private els: Sections | null = null;
+  private tree = new DocTree(() => this.context());
   private unsubscribeIndex: (() => void) | null = null;
+  private metadataTimer: number | null = null;
   /** The newest sync record seen — a newer one arriving opens itself. */
   private newestLogAt: number | null = null;
 
@@ -55,10 +59,14 @@ export class WorkbenchView extends ItemView {
     super(leaf);
     this.index = plugin.fileStatus();
     const stored = (key: string) => plugin.app.loadLocalStorage(key) as unknown;
+    const openDirs = stored("covault-wb-open-dirs");
     this.state = {
       tab: stored("covault-wb-tab") === "jobs" ? "jobs" : "sync",
       libsOpen: stored("covault-wb-libs-open") === true,
       filter: "all",
+      statusFilter: "all",
+      query: "",
+      openDirs: new Set(Array.isArray(openDirs) ? openDirs.filter((k): k is string => typeof k === "string") : []),
       errOpen: new Set(),
       expandedLog: new Set(),
       expandedJobs: new Set(),
@@ -89,6 +97,7 @@ export class WorkbenchView extends ItemView {
 
     const tree = body.createDiv("covault-wb-tree");
     installResizer(this.app, root, tree.createDiv(), TREE_W);
+    this.tree.mount(tree);
     const main = body.createDiv("covault-wb-main");
     const libs = main.createDiv("covault-wb-libs");
     const failures = main.createDiv("covault-wb-failures");
@@ -101,6 +110,17 @@ export class WorkbenchView extends ItemView {
     this.els = { header, tree, libs, failures, conflicts, tabs, tabBody, inspector };
 
     this.unsubscribeIndex = this.index.onChange(() => this.refresh("index"));
+    // Document statuses live in frontmatter: the cache catching up with an
+    // edit (ours or the editor's) re-draws the tags, a little later.
+    this.registerEvent(
+      this.app.metadataCache.on("changed", () => {
+        if (this.metadataTimer !== null) window.clearTimeout(this.metadataTimer);
+        this.metadataTimer = window.setTimeout(() => {
+          this.metadataTimer = null;
+          this.refresh("tree");
+        }, 300);
+      }),
+    );
     this.index.refreshAll();
     this.registerInterval(window.setInterval(() => this.tick(), 1_000));
     this.refresh("all");
@@ -126,7 +146,10 @@ export class WorkbenchView extends ItemView {
       renderFailures(ctx, els.failures);
       renderConflicts(ctx, els.conflicts);
     }
-    if (scope === "all") this.renderTreePlaceholder(els.tree);
+    if (scope === "all" || scope === "state" || scope === "index" || scope === "tree") this.tree.render();
+    if (scope === "all" || scope === "state" || scope === "index" || scope === "inspector") {
+      renderInspector(ctx, els.inspector, this.state.selectedPath);
+    }
     if (scope === "all" || scope === "state" || scope === "log" || scope === "jobs") {
       this.openNewestRecord();
       this.renderTabs(ctx, els.tabs);
@@ -155,17 +178,6 @@ export class WorkbenchView extends ItemView {
     tab("jobs", "Jobs", this.plugin.automations.list().length);
   }
 
-  private renderTreePlaceholder(el: HTMLElement): void {
-    // Keep the resize handle (first child); replace the rest.
-    for (const child of Array.from(el.children).slice(1)) child.remove();
-    const head = el.createDiv("covault-wb-col-head");
-    head.createEl("h2", { text: "Team documents" });
-    el.createDiv({
-      cls: "covault-wb-empty",
-      text: "The document tree arrives in the next step. Until then, library pills above and file names in the log open the note.",
-    });
-  }
-
   /** A newer round than the one last seen opens itself; older ones stay as the user left them. */
   private openNewestRecord(): void {
     const top = this.plugin.syncHistory.records(1)[0]?.at ?? null;
@@ -184,6 +196,12 @@ export class WorkbenchView extends ItemView {
       state: this.state,
       refresh: (scope) => this.refresh(scope),
       showFile: (path) => this.showFile(path),
+      closeInspector: () => this.select(null),
+      revealInTree: (repoPath) => {
+        this.tree.reveal(repoPath, repoPath);
+        this.els?.tree.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      },
+      persistTree: () => this.app.saveLocalStorage("covault-wb-open-dirs", [...this.state.openDirs]),
       scrollToFailures: () => this.els?.failures.scrollIntoView({ behavior: "smooth", block: "center" }),
       openClaudianFor: (item, error) => this.plugin.handToClaudian(item, error),
       showTab: (tab) => {
@@ -193,18 +211,39 @@ export class WorkbenchView extends ItemView {
       },
       setFilter: (filter: SyncFilter) => {
         this.state.filter = filter;
-        this.refresh("all"); // the tree reads it (phase 2)
-        new Notice("Covault: filters apply to the document tree, which arrives in the next step.");
+        this.refresh("tree");
       },
     };
   }
 
-  /** Until the inspector exists (phase 2): open the note itself. */
+  /** Select a note: reveal it in the tree, open the inspector on it. */
   private showFile(vaultPath: string): void {
+    const owner = this.plugin.repoItemForPath(vaultPath);
+    if (!owner) {
+      new Notice(`Covault: ${vaultPath} isn't in a synced library.`);
+      return;
+    }
+    this.select(vaultPath);
+    this.tree.reveal(vaultPath, owner.path);
+  }
+
+  /**
+   * Change the selection. Leaving a note that was "new from teammates"
+   * counts as having looked at it — the mark goes when the user moves on,
+   * not the moment the inspector opens and shows it.
+   */
+  private select(vaultPath: string | null): void {
+    const previous = this.state.selectedPath;
     this.state.selectedPath = vaultPath;
-    const file = this.app.vault.getAbstractFileByPath(vaultPath);
-    if (file instanceof TFile) void this.app.workspace.getLeaf(false).openFile(file);
-    else if (vaultPath !== "" && file === null) new Notice(`Covault: ${vaultPath} isn't in the vault any more.`);
-    this.refresh("state");
+    if (previous && previous !== vaultPath) {
+      const entry = this.index.all().find((e) => e.path === previous);
+      if (entry?.status === "incoming") {
+        this.plugin.sync.markFileSeen(entry.repoPath, entry.rel);
+        this.index.markedSeen(entry.repoPath);
+      }
+    }
+    this.refresh("inspector");
+    this.refresh("tree");
+    if (this.els) renderConflicts(this.context(), this.els.conflicts); // selection highlight
   }
 }

@@ -267,6 +267,25 @@ describe("round records and failure bookkeeping", () => {
     expect(sync.state("lib-a")).toMatchObject({ phase: "idle", lastOutcome: "idle" });
   });
 
+  it("forgets a teammate's change once it was looked at, one note at a time", async () => {
+    const engine = {
+      isRepo: async () => true,
+      syncToRemote: async () => ({
+        ...ok,
+        pulled: true,
+        incoming: { files: [{ filepath: "a.md", kind: "modified", author: "Bob" }, { filepath: "b.md", kind: "added" }], authors: ["Bob"] },
+      }),
+    } as unknown as GitEngine;
+    const { sync } = recording(engine);
+    await sync.syncJust("lib-a");
+    expect([...sync.unseenUpdates("lib-a")!.files.keys()]).toEqual(["a.md", "b.md"]);
+    expect(sync.unseenUpdates("lib-a")!.fileAuthors.get("a.md")).toBe("Bob");
+    sync.markFileSeen("lib-a", "a.md");
+    expect([...sync.unseenUpdates("lib-a")!.files.keys()]).toEqual(["b.md"]);
+    sync.markFileSeen("lib-a", "b.md");
+    expect(sync.unseenUpdates("lib-a")).toBeNull();
+  });
+
   it("records a round that stopped on a conflict", async () => {
     const engine = {
       isRepo: async () => true,

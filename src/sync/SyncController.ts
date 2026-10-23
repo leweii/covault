@@ -156,6 +156,15 @@ export class SyncController {
     if (this.unseen.delete(repoPath)) this.host.onStateChange(this.states);
   }
 
+  /** One teammate change was looked at (the workbench's inspector). */
+  markFileSeen(repoPath: string, rel: string): void {
+    const entry = this.unseen.get(repoPath);
+    if (!entry?.files.delete(rel)) return;
+    entry.fileAuthors.delete(rel);
+    if (entry.files.size === 0) this.unseen.delete(repoPath);
+    this.host.onStateChange(this.states);
+  }
+
   private noteIncoming(repoPath: string, incoming: SyncResult["incoming"]): void {
     if (!incoming) return;
     const entry: UnseenUpdates = this.unseen.get(repoPath) ?? {
