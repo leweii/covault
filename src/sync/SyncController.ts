@@ -36,6 +36,10 @@ export interface RepoState {
   lastSyncedAt?: number;
   /** Rounds failed in a row; back to 0 on the next clean sync. */
   failures?: number;
+  /** How the last *finished* round ended — what the repo is while a new
+   *  round runs and `phase` says "syncing". A failing library stays a
+   *  failing library until a round succeeds, not until one starts. */
+  lastOutcome?: "idle" | "error" | "conflict";
 }
 
 /** One thing to sync: a shared library, or the main (vault-root) repo. */
@@ -188,10 +192,12 @@ export class SyncController {
   private setState(repoPath: string, state: RepoState): void {
     const prev = this.states.get(repoPath);
     const failures = state.phase === "error" ? (prev?.failures ?? 0) + 1 : state.phase === "idle" ? 0 : prev?.failures;
+    const lastOutcome = state.phase === "syncing" ? (prev?.lastOutcome ?? "idle") : state.phase;
     this.states.set(repoPath, {
       lastSyncedAt: prev?.lastSyncedAt,
       ...state,
       ...(failures ? { failures } : {}),
+      lastOutcome,
     });
     this.host.onStateChange(this.states);
   }

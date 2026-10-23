@@ -7,7 +7,16 @@
  * view layer only renders what these return.
  */
 import type { ChangeKind, LocalChange } from "../git/GitEngine";
-import type { RepoPhase } from "../sync/SyncController";
+import type { RepoPhase, RepoState } from "../sync/SyncController";
+
+/** What a repo *is*, as opposed to what it is doing: the last finished
+ *  outcome while a round runs, the phase otherwise. The workbench shows
+ *  "syncing" as a loading state on top of this, never instead of it. */
+export type RepoOutcome = "idle" | "error" | "conflict";
+
+export function repoOutcome(state: RepoState): RepoOutcome {
+  return state.phase === "syncing" ? (state.lastOutcome ?? "idle") : state.phase;
+}
 
 /**
  * One file's standing against the team:

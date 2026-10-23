@@ -239,6 +239,34 @@ describe("round records and failure bookkeeping", () => {
     expect(sync.state("lib-a").failures).toBeUndefined();
   });
 
+  it("remembers how the last finished round ended while a new one runs", async () => {
+    let fail = true;
+    const { engine, started, releaseAll } = pausableEngine();
+    const failing = {
+      isRepo: async () => true,
+      syncToRemote: async () => {
+        if (fail) throw new Error("down");
+        return ok;
+      },
+    } as unknown as GitEngine;
+    const { sync } = recording(failing);
+    await sync.syncJust("lib-a");
+    expect(sync.state("lib-a")).toMatchObject({ phase: "error", lastOutcome: "error" });
+
+    // A retry starts: the phase says syncing, the outcome still says error.
+    const paused = controller(engine, items("lib-a"));
+    const round = paused.syncJust("lib-a");
+    await vi.waitFor(() => expect(started).toHaveLength(1));
+    expect(paused.state("lib-a")).toMatchObject({ phase: "syncing", lastOutcome: "idle" }); // fresh controller: nothing before
+    releaseAll();
+    await round;
+    expect(paused.state("lib-a")).toMatchObject({ phase: "idle", lastOutcome: "idle" });
+
+    fail = false;
+    await sync.syncJust("lib-a");
+    expect(sync.state("lib-a")).toMatchObject({ phase: "idle", lastOutcome: "idle" });
+  });
+
   it("records a round that stopped on a conflict", async () => {
     const engine = {
       isRepo: async () => true,

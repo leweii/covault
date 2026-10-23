@@ -25,6 +25,8 @@ const stub = {
     addToggle(){return this} addTextArea(){return this} addExtraButton(){return this} },
   Notice: class {}, FileSystemAdapter: class { getBasePath(){ return '/tmp/harness-vault' } },
   TFile: class {}, TFolder: class {}, setIcon(){}, requestUrl(){}, normalizePath(p){return p},
+  Menu: class { addItem(){return this} addSeparator(){return this} showAtMouseEvent(){} },
+  MarkdownRenderer: { render(){ return Promise.resolve(); } }, Component: class {},
 };
 Module._load = function(req, ...rest){ if (req === 'obsidian') return stub; return orig.call(this, req, ...rest); };
 global.window = { setInterval: () => 1, clearInterval(){}, setTimeout: (f)=>{ return 1 }, clearTimeout(){}, open(){}, localStorage: { getItem(){return null}, setItem(){} } };
@@ -34,9 +36,10 @@ fs.mkdirSync('/tmp/harness-vault/.covault', {recursive:true});
 const Plugin = require(require('path').join(__dirname, '..', 'main.js')).default;
 const adapter = new stub.FileSystemAdapter();
 const app = {
-  vault: { adapter, configDir: '.obsidian', on(){}, getAbstractFileByPath(){return null}, getAllLoadedFiles(){return []} },
+  vault: { adapter, configDir: '.obsidian', on(){}, getAbstractFileByPath(){return null}, getAllLoadedFiles(){return []}, getName(){return 'harness'} },
+  metadataCache: { on(){}, getFileCache(){return null} },
   fileManager: { getAvailablePathForAttachment: async (name) => name },
-  workspace: { on(){}, onLayoutReady(cb){cb()}, getLeavesOfType(){return []}, getRightLeaf(){return null}, getLeftLeaf(){return null}, leftSplit: {},
+  workspace: { on(){}, onLayoutReady(cb){cb()}, getLeavesOfType(){return []}, getRightLeaf(){return null}, getLeftLeaf(){return null}, leftSplit: {}, getLeaf(){return null}, detachLeavesOfType(){},
                getActiveFile(){return null}, revealLeaf(){return Promise.resolve()} },
   loadLocalStorage(){return null}, saveLocalStorage(){},
 };

@@ -41,8 +41,12 @@ import { buildConfigExport, type ImportPlan } from "./covault/exportConfig";
 import { ShareFolderModal } from "./ui/ShareFolderModal";
 import { ConflictModal, type ConflictOps } from "./ui/ConflictModal";
 import { FileHistoryModal } from "./ui/FileHistoryModal";
-import { SyncHistoryModal } from "./ui/SyncHistoryModal";
-import { CovaultPanel, COVAULT_VIEW_TYPE } from "./ui/CovaultPanel";
+import { RecommendedPluginsModal } from "./ui/RecommendedPluginsModal";
+import { WorkbenchView, COVAULT_WORKBENCH_VIEW_TYPE } from "./workbench/WorkbenchView";
+import { RetiredPanelView, RETIRED_PANEL_VIEW_TYPE } from "./workbench/RetiredPanelView";
+import { FileStatusIndex } from "./workbench/fileStatus";
+import { buildSyncFixPrompt, openInClaudian, type ClaudianPluginLike } from "./workbench/claudian";
+import type { RefreshScope } from "./workbench/sections/context";
 import { describeEndpoint } from "./llm/reachability";
 import { ConflictResolver } from "./llm/resolver";
 import { createOrgRepo, fetchUserIdentity, noreplyEmail, type GitHubIdentity } from "./git/githubApi";
@@ -173,7 +177,8 @@ export default class CovaultPlugin extends Plugin {
         repos: () => this.syncItems(),
         onStateChange: (states) => {
           this.renderStatusBar(states);
-          this.refreshPanels();
+          this.fileStatusIndex?.syncStatesChanged(states);
+          this.refreshWorkbench("state");
         },
         // Libraries may have pulled new content — keep the routing skill
         // describing what is actually on disk.
@@ -190,7 +195,8 @@ export default class CovaultPlugin extends Plugin {
     this.settingsTab = new CovaultSettingTab(this.app, this);
     this.addSettingTab(this.settingsTab);
 
-    this.registerView(COVAULT_VIEW_TYPE, (leaf) => new CovaultPanel(leaf, this));
+    this.registerView(COVAULT_WORKBENCH_VIEW_TYPE, (leaf) => new WorkbenchView(leaf, this));
+    this.registerView(RETIRED_PANEL_VIEW_TYPE, (leaf) => new RetiredPanelView(leaf));
     this.registerView(COVAULT_AUTOMATION_VIEW_TYPE, (leaf) => new AutomationView(leaf, this));
     // The scheduler: cheap when nothing is due (a pass over a short list).
     // The list re-renders too, so "next in 5 min" stays honest.
@@ -200,18 +206,17 @@ export default class CovaultPlugin extends Plugin {
         this.refreshAutomationViews();
       }, 30_000),
     );
-    this.addRibbonIcon("library", "Open Covault panel", () => void this.activatePanel());
-    // The one palette entry: everything else is a button in the panel,
-    // so finding the panel has to be easy. No default hotkey (Obsidian's
+    this.addRibbonIcon("library", "Open Covault workbench", () => void this.activateWorkbench());
+    // The one palette entry: everything else is in the workbench, so
+    // finding the workbench has to be easy. No default hotkey (Obsidian's
     // guidelines) — users can bind one in Settings → Hotkeys.
     this.addCommand({
       id: "open-panel",
-      name: "Open Covault panel",
-      callback: () => void this.activatePanel(),
+      name: "Open workbench",
+      callback: () => void this.activateWorkbench(),
     });
-    // The panel lives in the left sidebar as its own tab, beside Files and
-    // Search, so its icon is always there to click.
-    this.app.workspace.onLayoutReady(() => void this.ensurePanelInLeftSidebar());
+    // Panels left in a saved workspace from before the workbench close.
+    this.app.workspace.onLayoutReady(() => this.app.workspace.detachLeavesOfType(RETIRED_PANEL_VIEW_TYPE));
 
     this.statusBarEl = this.addStatusBarItem();
     this.statusBarEl.addClass("mod-clickable");
@@ -531,7 +536,7 @@ export default class CovaultPlugin extends Plugin {
    *  list changes show immediately. */
   refreshSettingsUI(): void {
     this.settingsTab?.update();
-    this.refreshPanels();
+    this.refreshWorkbench("all");
   }
 
   /**
@@ -640,6 +645,7 @@ export default class CovaultPlugin extends Plugin {
     for (const leaf of this.app.workspace.getLeavesOfType(COVAULT_AUTOMATION_VIEW_TYPE)) {
       if (leaf.view instanceof AutomationView) leaf.view.refresh();
     }
+    this.refreshWorkbench("jobs");
   }
 
   /** The Automations tab, in the main area like a note. */
@@ -658,36 +664,106 @@ export default class CovaultPlugin extends Plugin {
     this.automationRunner?.stop();
   }
 
-  refreshPanels(): void {
-    for (const leaf of this.app.workspace.getLeavesOfType(COVAULT_VIEW_TYPE)) {
-      if (leaf.view instanceof CovaultPanel) leaf.view.render();
+  refreshWorkbench(scope: RefreshScope): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(COVAULT_WORKBENCH_VIEW_TYPE)) {
+      if (leaf.view instanceof WorkbenchView) leaf.view.refresh(scope);
     }
   }
 
-  /** The sync-status pane, on demand. Nothing opens it on its own any
-   *  more — it is somewhere you go when a library looks wrong, not
-   *  something to keep an eye on. */
-  async activatePanel(): Promise<void> {
-    await this.ensurePanelInLeftSidebar();
-    const leaf = this.app.workspace.getLeavesOfType(COVAULT_VIEW_TYPE)[0];
-    if (leaf) await this.app.workspace.revealLeaf(leaf);
+  /** The workbench, in the main area like a note: reveal it, or open one. */
+  async activateWorkbench(): Promise<void> {
+    const existing = this.app.workspace.getLeavesOfType(COVAULT_WORKBENCH_VIEW_TYPE)[0];
+    if (existing) {
+      await this.app.workspace.revealLeaf(existing);
+      return;
+    }
+    const leaf = this.app.workspace.getLeaf("tab");
+    await leaf.setViewState({ type: COVAULT_WORKBENCH_VIEW_TYPE, active: true });
+    await this.app.workspace.revealLeaf(leaf);
+  }
+
+  private fileStatusIndex: FileStatusIndex | null = null;
+
+  /**
+   * Every synced file's standing, for the workbench. Built on first use
+   * (a vault that never opens the workbench never pays for it) and kept
+   * current from vault events and sync state changes from then on.
+   */
+  fileStatus(): FileStatusIndex {
+    if (this.fileStatusIndex) return this.fileStatusIndex;
+    const index = new FileStatusIndex({
+      items: () => this.syncItems(),
+      toRef: (item) => this.toRef(item),
+      engine: this.engine,
+      sync: this.sync,
+      listFiles: (item) => this.filesOf(item),
+      log: (message, data) => this.debugLog.log("workbench", message, data),
+    });
+    this.fileStatusIndex = index;
+    const changed = (file: { path: string }) => index.fileChanged(file.path);
+    this.registerEvent(this.app.vault.on("modify", changed));
+    this.registerEvent(this.app.vault.on("create", changed));
+    this.registerEvent(this.app.vault.on("delete", changed));
+    this.registerEvent(
+      this.app.vault.on("rename", (file, oldPath) => {
+        index.fileChanged(oldPath);
+        changed(file);
+      }),
+    );
+    this.register(() => index.dispose());
+    return index;
+  }
+
+  /** Files inside a repo, repo-relative — from the vault's own index, so
+   *  it costs nothing. The personal KB is everything outside the
+   *  libraries, narrowed to the marked paths when scope is "marked". */
+  private filesOf(item: SyncItem): string[] {
+    const libs = this.libraryManifest.load().repos.map((r) => r.path);
+    const under = (p: string, root: string) => p === root || p.startsWith(`${root}/`);
+    const out: string[] = [];
+    for (const f of this.app.vault.getAllLoadedFiles()) {
+      if (!(f instanceof TFile)) continue;
+      if (item.path) {
+        if (under(f.path, item.path)) out.push(f.path.slice(item.path.length + 1));
+        continue;
+      }
+      if (libs.some((lib) => under(f.path, lib))) continue;
+      if (item.include && !item.include.some((p) => under(f.path, p))) continue;
+      out.push(f.path);
+    }
+    return out;
   }
 
   /**
-   * Keep exactly one panel, in the left sidebar. Earlier versions put it
-   * in the right one; a panel found anywhere else is moved over, quietly
-   * (not revealed — this runs at startup).
+   * Hand a failed sync to Claudian: a new chat with the request typed in,
+   * for the user to read and send. Without Claudian the request goes to
+   * the clipboard and the way to install it is shown.
    */
-  private async ensurePanelInLeftSidebar(): Promise<void> {
-    const { workspace } = this.app;
-    const leaves = workspace.getLeavesOfType(COVAULT_VIEW_TYPE);
-    const inLeft = leaves.find((l) => l.getRoot() === workspace.leftSplit);
-    for (const l of leaves) if (l !== inLeft) l.detach();
-    if (inLeft) return;
-    const leaf = workspace.getLeftLeaf(false);
-    await leaf?.setViewState({ type: COVAULT_VIEW_TYPE, active: false });
+  async handToClaudian(item: SyncItem, error: string): Promise<void> {
+    const label = item.label ?? (item.path || "Personal knowledge base");
+    const prompt = buildSyncFixPrompt({
+      vaultBase: this.vaultBasePath(),
+      repoPath: item.path,
+      label,
+      branch: item.branch,
+      gitdir: item.gitdir,
+      error,
+    });
+    const host = this.app as unknown as { plugins?: { plugins?: Record<string, unknown>; enabledPlugins?: Set<string> } };
+    await openInClaudian(
+      {
+        getPlugin: () =>
+          host.plugins?.enabledPlugins?.has("realclaudian") ? (host.plugins.plugins?.realclaudian as ClaudianPluginLike) : null,
+        copy: (text) => navigator.clipboard.writeText(text),
+        notify: (message) => new Notice(message, 8_000),
+        onMissing: () => {
+          new Notice("Covault: Claudian isn't installed or enabled — install it from Recommended plugins, then try again.", 8_000);
+          new RecommendedPluginsModal(this.app).open();
+        },
+      },
+      prompt,
+    );
   }
-
 
   /** Register an existing shared library and start syncing it. The
    *  branch recorded is the remote's actual default — pinning "main"
@@ -1131,10 +1207,6 @@ export default class CovaultPlugin extends Plugin {
   clearDebugLog(): void {
     this.debugLog.clear();
     new Notice("Covault: diagnostic log cleared.");
-  }
-
-  openSyncHistory(): void {
-    new SyncHistoryModal(this.app, this.syncHistory).open();
   }
 
   /** Hand the collected log to the user — the point of collecting it. */
