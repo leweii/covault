@@ -104,7 +104,7 @@ describe("GitEngine against a real smart-HTTP remote", () => {
     expect(result.pushed).toBe(false);
     expect(fs.existsSync(path.join(refB.dir, "onboarding.md"))).toBe(true);
     // What the panel and the sync history report: the teammate's note, and who.
-    expect(result.incoming).toEqual({ files: [{ filepath: "onboarding.md", kind: "added" }], authors: ["alice"] });
+    expect(result.incoming).toEqual({ files: [{ filepath: "onboarding.md", kind: "added", author: "alice" }], authors: ["alice"] });
   });
 
   it("reports up-to-date when nothing changed anywhere", async () => {
@@ -132,13 +132,13 @@ describe("GitEngine against a real smart-HTTP remote", () => {
     expect(result.pushed).toBe(true);
     expect(fs.existsSync(path.join(refB.dir, "from-alice.md"))).toBe(true);
     // Only Alice's side of the merge — Bob's own note isn't news to Bob.
-    expect(result.incoming).toEqual({ files: [{ filepath: "from-alice.md", kind: "added" }], authors: ["alice"] });
+    expect(result.incoming).toEqual({ files: [{ filepath: "from-alice.md", kind: "added", author: "alice" }], authors: ["alice"] });
 
     // A picks up the merge.
     const follow = await engineA.syncToRemote(refA, { commitMessage: msg });
     expect(follow.pulled).toBe(true);
     expect(fs.existsSync(path.join(refA.dir, "from-bob.md"))).toBe(true);
-    expect(follow.incoming?.files).toEqual([{ filepath: "from-bob.md", kind: "added" }]);
+    expect(follow.incoming?.files).toEqual([{ filepath: "from-bob.md", kind: "added", author: "bob" }]);
     expect(follow.incoming?.authors).toEqual(["bob"]);
   });
 
@@ -547,5 +547,88 @@ describe("GitEngine against a real smart-HTTP remote", () => {
       fs.writeFileSync(path.join(plain.dir, "note.md"), "# never synced\n");
       expect(await engineA.hasUnpushedWork(plain)).toBe(true);
     });
+  });
+});
+
+/**
+ * The workbench reads where each branch points and what the commits
+ * between two points changed — file by file, credited to whoever made
+ * them — and the Time Machine needs to know when history is cut short.
+ * Own remote and clones: the shared fixture above ends with a conflict
+ * left open on purpose, which would stop a push here.
+ */
+describe("oids, ranges and shallow history", () => {
+  let refC: RepoRef; // alice
+  let refD: RepoRef; // bob
+
+  beforeAll(async () => {
+    const bare = path.join(root, "range.git");
+    execFileSync("git", ["init", "--bare", "-b", "main", bare]);
+    execFileSync("git", ["config", "http.receivepack", "true"], { cwd: bare });
+    const seed = path.join(root, "range-seed");
+    execFileSync("git", ["clone", bare, seed]);
+    const commit = (m: string) =>
+      execFileSync("git", ["-c", "user.name=seed", "-c", "user.email=seed@test.local", "commit", "-m", m], { cwd: seed });
+    fs.writeFileSync(path.join(seed, "README.md"), "# Range KB\n");
+    execFileSync("git", ["add", "."], { cwd: seed });
+    commit("seed");
+    fs.writeFileSync(path.join(seed, "other.md"), "other\n");
+    execFileSync("git", ["add", "."], { cwd: seed });
+    commit("second");
+    execFileSync("git", ["push", "origin", "main"], { cwd: seed });
+    const url = `${server.url}/range.git`;
+    refC = { dir: path.join(root, "clientC"), url, branch: "main" };
+    refD = { dir: path.join(root, "clientD"), url, branch: "main" };
+    await engineA.clone(refC);
+    await engineB.clone(refD);
+  });
+
+  it("refOids: a fresh clone has every ref on the same commit", async () => {
+    const oids = await engineA.refOids(refC);
+    expect(oids.local).toBe(oids.remote);
+    expect(oids.head).toBe(oids.local);
+  });
+
+  it("changesInRange: what this device saved but hasn't shared, credited to it", async () => {
+    fs.writeFileSync(path.join(refC.dir, "unshared.md"), "# not yet\n");
+    await engineA.commitAll(refC, "local only", [{ filepath: "unshared.md", kind: "added" }]);
+    const { local, remote } = await engineA.refOids(refC);
+    expect(local).not.toBe(remote);
+    const pending = await engineA.changesInRange(refC, remote, local!);
+    expect(pending.map((c) => [c.filepath, c.kind, c.author])).toEqual([["unshared.md", "added", "alice"]]);
+    // Nothing the other way round: the remote has nothing this device lacks.
+    expect(await engineA.changesInRange(refC, local, remote!)).toEqual([]);
+  });
+
+  it("changesInRange: diverged branches keep each side's files apart", async () => {
+    // Bob shares something while Alice's commit above is still unshared.
+    fs.writeFileSync(path.join(refD.dir, "from-bob.md"), "bob\n");
+    expect((await engineB.syncToRemote(refD, { commitMessage: msg })).pushed).toBe(true);
+    // Alice learns about it without merging yet.
+    await git.fetch({ fs, http: createNodeHttp(), dir: refC.dir, remote: "origin", ref: "main", singleBranch: true });
+    const { local, remote } = await engineA.refOids(refC);
+    const mine = await engineA.changesInRange(refC, remote, local!);
+    const theirs = await engineA.changesInRange(refC, local, remote!);
+    expect(mine.map((c) => c.filepath)).toEqual(["unshared.md"]);
+    expect(theirs.map((c) => [c.filepath, c.author])).toEqual([["from-bob.md", "bob"]]);
+    // A net tree diff would have called Bob's file "deleted" on Alice's side.
+    expect(await engineA.changedBetween(refC, remote!, local!)).toContainEqual({ filepath: "from-bob.md", kind: "deleted" });
+    // Settle: merge and share — the round credits Bob's file to Bob.
+    const merged = await engineA.syncToRemote(refC, { commitMessage: msg });
+    expect(merged.pushed).toBe(true);
+    expect(merged.incoming?.files).toEqual([{ filepath: "from-bob.md", kind: "added", author: "bob" }]);
+  });
+
+  it("knows a clone is shallow and flags the boundary commit in a file's history", async () => {
+    expect(await engineB.isShallow(refD)).toBe(true);
+    // README.md last changed in "seed", beyond Bob's one-commit boundary
+    // ("second") — git still lists the boundary commit for it.
+    const before = await engineB.fileLog(refD, "README.md");
+    expect(before.map((c) => [c.message, c.shallowBoundary ?? false])).toEqual([["second", true]]);
+
+    await engineB.deepenHistory(refD);
+    expect(await engineB.isShallow(refD)).toBe(false);
+    const after = await engineB.fileLog(refD, "README.md");
+    expect(after.map((c) => [c.message, c.shallowBoundary ?? false])).toEqual([["seed", false]]);
   });
 });

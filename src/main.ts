@@ -10,7 +10,8 @@ import {
 import * as fs from "fs";
 import * as path from "path";
 import type { MutableModels } from "@earendil-works/pi-ai";
-import { DEFAULT_SETTINGS, isSignedIn, type CovaultSettings } from "./settings";
+import { DEFAULT_DOC_STATUSES, DEFAULT_SETTINGS, isSignedIn, type CovaultSettings } from "./settings";
+import { sanitizeDocStatuses } from "./workbench/docStatus";
 import { GitEngine } from "./git/GitEngine";
 import { createNodeHttp } from "./git/nodeHttp";
 import { DebugLog } from "./debug/logger";
@@ -30,12 +31,12 @@ import { ownerKeyForPath } from "./covault/ownership";
 import { sameRemote } from "./git/urls";
 import { FolderLinkedError } from "./covault/errors";
 import {
-  buildKnowledgeSkill,
   migrateLegacySkill,
   removeKnowledgeSkill,
   writeKnowledgeSkill,
 } from "./covault/skill";
 import { purgeLegacyAgentBlock } from "./covault/legacyAgentBlock";
+import { libraryAttachmentFolder } from "./covault/attachments";
 import { buildConfigExport, type ImportPlan } from "./covault/exportConfig";
 import { ShareFolderModal } from "./ui/ShareFolderModal";
 import { ConflictModal, type ConflictOps } from "./ui/ConflictModal";
@@ -75,6 +76,8 @@ export default class CovaultPlugin extends Plugin {
   private settingsTab: CovaultSettingTab | null = null;
   private statusBarEl!: HTMLElement;
   private syncIntervalId: number | null = null;
+  /** When the next automatic sync fires; null while automatic sync is off. */
+  private nextSyncAt: number | null = null;
   /** Libraries mid-removal. Disabling the panel's button isn't enough: any
    *  sync tick re-renders the panel with a fresh, enabled button, and a
    *  removal can spend minutes awaiting an in-flight round. */
@@ -130,6 +133,7 @@ export default class CovaultPlugin extends Plugin {
       log: this.debugLog,
     });
     this.libraryManifest = new ManifestStore(this.vaultBasePath());
+    this.installAttachmentRouting();
     await this.migrateReposToManifest();
     // After the manifest: the header reports how many libraries are set up.
     // Always: the operations log runs unconditionally, so every log file
@@ -174,7 +178,7 @@ export default class CovaultPlugin extends Plugin {
         // Libraries may have pulled new content — keep the routing skill
         // describing what is actually on disk.
         onSyncPass: () => this.refreshKnowledgeSkill(),
-        onSynced: (record) => this.syncHistory.append(record),
+        onRound: (record) => this.syncHistory.append(record),
       },
       this.resolver,
       this.debugLog,
@@ -300,6 +304,12 @@ export default class CovaultPlugin extends Plugin {
     );
 
     this.applySyncSchedule();
+    // One cleanup for however many times the timer is re-armed (settings
+    // changes, the workbench's "Sync now") — registerInterval per re-arm
+    // would pile up a closure each time.
+    this.register(() => {
+      if (this.syncIntervalId !== null) window.clearInterval(this.syncIntervalId);
+    });
     // Accounts connected before identity filling existed have empty
     // fields; the repo warm-up below brings the backend's email if new.
     void this.refreshAuthorFromGitHub();
@@ -444,9 +454,15 @@ export default class CovaultPlugin extends Plugin {
     return key === null ? null : (items.find((i) => i.path === key) ?? null);
   }
 
-  /** Open the resolver UI for the first repo with pending conflicts. */
-  openConflictModal(): void {
-    const pending = this.sync.pendingConflicts()[0];
+  /**
+   * Open the resolver for a repo's conflicts — the given repo, or the
+   * first with any — starting on `focusPath` when the user came from one
+   * note. Always the repo's whole set: a merge is finished for all of
+   * its files at once.
+   */
+  openConflictModal(repoPath?: string, focusPath?: string): void {
+    const all = this.sync.pendingConflicts();
+    const pending = repoPath === undefined ? all[0] : all.find((p) => p.item.path === repoPath);
     if (!pending) {
       new Notice("Covault: no conflicts to resolve 🎉");
       return;
@@ -469,6 +485,7 @@ export default class CovaultPlugin extends Plugin {
       },
       item.label ?? item.path,
       this.resolver,
+      focusPath,
     ).open();
   }
 
@@ -517,6 +534,48 @@ export default class CovaultPlugin extends Plugin {
     this.refreshPanels();
   }
 
+  /**
+   * Attachments pasted or dropped into a library's note are saved inside
+   * that library (libraryAttachmentFolder, relative to its root), so they
+   * sync with it. Everything else keeps Obsidian's own setting.
+   *
+   * getAvailablePathForAttachment is the public hook both paste and drop
+   * go through. Wrapped, not replaced: outside a library — or with the
+   * setting empty — the original decides. Restored on unload only if
+   * nobody wrapped it after us, so we never undo another plugin's patch.
+   */
+  private installAttachmentRouting(): void {
+    const fm = this.app.fileManager;
+    const original = fm.getAvailablePathForAttachment.bind(fm);
+    const routed = async (filename: string, sourcePath?: string): Promise<string> => {
+      const note = sourcePath ?? this.app.workspace.getActiveFile()?.path;
+      const folder = libraryAttachmentFolder(this.libraryManifest.load().repos, note, this.settings.libraryAttachmentFolder);
+      if (!folder) return original(filename, sourcePath);
+      const { vault } = this.app;
+      const dir = normalizePath(folder);
+      if (!vault.getAbstractFileByPath(dir)) {
+        try {
+          await vault.createFolder(dir);
+        } catch {
+          /* exists on disk but not indexed yet — the save still works */
+        }
+      }
+      const dot = filename.lastIndexOf(".");
+      const base = dot > 0 ? filename.slice(0, dot) : filename;
+      const ext = dot > 0 ? filename.slice(dot + 1) : "";
+      // First free name, the way Obsidian numbers its own: "x.png", "x 1.png"…
+      // adapter.exists, not the index: a file just pulled may not be indexed.
+      for (let n = 0; ; n++) {
+        const candidate = `${dir}/${base}${n ? ` ${n}` : ""}${ext ? `.${ext}` : ""}`;
+        if (!(await vault.adapter.exists(candidate))) return candidate;
+      }
+    };
+    fm.getAvailablePathForAttachment = routed;
+    this.register(() => {
+      if (fm.getAvailablePathForAttachment === routed) fm.getAvailablePathForAttachment = original;
+    });
+  }
+
   /** Model plumbing for automations — the same AI settings as conflict merging. */
   private automationModelDeps(): ModelDeps {
     return {
@@ -543,7 +602,7 @@ export default class CovaultPlugin extends Plugin {
   /** Create or overwrite a note through the vault, so editors and the
    *  explorer see it at once. Falls back to the adapter for a file that
    *  exists on disk but isn't indexed yet (just pulled by a sync). */
-  private async writeVaultNote(vaultPath: string, content: string): Promise<void> {
+  async writeVaultNote(vaultPath: string, content: string): Promise<void> {
     const p = normalizePath(vaultPath);
     const { vault } = this.app;
     const existing = vault.getAbstractFileByPath(p);
@@ -776,6 +835,15 @@ export default class CovaultPlugin extends Plugin {
         case "syncInterval":
           this.settings.sync.intervalMinutes = Number(change.value);
           break;
+        case "libraryAttachmentFolder":
+          this.settings.libraryAttachmentFolder = String(change.value);
+          break;
+        case "docStatuses": {
+          // Carried as JSON (an import change is a scalar); already validated by the plan.
+          const statuses = sanitizeDocStatuses(JSON.parse(String(change.value)));
+          if (statuses) this.settings.docStatuses = statuses;
+          break;
+        }
         case "announceAgents":
           await this.setAnnounceToAgents(Boolean(change.value));
           break;
@@ -1013,18 +1081,34 @@ export default class CovaultPlugin extends Plugin {
     this.refreshSettingsUI();
   }
 
-  /** (Re)arm the background sync timer from current settings. */
+  /**
+   * (Re)arm the background sync timer from current settings. Only a
+   * settings change and the workbench's own "Sync now" re-arm it: a retry
+   * of one library or an automation's sync must not move the countdown.
+   */
   applySyncSchedule(): void {
     if (this.syncIntervalId !== null) {
       window.clearInterval(this.syncIntervalId);
       this.syncIntervalId = null;
     }
+    this.nextSyncAt = null;
     if (!this.settings.sync.auto) return;
-    this.syncIntervalId = window.setInterval(
-      () => void this.sync.syncAll("auto"),
-      this.settings.sync.intervalMinutes * 60_000,
-    );
-    this.registerInterval(this.syncIntervalId);
+    const interval = this.settings.sync.intervalMinutes * 60_000;
+    this.nextSyncAt = Date.now() + interval;
+    this.syncIntervalId = window.setInterval(() => {
+      this.nextSyncAt = Date.now() + interval;
+      void this.sync.syncAll("auto");
+    }, interval);
+  }
+
+  /** When the next automatic sync fires, or null while automatic sync is off. */
+  nextAutoSyncAt(): number | null {
+    return this.nextSyncAt;
+  }
+
+  /** A full pass just ran by hand — the wait for the next one starts over. */
+  restartSyncCountdown(): void {
+    this.applySyncSchedule();
   }
 
   /**
@@ -1067,6 +1151,11 @@ export default class CovaultPlugin extends Plugin {
   /** Commit email of the current user — history views mark their own rows. */
   gitAuthorEmail(): string {
     return this.gitAuthor().email;
+  }
+
+  /** Display name of the current user — what a status is "set by". */
+  gitAuthorName(): string {
+    return this.gitAuthor().name;
   }
 
   private gitAuthor(): { name: string; email: string } {
@@ -1179,6 +1268,8 @@ export default class CovaultPlugin extends Plugin {
       sync: { ...DEFAULT_SETTINGS.sync, ...raw?.sync },
       repos: raw?.repos ?? [],
       author: { ...DEFAULT_SETTINGS.author, ...raw?.author },
+      // data.json is hand-editable: a malformed list falls back to the defaults.
+      docStatuses: sanitizeDocStatuses(raw?.docStatuses) ?? structuredClone(DEFAULT_DOC_STATUSES),
     };
     // Left behind by versions that had the built-in Ask agent.
     delete (this.settings as { ask?: unknown }).ask;

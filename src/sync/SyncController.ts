@@ -10,7 +10,7 @@ import type { ChangeKind, GitEngine, RepoRef, SyncResult } from "../git/GitEngin
 import type { ManifestRepo } from "../covault/manifest";
 import type { ConflictResolver } from "../llm/resolver";
 import type { DebugLog } from "../debug/logger";
-import type { SyncRecord } from "../debug/syncHistory";
+import type { SyncRecord, SyncStatus } from "../debug/syncHistory";
 import { applyResolutions, extractHunks, getContextLines, parseConflict, type HunkResolution } from "./ConflictParser";
 import { setTimeout as setNodeTimeout, clearTimeout as clearNodeTimeout } from "node:timers";
 
@@ -31,7 +31,11 @@ export interface RepoState {
   phase: RepoPhase;
   /** Human-readable detail for error/conflict states. */
   detail?: string;
+  /** When this repo last synced cleanly; carried through every later
+   *  phase, so "last success" is still known while it is failing. */
   lastSyncedAt?: number;
+  /** Rounds failed in a row; back to 0 on the next clean sync. */
+  failures?: number;
 }
 
 /** One thing to sync: a shared library, or the main (vault-root) repo. */
@@ -54,8 +58,8 @@ export interface SyncHost {
   onStateChange(states: ReadonlyMap<string, RepoState>): void;
   /** Called once after every full sync pass (regardless of outcome). */
   onSyncPass?(): void;
-  /** Called after each repo round that ended in sync (not on failure or conflict). */
-  onSynced?(record: SyncRecord): void;
+  /** Called after every repo round — clean, failed, or stopped on a conflict. */
+  onRound?(record: SyncRecord): void;
 }
 
 /**
@@ -66,6 +70,8 @@ export interface SyncHost {
 export interface UnseenUpdates {
   /** Path inside the repo → latest kind of change. */
   files: Map<string, ChangeKind>;
+  /** Path inside the repo → the teammate credited with its latest change. */
+  fileAuthors: Map<string, string>;
   authors: Set<string>;
   /** When the first unseen change arrived. */
   since: number;
@@ -74,6 +80,9 @@ export interface UnseenUpdates {
 export interface PendingConflict {
   item: SyncItem;
   filepaths: string[];
+  /** Path → the teammate whose change collides with this device's, when
+   *  the history made that out. Best effort; absent means "a teammate". */
+  authors?: Record<string, string>;
 }
 
 export class SyncController {
@@ -145,11 +154,21 @@ export class SyncController {
 
   private noteIncoming(repoPath: string, incoming: SyncResult["incoming"]): void {
     if (!incoming) return;
-    const entry = this.unseen.get(repoPath) ?? { files: new Map(), authors: new Set(), since: Date.now() };
+    const entry: UnseenUpdates = this.unseen.get(repoPath) ?? {
+      files: new Map(),
+      fileAuthors: new Map(),
+      authors: new Set(),
+      since: Date.now(),
+    };
     for (const f of incoming.files) {
       // Added then deleted before anyone looked: nothing left to see.
-      if (f.kind === "deleted" && entry.files.get(f.filepath) === "added") entry.files.delete(f.filepath);
-      else entry.files.set(f.filepath, entry.files.get(f.filepath) === "added" && f.kind === "modified" ? "added" : f.kind);
+      if (f.kind === "deleted" && entry.files.get(f.filepath) === "added") {
+        entry.files.delete(f.filepath);
+        entry.fileAuthors.delete(f.filepath);
+        continue;
+      }
+      entry.files.set(f.filepath, entry.files.get(f.filepath) === "added" && f.kind === "modified" ? "added" : f.kind);
+      if (f.author) entry.fileAuthors.set(f.filepath, f.author);
     }
     for (const a of incoming.authors) entry.authors.add(a);
     if (entry.files.size > 0) this.unseen.set(repoPath, entry);
@@ -160,8 +179,20 @@ export class SyncController {
     return this.states.get(repoPath) ?? { phase: "idle" };
   }
 
+  /**
+   * Replace a repo's phase, keeping what the phase doesn't say: when it
+   * last synced cleanly, and how many rounds in a row have failed. A
+   * failing library's "last success" would otherwise blank the moment a
+   * retry started.
+   */
   private setState(repoPath: string, state: RepoState): void {
-    this.states.set(repoPath, state);
+    const prev = this.states.get(repoPath);
+    const failures = state.phase === "error" ? (prev?.failures ?? 0) + 1 : state.phase === "idle" ? 0 : prev?.failures;
+    this.states.set(repoPath, {
+      lastSyncedAt: prev?.lastSyncedAt,
+      ...state,
+      ...(failures ? { failures } : {}),
+    });
     this.host.onStateChange(this.states);
   }
 
@@ -349,6 +380,17 @@ export class SyncController {
       console.error(`[covault] sync failed for ${name}:`, e);
       // The stack is the part a bug report needs and the Notice can't carry.
       this.log?.op("repo", `${name} — failed`, { error: e, stack: e instanceof Error ? e.stack : undefined });
+      this.host.onRound?.({
+        at: Date.now(),
+        library: name,
+        repoPath: repo.path,
+        trigger,
+        status: "error",
+        summary: `failed — ${message}`,
+        error: message,
+        files: [],
+        ms: Date.now() - startedAt,
+      });
       if (trigger === "manual") new Notice(`Covault: couldn't sync "${name}" — ${message}`);
     } finally {
       if (expiry) clearNodeTimeout(expiry);
@@ -365,19 +407,32 @@ export class SyncController {
     name: string,
     startedAt: number,
   ): Promise<number> {
-    const synced = (summary: string, files: SyncResult["committed"] = [], incoming: SyncResult["incoming"] = null) =>
-      this.host.onSynced?.({
+    const round = (
+      status: SyncStatus,
+      summary: string,
+      files: SyncResult["committed"] = [],
+      incoming: SyncResult["incoming"] = null,
+      error?: string,
+    ) =>
+      this.host.onRound?.({
         at: Date.now(),
         library: name,
+        repoPath: repo.path,
         trigger,
+        status,
         summary,
+        ...(error ? { error } : {}),
         files,
         incoming,
         ms: Date.now() - startedAt,
       });
+    const synced = (summary: string, files: SyncResult["committed"] = [], incoming: SyncResult["incoming"] = null) =>
+      round("ok", summary, files, incoming);
     if (!(await this.engine.isRepo(ref))) {
       if (repo.noAutoClone) {
-        this.setState(repo.path, { phase: "error", detail: "Needs set up again (repo state missing)" });
+        const detail = "Needs set up again (repo state missing)";
+        this.setState(repo.path, { phase: "error", detail });
+        round("error", `failed — ${detail}`, [], null, detail);
         return 0;
       }
       // An empty library (created on GitHub but never pushed to) has
@@ -416,11 +471,16 @@ export class SyncController {
         return 0;
       }
 
-      this.pending.set(repo.path, { item: repo, filepaths: result.conflictFilepaths });
+      this.pending.set(repo.path, {
+        item: repo,
+        filepaths: result.conflictFilepaths,
+        authors: await this.conflictAuthors(ref, result.conflictFilepaths),
+      });
       this.setState(repo.path, {
         phase: "conflict",
         detail: `${result.conflictFilepaths.length} note(s) changed by you and a teammate`,
       });
+      round("conflict", `${result.conflictFilepaths.length} note(s) need your input`, result.committed, result.incoming);
       new Notice(
         `Covault: in "${name}", ${result.conflictFilepaths.length} note(s) need your input — ` +
           `run "Covault: Resolve conflicts" to sort them out.`,
@@ -450,6 +510,25 @@ export class SyncController {
       new Notice(`Covault: "${name}" ${summarize(result)}.`);
     }
     return 0;
+  }
+
+  /**
+   * Who changed each conflicting note on the remote side — the commits
+   * GitHub has that this device's branch doesn't. Best effort: it only
+   * names the teammate in the conflict card, so any failure means the
+   * card says "a teammate" instead.
+   */
+  private async conflictAuthors(ref: RepoRef, filepaths: string[]): Promise<Record<string, string> | undefined> {
+    try {
+      const { local, remote } = await this.engine.refOids(ref);
+      if (!remote) return undefined;
+      const credits = await this.engine.changesInRange(ref, local, remote);
+      const authors: Record<string, string> = {};
+      for (const c of credits) if (filepaths.includes(c.filepath)) authors[c.filepath] = c.author;
+      return Object.keys(authors).length > 0 ? authors : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /**

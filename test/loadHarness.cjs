@@ -14,7 +14,7 @@ const stub = {
       const walk = (items) => { for (const it of items ?? []) { if (it.control) tab.getControlValue(it.control.key); walk(it.items); } };
       walk(defs);
     } addCommand(){} addRibbonIcon(){} registerView(){} registerEvent(){}
-    registerObsidianProtocolHandler(){} registerInterval(){} addStatusBarItem(){return new El()}
+    registerObsidianProtocolHandler(){} registerInterval(){} register(){} addStatusBarItem(){return new El()}
     loadData(){return Promise.resolve(null)} saveData(){return Promise.resolve()} },
   PluginSettingTab: class { constructor(app, plugin){ this.app=app; this.plugin=plugin; this.containerEl=new El(); } update(){} },
   ItemView: class { constructor(leaf){ this.leaf=leaf; this.contentEl=new El(); } registerEvent(){} },
@@ -35,6 +35,7 @@ const Plugin = require(require('path').join(__dirname, '..', 'main.js')).default
 const adapter = new stub.FileSystemAdapter();
 const app = {
   vault: { adapter, configDir: '.obsidian', on(){}, getAbstractFileByPath(){return null}, getAllLoadedFiles(){return []} },
+  fileManager: { getAvailablePathForAttachment: async (name) => name },
   workspace: { on(){}, onLayoutReady(cb){cb()}, getLeavesOfType(){return []}, getRightLeaf(){return null}, getLeftLeaf(){return null}, leftSplit: {},
                getActiveFile(){return null}, revealLeaf(){return Promise.resolve()} },
   loadLocalStorage(){return null}, saveLocalStorage(){},

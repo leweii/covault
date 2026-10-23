@@ -52,6 +52,10 @@ export class ConflictModal extends Modal {
     private onResolved: () => void,
     private repoLabel: string,
     private resolver: ConflictResolver | null,
+    /** Start on this file rather than the first (the workbench's per-note
+     *  Resolve button). The whole repo's conflicts stay in the modal: a
+     *  merge is finished for all of them at once. */
+    private focusPath?: string,
   ) {
     super(app);
     this.modalEl.addClass("covault-cv2-modal");
@@ -62,6 +66,8 @@ export class ConflictModal extends Modal {
     contentEl.empty();
     contentEl.createDiv({ cls: "covault-cv2-loading", text: "Loading conflicts…" });
     await this.loadFiles();
+    const focus = this.files.findIndex((f) => f.path === this.focusPath);
+    if (focus > 0) this.currentFile = focus;
     this.render();
     this.maybeTriggerAI();
   }

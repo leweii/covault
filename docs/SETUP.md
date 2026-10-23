@@ -263,6 +263,8 @@ OS 用户配置目录:macOS `~/Library/Application Support/`、Windows `%APPDATA
 
 ## 5. 附件(Git LFS)
 
+**团队库里粘贴的附件放哪**:设置 → Covault → Attachments → **Attachment folder in libraries**(默认 `attachments`)。在任何团队库的笔记里粘贴或拖入文件,都会存到**该库根目录**下的这个文件夹,例如 `teams/team-cookbook-kb/attachments/`,于是附件随库同步给同事。库外的笔记仍按 Obsidian 自己的「新附件默认位置」。留空则完全交还 Obsidian 的设置。只影响新粘贴的附件,已有的不会移动。
+
 新装的客户端开箱即用:附件按扩展名自动转成 LFS 指针,字节走 LFS 存储,`.gitattributes` 由插件维护。
 
 **存量附件**:LFS 支持之前就已提交的原始二进制不会被批量迁移;某个附件下次被修改时,会在正常同步里自动转成指针。

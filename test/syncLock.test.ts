@@ -7,6 +7,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { SyncController, type SyncItem } from "../src/sync/SyncController";
 import type { GitEngine, SyncResult } from "../src/git/GitEngine";
+import type { SyncRecord } from "../src/debug/syncHistory";
 
 function items(...paths: string[]): SyncItem[] {
   return paths.map((p) => ({ path: p, url: `https://github.com/o/${p || "main"}.git`, branch: "main" }));
@@ -188,6 +189,67 @@ describe("forget", () => {
     sync.forget("lib-a");
     expect(sync.state("lib-a").phase).toBe("idle");
     expect(sync.pendingConflicts()).toEqual([]);
+  });
+});
+
+/**
+ * The workbench reads two things off a repo's state that the phase alone
+ * doesn't say: when it last synced cleanly (still known while it fails)
+ * and how many rounds in a row have failed. Every round, however it
+ * ends, also leaves a record for the sync log.
+ */
+describe("round records and failure bookkeeping", () => {
+  const ok: SyncResult = { committed: [], pulled: false, pushed: false, conflictFilepaths: [], lfsPending: 0, incoming: null };
+
+  function recording(engine: GitEngine) {
+    const records: SyncRecord[] = [];
+    const sync = new SyncController(engine, {
+      vaultBasePath: () => "/vault",
+      repos: () => items("lib-a"),
+      onStateChange: () => {},
+      onRound: (r) => records.push(r),
+    });
+    return { sync, records };
+  }
+
+  it("counts failures in a row and keeps the last success through them", async () => {
+    let fail = false;
+    const engine = {
+      isRepo: async () => true,
+      syncToRemote: async () => {
+        if (fail) throw new Error("network gone");
+        return ok;
+      },
+    } as unknown as GitEngine;
+    const { sync, records } = recording(engine);
+    await sync.syncJust("lib-a");
+    const okAt = sync.state("lib-a").lastSyncedAt;
+    expect(okAt).toBeTypeOf("number");
+
+    fail = true;
+    await sync.syncJust("lib-a");
+    await sync.syncJust("lib-a");
+    expect(sync.state("lib-a")).toMatchObject({ phase: "error", failures: 2, lastSyncedAt: okAt });
+    expect(records.map((r) => r.status)).toEqual(["ok", "error", "error"]);
+    expect(records[1]).toMatchObject({ repoPath: "lib-a", error: "network gone", summary: "failed — network gone", trigger: "manual" });
+
+    fail = false;
+    await sync.syncJust("lib-a");
+    expect(sync.state("lib-a").phase).toBe("idle");
+    expect(sync.state("lib-a").failures).toBeUndefined();
+  });
+
+  it("records a round that stopped on a conflict", async () => {
+    const engine = {
+      isRepo: async () => true,
+      syncToRemote: async () => ({ ...ok, conflictFilepaths: ["a.md"] }),
+    } as unknown as GitEngine;
+    const { sync, records } = recording(engine);
+    await sync.syncJust("lib-a");
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ status: "conflict", summary: "1 note(s) need your input" });
+    // No history to ask (stub engine) → no names; the card says "a teammate".
+    expect(sync.pendingConflicts()[0]!.authors).toBeUndefined();
   });
 });
 

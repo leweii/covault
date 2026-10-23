@@ -67,6 +67,31 @@ export interface FileCommit {
   authorName: string;
   authorEmail: string;
   date: Date;
+  /**
+   * The oldest commit a shallow clone holds. Its parents aren't local, so
+   * git lists it for every file whether or not the file changed there —
+   * callers show it as "older history not loaded", not as a version.
+   */
+  shallowBoundary?: boolean;
+}
+
+/** Where each branch of a repo points; null when a ref doesn't exist yet. */
+export interface RepoOids {
+  head: string | null;
+  /** refs/heads/<branch> */
+  local: string | null;
+  /** refs/remotes/origin/<branch> — what this device last saw on GitHub. */
+  remote: string | null;
+}
+
+/** One file's change across a range of commits, credited to the newest
+ *  commit that touched it. */
+export interface RangeChange extends LocalChange {
+  author: string;
+  authorEmail: string;
+  /** Commit time (ms). */
+  at: number;
+  commit: string;
 }
 
 export interface SyncResult {
@@ -91,11 +116,26 @@ export interface SyncResult {
   incoming: IncomingChanges | null;
 }
 
+/** A file a sync round brought in, with the teammate who changed it when
+ *  that is known (absent for this device's own commits and for merge
+ *  resolutions nobody else is credited for). */
+export interface IncomingFile extends LocalChange {
+  author?: string;
+}
+
 /** Teammates' changes a sync round pulled in. */
 export interface IncomingChanges {
-  files: LocalChange[];
+  files: IncomingFile[];
   /** Names on the commits that carried them, this device's author excluded. */
   authors: string[];
+}
+
+/** Covault's own bookkeeping — never anyone's note, left out of every
+ *  "what changed" listing. */
+function isBookkeepingPath(filepath: string): boolean {
+  return (
+    filepath === ".covault" || filepath.startsWith(".covault/") || filepath === ".gitattributes" || filepath === ".gitignore"
+  );
 }
 
 /** "notes/plan.md" → "notes/plan (local copy 2026-08-13 17-42).md" — the
@@ -852,6 +892,7 @@ export class GitEngine {
       force: true, // don't error when the path is missing in part of the history
       depth,
     });
+    const boundary = await this.shallowOids(ref);
     return entries.map((e) => ({
       hash: e.oid,
       parents: e.commit.parent,
@@ -859,7 +900,118 @@ export class GitEngine {
       authorName: e.commit.author.name,
       authorEmail: e.commit.author.email,
       date: new Date(e.commit.author.timestamp * 1000),
+      ...(boundary.has(e.oid) ? { shallowBoundary: true } : {}),
     }));
+  }
+
+  /** The shallow boundary commits (git's `shallow` file); empty when the
+   *  whole history is local. */
+  private async shallowOids(ref: RepoRef): Promise<Set<string>> {
+    try {
+      const text = await this.deps.fs.promises.readFile(`${this.gitdirOf(ref)}/shallow`, "utf8");
+      return new Set(text.split("\n").map((l) => l.trim()).filter((l) => /^[0-9a-f]{40}$/.test(l)));
+    } catch {
+      return new Set();
+    }
+  }
+
+  async isShallow(ref: RepoRef): Promise<boolean> {
+    return (await this.shallowOids(ref)).size > 0;
+  }
+
+  /**
+   * Fetch the rest of the branch's history. Clones take one commit so a
+   * library opens fast; a file's history needs the whole line, and that
+   * is asked for explicitly, never in the background. The depth is the
+   * number git itself sends for `--unshallow`.
+   */
+  async deepenHistory(ref: RepoRef): Promise<void> {
+    const done = this.deps.log?.opTime("deepen", ref.dir, { branch: ref.branch });
+    await git.fetch({ ...this.common(ref), remote: "origin", ref: ref.branch, singleBranch: true, depth: 2147483647 });
+    done?.({ stillShallow: await this.isShallow(ref) });
+  }
+
+  async refOids(ref: RepoRef): Promise<RepoOids> {
+    return {
+      head: await this.resolve(ref, "HEAD"),
+      local: await this.resolve(ref, `refs/heads/${ref.branch}`),
+      remote: await this.resolve(ref, `refs/remotes/origin/${ref.branch}`),
+    };
+  }
+
+  /** Files whose content differs between two commits — the net effect of
+   *  moving a branch from `before` to `after` (null before = everything in
+   *  `after` is new). */
+  async changedBetween(ref: RepoRef, before: string | null, after: string): Promise<LocalChange[]> {
+    const files: LocalChange[] = [];
+    const trees = before ? [git.TREE({ ref: before }), git.TREE({ ref: after })] : [git.TREE({ ref: after })];
+    await git.walk({
+      fs: this.deps.fs,
+      dir: ref.dir,
+      gitdir: ref.gitdir,
+      trees,
+      map: async (filepath, entries) => {
+        if (filepath === ".") return true;
+        if (isBookkeepingPath(filepath)) return null;
+        const a = before ? (entries[0] ?? null) : null;
+        const b = (before ? entries[1] : entries[0]) ?? null;
+        const aType = a ? await a.type() : null;
+        const bType = b ? await b.type() : null;
+        if (aType === "tree" || bType === "tree") return true; // descend
+        const aOid = a ? await a.oid() : null;
+        const bOid = b ? await b.oid() : null;
+        if (aOid === bOid) return null;
+        files.push({ filepath, kind: !aOid ? "added" : !bOid ? "deleted" : "modified" });
+        return null;
+      },
+    });
+    return files;
+  }
+
+  /**
+   * What the commits `include` has and `exclude` lacks changed, file by
+   * file, each credited to the newest commit that touched it.
+   *
+   * A union of per-commit diffs rather than one net tree diff: that is
+   * what stays right when the two branches have diverged (this device's
+   * unpushed work while teammates pushed too — a net diff would list
+   * their files as this device's). Merge commits are credited last, so
+   * they only claim what no plain commit explains: a merger's own
+   * conflict edits. Bounded to 200 commits a side; a boundary commit of
+   * a shallow clone has no local parent and is skipped.
+   */
+  async changesInRange(ref: RepoRef, exclude: string | null, include: string): Promise<RangeChange[]> {
+    const { fs } = this.deps;
+    const DEPTH = 200;
+    const seen = new Set<string>();
+    if (exclude) {
+      for (const c of await git.log({ fs, dir: ref.dir, gitdir: ref.gitdir, ref: exclude, depth: DEPTH })) seen.add(c.oid);
+    }
+    const fresh = (await git.log({ fs, dir: ref.dir, gitdir: ref.gitdir, ref: include, depth: DEPTH })).filter(
+      (c) => !seen.has(c.oid),
+    );
+    const byFile = new Map<string, RangeChange>();
+    const credit = async (c: (typeof fresh)[number]) => {
+      let changes: LocalChange[];
+      try {
+        changes = await this.changedBetween(ref, c.commit.parent[0] ?? null, c.oid);
+      } catch {
+        return; // shallow boundary: its parent isn't here to diff against
+      }
+      for (const change of changes) {
+        if (byFile.has(change.filepath)) continue; // newest wins
+        byFile.set(change.filepath, {
+          ...change,
+          author: c.commit.author.name,
+          authorEmail: c.commit.author.email,
+          at: c.commit.author.timestamp * 1000,
+          commit: c.oid,
+        });
+      }
+    };
+    for (const c of fresh) if (c.commit.parent.length <= 1) await credit(c);
+    for (const c of fresh) if (c.commit.parent.length > 1) await credit(c);
+    return [...byFile.values()];
   }
 
   /** File content at a commit, or null when it doesn't exist there. */
@@ -951,45 +1103,19 @@ export class GitEngine {
    */
   private async incomingChanges(ref: RepoRef, before: string, after: string | null): Promise<IncomingChanges | null> {
     if (!after || after === before) return null;
-    const { fs } = this.deps;
     try {
-      const files: LocalChange[] = [];
-      await git.walk({
-        fs,
-        dir: ref.dir,
-        gitdir: ref.gitdir,
-        trees: [git.TREE({ ref: before }), git.TREE({ ref: after })],
-        map: async (filepath, [a, b]) => {
-          if (filepath === ".") return true;
-          // Covault's own bookkeeping isn't anyone's note.
-          if (filepath === ".covault" || filepath.startsWith(".covault/") || filepath === ".gitattributes" || filepath === ".gitignore") {
-            return null;
-          }
-          const aType = a ? await a.type() : null;
-          const bType = b ? await b.type() : null;
-          if (aType === "tree" || bType === "tree") return true; // descend
-          const aOid = a ? await a.oid() : null;
-          const bOid = b ? await b.oid() : null;
-          if (aOid === bOid) return null;
-          files.push({ filepath, kind: !aOid ? "added" : !bOid ? "deleted" : "modified" });
-          return null;
-        },
-      });
+      const files = await this.changedBetween(ref, before, after);
       if (files.length === 0) return null;
-
-      // Bounded walks: a long-lived library has thousands of commits, and
-      // this only needs the handful a round brings in.
-      const DEPTH = 200;
-      const seen = new Set((await git.log({ fs, dir: ref.dir, gitdir: ref.gitdir, ref: before, depth: DEPTH })).map((c) => c.oid));
       const me = this.deps.author().email.toLowerCase();
+      const credits = new Map((await this.changesInRange(ref, before, after)).map((c) => [c.filepath, c]));
       const authors = new Set<string>();
-      for (const c of await git.log({ fs, dir: ref.dir, gitdir: ref.gitdir, ref: after, depth: DEPTH })) {
-        // Not break: log interleaves both sides of a merge by date, so a
-        // commit we already had can come before teammates' older ones.
-        if (seen.has(c.oid)) continue;
-        if (c.commit.author.email.toLowerCase() !== me) authors.add(c.commit.author.name);
-      }
-      return { files, authors: [...authors] };
+      const credited: IncomingFile[] = files.map((f) => {
+        const c = credits.get(f.filepath);
+        if (!c || c.authorEmail.toLowerCase() === me) return f;
+        authors.add(c.author);
+        return { ...f, author: c.author };
+      });
+      return { files: credited, authors: [...authors] };
     } catch (e) {
       this.deps.log?.log("sync", `${ref.dir} — couldn't list incoming changes`, { error: e });
       return null;

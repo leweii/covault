@@ -1,0 +1,1462 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>Covault Workbench — prototype</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+/* Approximates Obsidian's default theme variables so the prototype reads
+   like the real plugin view. In the plugin these come from the theme. */
+:root { --tree-w: 330px; --insp-w: 320px; --tl-w: 340px; }
+:root[data-theme="dark"] {
+  --bg: #1e1e1e; --bg-2: #262626; --bg-3: #2f2f2f; --border: #363636; --hover: rgba(255,255,255,.06);
+  --text: #dadada; --muted: #a3a3a3; --faint: #6f6f6f; --accent: #8a5cf5; --accent-hover: #9d76f7; --on-accent: #fff;
+  --green: #44cf6e; --red: #fb464c; --yellow: #e0ac00; --blue: #3a9fff; --orange: #e9973f;
+}
+:root[data-theme="light"] {
+  --bg: #ffffff; --bg-2: #f6f6f6; --bg-3: #ececec; --border: #e0e0e0; --hover: rgba(0,0,0,.05);
+  --text: #222; --muted: #5c5c5c; --faint: #9a9a9a; --accent: #7c3aed; --accent-hover: #6d28d9; --on-accent: #fff;
+  --green: #08b94e; --red: #e93147; --yellow: #c48b00; --blue: #086ddd; --orange: #d27b10;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg); color: var(--text);
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  display: flex; flex-direction: column;
+}
+button { font: inherit; color: inherit; cursor: pointer; }
+.icon { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: 0 0 auto; }
+
+/* ── Fake Obsidian chrome (tab strip) ─────────────────────── */
+.chrome { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 10px; background: var(--bg-2); border-bottom: 1px solid var(--border); font-size: 12.5px; color: var(--muted); }
+.chrome .tab { display: flex; align-items: center; gap: 6px; padding: 5px 12px; background: var(--bg); border: 1px solid var(--border); border-bottom: none; border-radius: 6px 6px 0 0; color: var(--text); margin-top: 6px; }
+.chrome .spacer { flex: 1; }
+.chrome .proto { font-size: 11.5px; color: var(--faint); }
+.chrome button { background: var(--bg-3); border: 1px solid var(--border); border-radius: 5px; padding: 2px 8px; font-size: 11.5px; }
+
+/* ── Workbench layout ─────────────────────────────────────── */
+.wb { flex: 1; display: grid; grid-template-rows: auto 1fr; min-height: 0; }
+
+/* Top status bar */
+.top { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 22px; padding: 12px 20px; border-bottom: 1px solid var(--border); }
+.chrome .tab .mini { display: inline-flex; align-items: center; gap: 5px; margin-left: 6px; font-size: 11.5px; color: var(--muted); }
+.chrome .tab .mini .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+.chrome .tab .mini.is-conflict .dot { background: var(--yellow); }
+.chrome .tab .mini.is-error .dot { background: var(--red); }
+.chrome .tab .mini.is-syncing .dot { background: var(--blue); animation: pulse 1s infinite; }
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand h1 { font-size: 17px; margin: 0; font-weight: 650; }
+.state-pill { display: inline-flex; align-items: center; gap: 7px; padding: 3px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 600; background: var(--bg-3); }
+.state-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+.state-pill.is-conflict .dot { background: var(--yellow); }
+.state-pill.is-syncing .dot { background: var(--blue); animation: pulse 1s infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.kpis { display: flex; gap: 10px; justify-content: flex-start; flex-wrap: wrap; }
+.kpi { display: flex; align-items: center; gap: 9px; padding: 7px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-2); min-width: 128px; cursor: pointer; }
+.kpi:hover { background: var(--hover); }
+.kpi .n { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.kpi .l { font-size: 11.5px; color: var(--muted); line-height: 1.2; }
+.kpi.red .n { color: var(--red); } .kpi.orange .n { color: var(--orange); } .kpi.blue .n { color: var(--blue); } .kpi.green .n { color: var(--green); }
+
+.countdown { display: flex; align-items: center; gap: 12px; }
+.ring { position: relative; width: 52px; height: 52px; }
+.ring svg { width: 52px; height: 52px; transform: rotate(-90deg); }
+.ring circle { fill: none; stroke-width: 4; }
+.ring .track { stroke: var(--bg-3); }
+.ring .prog { stroke: var(--accent); stroke-linecap: round; transition: stroke-dashoffset 1s linear; }
+.ring .t { position: absolute; inset: 0; display: grid; place-items: center; font-size: 11.5px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.ring.is-syncing .prog { stroke: var(--blue); stroke-dasharray: 40 200 !important; animation: spin 1s linear infinite; transform-origin: center; transition: none; }
+.cd-text .big { font-weight: 650; }
+.cd-text .small { font-size: 11.5px; color: var(--muted); }
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg-3); font-size: 13px; }
+.btn:hover { background: var(--hover); }
+.btn.cta { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.btn.cta:hover { background: var(--accent-hover); }
+.btn.sm { padding: 3px 9px; font-size: 12px; }
+.btn:disabled { opacity: .5; cursor: default; }
+
+/* Body: tree | main | inspector */
+.body { display: grid; grid-template-columns: var(--tree-w) 1fr auto; min-height: 0; position: relative; }
+/* Drag handles on panel edges — a 6px hit area, a 2px accent line on hover. */
+.resizer { position: absolute; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 4; }
+.resizer::after { content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 2px; background: transparent; transition: background .1s; }
+.resizer:hover::after, .resizer.dragging::after { background: var(--accent); }
+body.resizing { cursor: col-resize; user-select: none; }
+.col { position: relative; }
+.col { min-height: 0; display: flex; flex-direction: column; }
+.col + .col { border-left: 1px solid var(--border); }
+.col-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px 8px; }
+.col-head h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0; font-weight: 650; flex: 1; }
+
+/* ── Tree ─────────────────────────────────────────────────── */
+.search { margin: 0 14px 8px; display: flex; align-items: center; gap: 6px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-2); color: var(--faint); }
+.search input { flex: 1; border: none; background: none; outline: none; color: var(--text); font: inherit; font-size: 13px; }
+.chips { display: flex; gap: 5px; padding: 0 14px 8px; flex-wrap: wrap; }
+.chip { padding: 2px 9px; border-radius: 999px; border: 1px solid var(--border); background: none; font-size: 12px; color: var(--muted); }
+.chip.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.chip .c { opacity: .75; margin-left: 3px; }
+.tree { flex: 1; overflow: auto; padding: 0 6px 12px; font-size: 13px; }
+.node { display: flex; align-items: center; gap: 5px; padding: 3px 6px; border-radius: 5px; cursor: pointer; white-space: nowrap; }
+.node:hover { background: var(--hover); }
+.node.sel { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.node .tw { width: 14px; color: var(--faint); display: inline-flex; justify-content: center; flex: 0 0 14px; }
+.node .name { overflow: hidden; text-overflow: ellipsis; flex: 1; }
+.node.lib > .name { font-weight: 650; }
+.node.lib { margin-top: 6px; }
+.node .meta { font-size: 11px; color: var(--faint); }
+.badge { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 17px; padding: 0 5px; border-radius: 999px; font-size: 10.5px; font-weight: 700; }
+.badge.conflict { background: color-mix(in srgb, var(--red) 20%, transparent); color: var(--red); }
+.badge.local { background: color-mix(in srgb, var(--orange) 20%, transparent); color: var(--orange); }
+.badge.incoming { background: color-mix(in srgb, var(--blue) 20%, transparent); color: var(--blue); }
+.st { width: 16px; height: 16px; display: inline-grid; place-items: center; flex: 0 0 16px; border-radius: 50%; font-size: 10px; font-weight: 800; }
+.st.synced { color: var(--green); }
+.st.local { color: var(--orange); }
+.st.pending { color: var(--orange); }
+.st.incoming { color: var(--blue); }
+.st.conflict { color: var(--red); }
+.dtag { flex: 0 0 auto; font-size: 10.5px; line-height: 1.5; padding: 0 6px; border-radius: 4px; font-weight: 600; }
+.dtag.s-draft { background: var(--bg-3); color: var(--muted); }
+.dtag.s-review { background: color-mix(in srgb, var(--yellow) 18%, transparent); color: var(--yellow); }
+.dtag.s-approved { background: color-mix(in srgb, var(--green) 16%, transparent); color: var(--green); }
+.dtag.s-outdated { background: color-mix(in srgb, var(--red) 14%, transparent); color: var(--red); }
+.chips .lbl { font-size: 11.5px; color: var(--faint); align-self: center; margin-right: 2px; }
+.docstatus { margin: 12px 0; padding: 10px 12px; border-radius: 9px; border: 1px solid var(--border); background: var(--bg-2); }
+.docstatus .h { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.docstatus .opts { display: flex; gap: 5px; flex-wrap: wrap; }
+.docstatus .opts button { border: 1px solid var(--border); background: none; border-radius: 6px; padding: 2px 8px; font-size: 12px; }
+.docstatus .opts button.on { border-color: transparent; }
+.docstatus .by { font-size: 11.5px; color: var(--faint); margin-top: 6px; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 8px 14px 12px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 4px; }
+
+/* ── Main column ──────────────────────────────────────────── */
+.main { overflow: auto; padding: 4px 18px 18px; }
+.card { border: 1px solid var(--border); border-radius: 10px; background: var(--bg-2); margin-top: 12px; }
+.card-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.card-head h3 { margin: 0; font-size: 13.5px; flex: 1; }
+.card.conflicts { border-color: color-mix(in srgb, var(--red) 45%, var(--border)); }
+.card.conflicts .card-head { background: color-mix(in srgb, var(--red) 8%, transparent); border-radius: 10px 10px 0 0; }
+.crow { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-top: 1px solid var(--border); }
+.crow:first-of-type { border-top: none; }
+.crow .path { flex: 1; min-width: 0; }
+.crow.is-sel { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.flink { color: inherit; cursor: pointer; text-decoration: none; border-bottom: 1px dashed transparent; }
+.flink:hover { color: var(--accent); border-bottom-color: currentColor; }
+.files .flink { color: var(--muted); }
+.files .flink:hover { color: var(--accent); }
+.crow .path b { font-weight: 600; }
+.crow .path .sub { font-size: 12px; color: var(--muted); }
+
+/* Libraries strip */
+.libs-wrap { margin-top: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-2); }
+.libs-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; user-select: none; }
+.libs-head:hover { background: var(--hover); border-radius: 10px; }
+.libs-head h3 { margin: 0; font-size: 13px; }
+.libs-head .sum { flex: 1; font-size: 12px; color: var(--muted); }
+.libs-head .tog { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+/* Collapsed: one line of name pills, scrolls sideways; a fade says there's more. */
+.libs-strip { position: relative; padding: 0 12px 10px; }
+.libs-strip .row { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: thin; padding-bottom: 4px; }
+.libs-strip::after { content: ""; position: absolute; right: 12px; top: 0; bottom: 14px; width: 48px; background: linear-gradient(to right, transparent, var(--bg-2)); pointer-events: none; }
+.lpill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg); font-size: 12.5px; white-space: nowrap; cursor: pointer; flex: 0 0 auto; }
+.lpill:hover { background: var(--hover); }
+.lpill.error { border-color: color-mix(in srgb, var(--red) 55%, var(--border)); }
+.libs { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; padding: 0 12px 12px; }
+.lib-card { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--bg); }
+.lib-card .row1 { display: flex; align-items: center; gap: 7px; }
+.lib-card .row1 .nm { font-weight: 650; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-card .row2 { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.lib-card .row3 { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.sdot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex: 0 0 8px; }
+.sdot.conflict { background: var(--yellow); } .sdot.syncing { background: var(--blue); animation: pulse 1s infinite; } .sdot.error { background: var(--red); }
+
+/* Tabs + logs */
+.tabs { display: flex; gap: 2px; padding: 4px 10px 0; border-bottom: 1px solid var(--border); }
+.tabs button { background: none; border: none; padding: 8px 12px; font-size: 13px; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.tabs button.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+.tabs .count { font-size: 11px; color: var(--faint); margin-left: 4px; }
+.log { padding: 4px 0; }
+.entry { padding: 8px 14px; border-top: 1px solid var(--border); }
+.entry:first-child { border-top: none; }
+.entry .l1 { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.entry .time { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; width: 92px; flex: 0 0 92px; }
+.entry .lib { font-weight: 600; }
+.entry .sum { color: var(--muted); font-size: 12.5px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.entry .dur { font-size: 11.5px; color: var(--faint); }
+.tag { font-size: 10.5px; padding: 1px 6px; border-radius: 4px; background: var(--bg-3); color: var(--muted); }
+.tag.ok { color: var(--green); background: color-mix(in srgb, var(--green) 14%, transparent); }
+.tag.err { color: var(--red); background: color-mix(in srgb, var(--red) 14%, transparent); }
+.tag.skip { color: var(--yellow); background: color-mix(in srgb, var(--yellow) 14%, transparent); }
+.tag.run { color: var(--blue); background: color-mix(in srgb, var(--blue) 14%, transparent); }
+.files { margin: 6px 0 2px 100px; font-size: 12.5px; }
+.files div { display: flex; gap: 6px; padding: 1px 0; color: var(--muted); }
+.files .ar { width: 14px; font-weight: 800; }
+.files .ar.up { color: var(--orange); } .files .ar.down { color: var(--blue); }
+.files .k { width: 14px; color: var(--faint); font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; }
+.files .who { color: var(--faint); }
+
+.job { border-top: 1px solid var(--border); }
+.job:first-child { border-top: none; }
+.job .jh { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; }
+.job .jh:hover { background: var(--hover); }
+.job .jn { font-weight: 600; }
+.job .js { font-size: 12px; color: var(--muted); }
+.job .jinfo { flex: 1; min-width: 0; }
+.job .jnext { text-align: right; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.job .jnext b { color: var(--text); font-weight: 600; }
+.jbody { padding: 0 14px 12px 40px; }
+.jedit { margin: 0 14px 12px 40px; padding: 12px 14px; border: 1px solid var(--accent); border-radius: 10px; background: var(--bg); display: grid; gap: 10px; }
+.jedit label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.jedit input[type=text], .jedit input[type=number], .jedit input[type=time], .jedit textarea { font: inherit; font-size: 13px; color: var(--text); background: var(--bg-2); border: 1px solid var(--border); border-radius: 7px; padding: 6px 9px; }
+.jedit textarea { min-height: 84px; resize: vertical; line-height: 1.5; }
+.jedit .schedrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--text); }
+.jedit .schedrow input[type=number] { width: 64px; }
+.jedit .foot { display: flex; align-items: center; gap: 8px; }
+.jedit .foot .grow { flex: 1; font-size: 12px; }
+.jedit .foot .grow a { color: var(--accent); text-decoration: none; }
+.btn.danger-text { color: var(--red); }
+.run { padding: 6px 0; border-top: 1px dashed var(--border); font-size: 12.5px; }
+.run:first-child { border-top: none; }
+.run .rl { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.run .rt { color: var(--muted); font-variant-numeric: tabular-nums; }
+.run .report { margin: 6px 0 2px; padding: 8px 10px; border-left: 2px solid var(--border); color: var(--text); background: var(--bg); border-radius: 0 6px 6px 0; }
+.run .report a { color: var(--accent); text-decoration: none; margin-right: 8px; }
+.spin { animation: spin 1s linear infinite; }
+
+/* ── Inspector ────────────────────────────────────────────── */
+.insp { width: 0; overflow: hidden; transition: width .18s ease; background: var(--bg); }
+.insp.open { width: var(--insp-w); }
+body.resizing .insp { transition: none; }
+.insp-inner { width: var(--insp-w); overflow: auto; height: 100%; }
+.ix-head { position: sticky; top: 0; z-index: 2; background: var(--bg); padding: 14px 18px 12px; border-bottom: 1px solid var(--border); }
+.ix-top { display: flex; align-items: flex-start; gap: 10px; }
+.ix-fileicon { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; flex: 0 0 34px; background: var(--bg-3); color: var(--muted); }
+.ix-fileicon .icon { width: 17px; height: 17px; }
+.ix-title { flex: 1; min-width: 0; }
+.ix-title h4 { margin: 0; font-size: 15px; line-height: 1.3; word-break: break-word; }
+.ix-crumb { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin-top: 3px; font-size: 11.5px; color: var(--faint); }
+.ix-crumb .lib { color: var(--muted); font-weight: 600; }
+.ix-close { background: none; border: none; color: var(--faint); padding: 4px; border-radius: 6px; }
+.ix-close:hover { background: var(--hover); color: var(--text); }
+.ix-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.ix-actions .btn { white-space: nowrap; }
+.ix-actions .btn.danger { background: var(--red); border-color: var(--red); color: #fff; }
+.ix-body { padding: 4px 18px 22px; }
+.ix-sec { padding: 14px 0 0; }
+.ix-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--faint); font-weight: 700; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+.ix-label .r { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 500; font-size: 11.5px; }
+/* Sync status card with a coloured edge */
+.ix-sync { position: relative; padding: 12px 14px 12px 16px; border-radius: 10px; background: var(--bg-2); overflow: hidden; }
+.ix-sync::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--c, var(--green)); }
+.ix-sync .t { display: flex; align-items: center; gap: 8px; font-weight: 650; font-size: 13.5px; }
+.ix-sync .t .st { background: color-mix(in srgb, var(--c) 18%, transparent); }
+.ix-sync .d { font-size: 12.5px; color: var(--muted); margin-top: 4px; line-height: 1.45; }
+.track { display: grid; grid-template-columns: repeat(4, 1fr); margin-top: 14px; }
+.tk { position: relative; text-align: center; font-size: 10.5px; color: var(--faint); padding-top: 16px; }
+.tk::before { content: ""; position: absolute; top: 3px; left: 50%; width: 8px; height: 8px; margin-left: -4px; border-radius: 50%; background: var(--bg); box-shadow: 0 0 0 2px var(--border); z-index: 1; }
+.tk::after { content: ""; position: absolute; top: 6px; left: 50%; width: 100%; height: 2px; background: var(--border); }
+.tk:last-child::after { display: none; }
+.tk.done { color: var(--muted); } .tk.done::before { background: var(--green); box-shadow: 0 0 0 2px var(--green); } .tk.done::after { background: var(--green); }
+.tk.warn { color: var(--orange); } .tk.warn::before { background: var(--orange); box-shadow: 0 0 0 3px color-mix(in srgb, var(--orange) 35%, transparent); }
+.tk.bad { color: var(--red); } .tk.bad::before { background: var(--red); box-shadow: 0 0 0 3px color-mix(in srgb, var(--red) 35%, transparent); }
+/* Document status: one segmented row */
+.ds-seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; padding: 3px; border-radius: 9px; background: var(--bg-2); }
+.ds-seg button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 5px 4px; border: none; border-radius: 6px; background: none; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.ds-seg button:hover { background: var(--hover); color: var(--text); }
+.ds-seg button i { width: 7px; height: 7px; border-radius: 50%; background: var(--c); flex: 0 0 7px; }
+.ds-seg button.on { background: var(--bg); color: var(--text); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.25), inset 0 0 0 1px color-mix(in srgb, var(--c) 55%, transparent); }
+.ds-by { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--faint); margin-top: 7px; }
+.ds-by button { margin-left: auto; background: none; border: none; color: var(--faint); font-size: 11.5px; padding: 0; text-decoration: underline; text-underline-offset: 2px; }
+/* Facts */
+.facts { display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; font-size: 12.5px; align-items: center; }
+.facts .k { display: flex; align-items: center; gap: 6px; color: var(--faint); }
+.facts .k .icon { width: 13px; height: 13px; }
+.facts .v { color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 6px; }
+.av { width: 20px; height: 20px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 10px; font-weight: 700; color: #fff; flex: 0 0 20px; }
+/* History mini-timeline */
+.mini-tl { position: relative; }
+.mini-tl .it { position: relative; display: flex; gap: 10px; padding: 6px 0 10px; }
+.mini-tl .it:not(:last-child)::before { content: ""; position: absolute; left: 9.5px; top: 28px; bottom: -2px; width: 1px; background: var(--border); }
+.mini-tl .tx { flex: 1; min-width: 0; font-size: 12.5px; }
+.mini-tl .tx .m { color: var(--text); }
+.mini-tl .tx .s { color: var(--faint); font-size: 11.5px; margin-top: 1px; }
+.ix-link { display: inline-flex; align-items: center; gap: 5px; margin-top: 2px; background: none; border: none; padding: 0; color: var(--accent); font-size: 12.5px; }
+.ix-link:hover { text-decoration: underline; }
+.hist .h .msg { flex: 1; color: var(--muted); }
+.hist .h .w { color: var(--faint); font-size: 11.5px; flex: 0 0 auto; }
+.insp .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+
+/* ── Sync failure + terminal fallback ─────────────────────── */
+.alert { display: flex; align-items: center; gap: 10px; margin-top: 12px; padding: 9px 12px; border: 1px solid color-mix(in srgb, var(--red) 55%, var(--border)); border-radius: 10px; background: color-mix(in srgb, var(--red) 9%, var(--bg-2)); }
+.alert .ic { color: var(--red); display: inline-flex; }
+.alert.is-loading { border-color: color-mix(in srgb, var(--blue) 45%, var(--border)); background: color-mix(in srgb, var(--blue) 7%, var(--bg-2)); }
+.alert.is-loading .ic { color: var(--blue); }
+.alert.is-loading .msg .e { opacity: .55; }
+.kpi .n .icon { width: 18px; height: 18px; color: var(--muted); }
+.kpi.is-loading { opacity: .85; }
+.alert .msg { flex: 1; min-width: 0; font-size: 13px; }
+.alert .msg b { font-weight: 650; }
+.alert .msg .e { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; font-family: ui-monospace, Menlo, monospace; }
+.alert .msg .e.full { white-space: normal; }
+.alert .more { background: none; border: none; color: var(--faint); font-size: 12px; padding: 0 4px; }
+.card.failed { border-color: color-mix(in srgb, var(--red) 55%, var(--border)); }
+.card.failed .card-head { background: color-mix(in srgb, var(--red) 10%, transparent); border-radius: 10px 10px 0 0; }
+.fail { padding: 12px 14px; }
+.fail .err { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--red); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px; margin: 6px 0 10px; }
+.fail .meta { font-size: 12.5px; color: var(--muted); }
+.fallback { margin-top: 10px; padding: 10px 12px; border: 1px dashed var(--border); border-radius: 9px; background: var(--bg); }
+.fallback .fh { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.fallback .fh b { flex: 1; font-size: 13px; }
+.cmd { position: relative; font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; background: var(--bg-3); border-radius: 6px; padding: 8px 10px; max-height: 150px; overflow: auto; color: var(--text); }
+.fallback .acts { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.fallback .note { font-size: 11.5px; color: var(--faint); margin-top: 6px; }
+
+/* ── Conflict resolver (existing ConflictModal, shown here) ── */
+.backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: none; align-items: center; justify-content: center; z-index: 20; }
+.backdrop.open { display: flex; }
+.modal { width: min(1180px, 94vw); max-height: 88vh; display: flex; flex-direction: column; background: var(--bg); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
+.modal-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.modal-head .ttl { flex: 1; } .modal-head .ttl b { font-size: 15px; } .modal-head .ttl .p { font-size: 12px; color: var(--muted); }
+.hunknav { display: flex; align-items: center; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--border); font-size: 12.5px; color: var(--muted); }
+.hunknav .dots { display: flex; gap: 4px; }
+.hunknav .dots span { width: 22px; height: 6px; border-radius: 3px; background: var(--bg-3); }
+.hunknav .dots span.done { background: var(--green); } .hunknav .dots span.cur { background: var(--accent); }
+.panes { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; padding: 14px 16px; overflow: auto; }
+.pane { border: 1px solid var(--border); border-radius: 9px; display: flex; flex-direction: column; min-height: 0; }
+.pane.chosen { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.pane-h { padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 12.5px; display: flex; align-items: center; gap: 6px; }
+.pane-h b { flex: 1; }
+.pane pre { margin: 0; padding: 10px 12px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; white-space: pre-wrap; flex: 1; }
+.pane pre .hl { background: color-mix(in srgb, var(--yellow) 18%, transparent); }
+.pane.ai pre .hl { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.pane .pick { margin: 8px 12px 12px; }
+.conf { display: inline-flex; gap: 2px; } .conf i { width: 7px; height: 7px; border-radius: 50%; background: var(--bg-3); } .conf i.on { background: var(--green); } .conf.mid i.on { background: var(--yellow); }
+.why { margin: 0 16px; padding: 8px 12px; border-radius: 8px; background: var(--bg-2); font-size: 12.5px; color: var(--muted); }
+.why ul { margin: 4px 0 0; padding-left: 18px; }
+.modal-foot { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); margin-top: 12px; }
+.modal-foot .grow { flex: 1; font-size: 12px; color: var(--faint); }
+
+/* ── Time machine (file history) ──────────────────────────── */
+.tm { position: absolute; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 5; }
+.tm.open { display: flex; }
+.tm-head { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--border); }
+.tm-head .ttl { flex: 1; min-width: 0; }
+.tm-head .ttl b { font-size: 15px; }
+.tm-head .ttl .p { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+.seg button { border: none; background: none; padding: 4px 10px; font-size: 12.5px; color: var(--muted); }
+.seg button.on { background: var(--accent); color: var(--on-accent); }
+.tm-body { flex: 1; display: grid; grid-template-columns: 1fr var(--tl-w); min-height: 0; }
+.tl { position: relative; }
+.tm-stage { position: relative; overflow: auto; padding: 26px 34px 34px; background: radial-gradient(ellipse at top, color-mix(in srgb, var(--accent) 9%, transparent), transparent 60%); }
+.scrub { display: flex; align-items: center; gap: 10px; margin: 0 auto 18px; max-width: 820px; font-size: 12px; color: var(--muted); }
+.scrub input { flex: 1; accent-color: var(--accent); }
+.stack { position: relative; max-width: 820px; margin: 0 auto; }
+.stack .ghost { position: absolute; left: 0; right: 0; top: 0; height: 100%; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-2); }
+.stack .g1 { transform: translateY(-10px) scale(.975); opacity: .55; }
+.stack .g2 { transform: translateY(-20px) scale(.95); opacity: .3; }
+.page { position: relative; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-2); box-shadow: 0 10px 30px rgba(0,0,0,.25); }
+.page-head { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: 12.5px; color: var(--muted); }
+.page-head b { color: var(--text); }
+.page-body { padding: 16px 22px 22px; font-size: 14px; }
+.page-body h1 { font-size: 20px; margin: 0 0 10px; } .page-body h2 { font-size: 15.5px; margin: 16px 0 6px; }
+.page-body p, .page-body li { color: var(--text); }
+.page-body ul { padding-left: 20px; }
+.diff { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; padding: 8px 0; }
+.diff div { padding: 1px 16px; white-space: pre-wrap; }
+.diff .add { background: color-mix(in srgb, var(--green) 16%, transparent); }
+.diff .add::before { content: "+ "; color: var(--green); }
+.diff .del { background: color-mix(in srgb, var(--red) 14%, transparent); text-decoration: line-through; color: var(--muted); }
+.diff .del::before { content: "− "; color: var(--red); }
+.diff .ctx { color: var(--muted); } .diff .ctx::before { content: "  "; }
+.diff .gap { color: var(--faint); text-align: center; }
+/* Inline view: the whole document, readable, with changes marked in place. */
+.diff.inline { font-family: inherit; font-size: 14px; line-height: 1.6; padding: 12px 0; }
+.diff.inline div { padding: 1px 22px; }
+.diff.inline .ctx { color: var(--text); }
+.diff.inline .ctx::before, .diff.inline .add::before, .diff.inline .del::before { content: ""; }
+.diff.inline .add { box-shadow: inset 3px 0 0 var(--green); }
+.diff.inline .h1 { font-size: 20px; font-weight: 700; padding-top: 4px; padding-bottom: 4px; }
+.diff.inline .h2 { font-size: 15.5px; font-weight: 650; padding-top: 10px; }
+.diff.inline .li { padding-left: 40px; position: relative; }
+.diff.inline .li::after { content: "•"; position: absolute; left: 26px; color: var(--muted); }
+.diff.inline .del { box-shadow: inset 3px 0 0 var(--red); }
+.tl { border-left: 1px solid var(--border); overflow: auto; padding: 8px 0 16px; }
+.tl-day { padding: 10px 16px 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--faint); font-weight: 650; }
+.ver { position: relative; display: flex; gap: 10px; padding: 7px 16px 7px 34px; cursor: pointer; }
+.ver:hover { background: var(--hover); }
+.ver.sel { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.ver::before { content: ""; position: absolute; left: 20px; top: 0; bottom: 0; width: 2px; background: var(--border); }
+.ver .vd { position: absolute; left: 15px; top: 12px; width: 12px; height: 12px; border-radius: 50%; background: var(--bg); border: 2px solid var(--faint); }
+.ver.sel .vd { border-color: var(--accent); background: var(--accent); }
+.ver.now .vd { border-color: var(--green); }
+.ver.local .vd { border-color: var(--orange); border-style: dashed; }
+.ver .vi { flex: 1; min-width: 0; }
+.ver .vm { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ver .vs { font-size: 11.5px; color: var(--muted); }
+.ver .vcheck { cursor: pointer; position: absolute; left: 0; top: 10px; width: 14px; height: 14px; margin-left: -2px; border: 1.5px solid var(--faint); border-radius: 3px; display: none; place-items: center; font-size: 10px; color: transparent; background: var(--bg); }
+.tm.multi .ver { padding-left: 40px; }
+.tm.multi .ver .vcheck { display: grid; left: 6px; }
+.tm.multi .ver::before, .tm.multi .ver .vd { margin-left: 8px; }
+.ver.sel .vcheck { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.ver.sel.mid { border-radius: 0; }
+.diff .by { float: right; font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 11px; color: var(--muted); padding-left: 10px; }
+.selbar { display: flex; align-items: center; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.selbar b { color: var(--text); }
+.ver .vc { font-size: 11px; font-family: ui-monospace, Menlo, monospace; white-space: nowrap; }
+.ver .vc .a { color: var(--green); } .ver .vc .d { color: var(--red); }
+.tm-foot { padding: 8px 16px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--faint); }
+.kbd { font-family: ui-monospace, Menlo, monospace; font-size: 11px; padding: 0 4px; border: 1px solid var(--border); border-radius: 3px; }
+
+.toast { position: fixed; bottom: 18px; right: 18px; background: var(--bg-3); border: 1px solid var(--border); padding: 9px 14px; border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.3); opacity: 0; transform: translateY(8px); transition: .2s; pointer-events: none; font-size: 13px; }
+.toast.show { opacity: 1; transform: none; }
+.empty { padding: 18px 14px; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+
+<div class="chrome">
+  <div class="tab"><svg class="icon" style="color:var(--accent)"><use href="#i-library"/></svg> Covault
+    <span class="mini" id="statePill"><span class="dot"></span><span id="stateText"></span></span></div>
+  <div class="spacer"></div>
+  <span class="proto">UI prototype — mock data, nothing is real</span>
+  <button id="themeBtn">Light / Dark</button>
+</div>
+
+<div class="wb">
+  <!-- ── Top status bar ── -->
+  <header class="top">
+    <div class="kpis" id="kpis"></div>
+    <div class="countdown">
+      <div class="ring" id="ring">
+        <svg viewBox="0 0 52 52"><circle class="track" cx="26" cy="26" r="22"/><circle class="prog" id="ringProg" cx="26" cy="26" r="22"/></svg>
+        <div class="t" id="ringText"></div>
+      </div>
+      <div class="cd-text">
+        <div class="big" id="cdBig"></div>
+        <div class="small" id="cdSmall"></div>
+      </div>
+      <button class="btn cta" id="syncNow"><svg class="icon"><use href="#i-refresh"/></svg> Sync now</button>
+    </div>
+  </header>
+
+  <div class="body">
+    <!-- ── Left: team document tree ── -->
+    <section class="col">
+      <div class="resizer" data-resize="tree" style="right:0"></div>
+      <div class="col-head"><h2>Team documents</h2><button class="btn sm" id="collapseAll" title="Collapse all">Collapse</button></div>
+      <div class="search"><svg class="icon"><use href="#i-search"/></svg><input id="q" placeholder="Filter notes…"></div>
+      <div class="chips" id="chips"></div>
+      <div class="chips" id="statusChips"></div>
+      <div class="tree" id="tree"></div>
+      <div class="legend">
+        <span><span class="st synced">✓</span>Shared, up to date</span>
+        <span><span class="st local">●</span>Changed here, not shared yet</span>
+        <span><span class="st incoming">↓</span>New from teammates</span>
+        <span><span class="st conflict">!</span>Needs your input</span>
+      </div>
+    </section>
+
+    <!-- ── Middle: libraries, conflicts, logs ── -->
+    <section class="col main" id="main">
+      <div class="libs-wrap" id="libs"></div>
+      <div id="failCard"></div>
+      <div id="conflictCard"></div>
+      <div class="card" id="logCard">
+        <div class="tabs" id="tabs">
+          <button data-tab="sync" class="on">Sync log <span class="count" id="cSync"></span></button>
+          <button data-tab="jobs">Jobs <span class="count" id="cJobs"></span></button>
+        </div>
+        <div id="tabBody"></div>
+      </div>
+    </section>
+
+    <!-- ── Right: file inspector (opens on file click) ── -->
+    <aside class="col insp" id="insp"><div class="resizer" data-resize="insp" style="left:0"></div><div class="insp-inner" id="inspInner"></div></aside>
+
+    <!-- ── Time machine: one file's whole history ── -->
+    <div class="tm" id="tm"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<div class="backdrop" id="resolver"></div>
+
+<!-- Lucide-style icons -->
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="i-library" viewBox="0 0 24 24"><path d="m16 6 4 14"/><path d="M12 6v14"/><path d="M8 8v12"/><path d="M4 4v16"/></symbol>
+  <symbol id="i-layout" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M8 16H3v5"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+  <symbol id="i-chev-r" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="i-chev-d" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.7 18-8-14a2 2 0 0 0-3.5 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3"/></symbol>
+  <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.7 9.7 0 0 0-6.7 2.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></symbol>
+  <symbol id="i-arrow-l" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></symbol>
+  <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+  <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M21.2 6.8a2.8 2.8 0 0 0-4-4L3.8 16.2a2 2 0 0 0-.5.9l-1.3 4.5 4.5-1.3a2 2 0 0 0 .9-.5z"/><path d="m15 5 4 4"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+  <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.8-3.8a6 6 0 0 1-7.9 7.9l-6.9 6.9a2.1 2.1 0 0 1-3-3l6.9-6.9a6 6 0 0 1 7.9-7.9z"/></symbol>
+  <symbol id="i-bot" viewBox="0 0 24 24"><path d="M12 8V4H8"/><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></symbol>
+</svg>
+
+<script>
+/* ────────────────────────────── Mock data ────────────────────────────── */
+const now = Date.now();
+const min = 60_000, hr = 3_600_000;
+const SYNC_INTERVAL = 10 * min;
+
+// Status per file: synced | local (edited here, not shared) | pending (saved, waiting to upload)
+//                  | incoming (new from teammates, unseen) | conflict
+const libraries = [
+  { name: "team-cookbook-kb", path: "teams/team-cookbook-kb", state: "conflict", last: now - 4 * min, notes: 375,
+    tree: {
+      "README.md": "synced",
+      "01_doc": {
+        "01_overview": { "架构总览.md": "synced", "术语表.md": "incoming", "系统边界.md": "synced" },
+        "02_domain": { "Recipe 数据模型.md": "conflict", "门店同步流程.md": "incoming", "价格规则.md": "synced", "过敏原标注.md": "local" },
+        "03_operations": { "发布流程.md": "synced", "故障处理手册.md": "pending", "值班表.md": "synced" },
+      },
+      "03_report": { "2026-10 周报.md": "incoming", "2026-09 月报.md": "synced" },
+      "04_inbox": { "待整理-会议记录.md": "local", "想法.md": "synced" },
+      "attachments": { "recipe-flow.png": "synced", "Pasted image 20261023.png": "pending" },
+    } },
+  { name: "team-oms-kb", path: "teams/team-oms-kb", state: "idle", last: now - 4 * min, notes: 128,
+    tree: {
+      "README.md": "synced",
+      "订单状态机.md": "synced",
+      "退款流程.md": "conflict",
+      "接口": { "下单 API.md": "synced", "回调说明.md": "synced" },
+    } },
+  { name: "team-ccp-kb", path: "teams/team-ccp-kb", state: "error", last: now - 34 * min, notes: 212,
+    error: "push failed: couldn't reach github.com — the proxy refused the connection (ECONNREFUSED 10.0.0.8:3128)", attempts: 3,
+    tree: {
+      "README.md": "synced",
+      "客服话术": { "退款话术.md": "incoming", "升级规则.md": "synced" },
+      "SLA.md": "synced",
+    } },
+  { name: "team-aggregator-kb", path: "teams/team-aggregator-kb", state: "idle", last: now - 4 * min, notes: 141, tree: { "README.md": "synced", "01_doc": { "概览.md": "incoming", "流程.md": "synced" } } },
+  { name: "team-blueapron-kb", path: "teams/team-blueapron-kb", state: "idle", last: now - 14 * min, notes: 298, tree: { "README.md": "synced", "01_doc": { "概览.md": "synced", "流程.md": "synced" }, "草稿.md": "local" } },
+  { name: "team-hdr-kb", path: "teams/team-hdr-kb", state: "idle", last: now - 24 * min, notes: 86, tree: { "README.md": "synced", "01_doc": { "概览.md": "synced", "流程.md": "synced" } } },
+  { name: "team-pantry-kb", path: "teams/team-pantry-kb", state: "idle", last: now - 4 * min, notes: 209, tree: { "README.md": "synced", "01_doc": { "概览.md": "incoming", "流程.md": "synced" } } },
+  { name: "team-consumer-kb", path: "teams/team-consumer-kb", state: "idle", last: now - 14 * min, notes: 262, tree: { "README.md": "synced", "01_doc": { "概览.md": "synced", "流程.md": "synced" } } },
+  { name: "team-data-kb", path: "teams/team-data-kb", state: "conflict", last: now - 24 * min, notes: 53, tree: { "README.md": "synced", "01_doc": { "概览.md": "synced", "流程.md": "synced" }, "笔记.md": "conflict" } },
+  { name: "team-fullfillment-kb", path: "teams/team-fullfillment-kb", state: "idle", last: now - 4 * min, notes: 26, tree: { "README.md": "synced", "01_doc": { "概览.md": "incoming", "流程.md": "synced" } } },
+  { name: "team-kds-kb", path: "teams/team-kds-kb", state: "idle", last: now - 14 * min, notes: 260, tree: { "README.md": "synced", "01_doc": { "概览.md": "synced", "流程.md": "synced" } } },
+  { name: "team-platform-kb", path: "teams/team-platform-kb", state: "idle", last: now - 24 * min, notes: 152, tree: { "README.md": "synced", "01_doc": { "概览.md": "synced", "流程.md": "synced" } } },
+  { name: "team-supplychain-kb", path: "teams/team-supplychain-kb", state: "idle", last: now - 4 * min, notes: 139, tree: { "README.md": "synced", "01_doc": { "概览.md": "incoming", "流程.md": "synced" }, "草稿.md": "local" } },
+  { name: "team-wonderworks-kb", path: "teams/team-wonderworks-kb", state: "idle", last: now - 14 * min, notes: 118, tree: { "README.md": "synced", "01_doc": { "概览.md": "synced", "流程.md": "synced" } } },
+  { name: "My knowledge base", path: "", personal: true, state: "idle", last: now - 4 * min, notes: 46,
+    tree: { "A0-Inbox": { "Covault tech design.md": "local", "AI 时代的控制力.md": "synced" }, "写作的目的.md": "synced" } },
+];
+
+const fileInfo = {
+  "teams/team-cookbook-kb/01_doc/02_domain/Recipe 数据模型.md": { conflict: "You and Brooker Fang both changed the “Ingredient” section." },
+  "teams/team-oms-kb/退款流程.md": { conflict: "You and Cato Wen changed the same refund step. The AI couldn't merge it confidently." },
+};
+// Document statuses — set by people, stored in each note's frontmatter
+// (`status: In review`). The set of statuses is defined per team.
+const DOC_STATUSES = [
+  { id: "draft", label: "Draft" }, { id: "review", label: "In review" },
+  { id: "approved", label: "Approved" }, { id: "outdated", label: "Outdated" },
+];
+const docStatus = {
+  "teams/team-cookbook-kb/01_doc/01_overview/架构总览.md": { s: "approved", by: "Felix Li", at: now - 6 * 24 * hr },
+  "teams/team-cookbook-kb/01_doc/01_overview/术语表.md": { s: "review", by: "Brooker Fang", at: now - 3 * hr },
+  "teams/team-cookbook-kb/01_doc/02_domain/Recipe 数据模型.md": { s: "review", by: "Cato Wen", at: now - 26 * hr },
+  "teams/team-cookbook-kb/01_doc/02_domain/价格规则.md": { s: "approved", by: "Felix Li", at: now - 9 * 24 * hr },
+  "teams/team-cookbook-kb/01_doc/02_domain/过敏原标注.md": { s: "draft", by: "You", at: now - 20 * min },
+  "teams/team-cookbook-kb/01_doc/03_operations/值班表.md": { s: "outdated", by: "Nancy Liu", at: now - 40 * 24 * hr },
+  "teams/team-cookbook-kb/04_inbox/待整理-会议记录.md": { s: "draft", by: "You", at: now - 2 * hr },
+  "teams/team-oms-kb/订单状态机.md": { s: "approved", by: "Cato Wen", at: now - 12 * 24 * hr },
+  "teams/team-oms-kb/退款流程.md": { s: "review", by: "Cato Wen", at: now - 5 * hr },
+};
+let statusFilter = "all";
+const people = ["Brooker Fang", "Cato Wen", "Felix Li", "Nancy Liu", "You"];
+
+let syncLog = [
+  { at: now - 4 * min, lib: "team-cookbook-kb", trigger: "auto", summary: "got teammates' updates — 2 notes need your input", ms: 5200, status: "conflict",
+    down: [["M","01_doc/01_overview/术语表.md","Brooker Fang"],["A","03_report/2026-10 周报.md","Felix Li"],["M","01_doc/02_domain/门店同步流程.md","Brooker Fang"]], up: [] },
+  { at: now - 4 * min, lib: "team-oms-kb", trigger: "auto", summary: "1 note needs your input", ms: 3100, status: "conflict", down: [["M","退款流程.md","Cato Wen"]], up: [] },
+  { at: now - 14 * min, lib: "team-ccp-kb", trigger: "auto", summary: "got teammates' updates", ms: 2800, status: "ok", down: [["M","客服话术/退款话术.md","Nancy Liu"]], up: [] },
+  { at: now - 14 * min, lib: "My knowledge base", trigger: "auto", summary: "saved 1 change, shared yours", ms: 1900, status: "ok", down: [], up: [["M","A0-Inbox/AI 时代的控制力.md"]] },
+  { at: now - 24 * min, lib: "team-cookbook-kb", trigger: "manual", summary: "saved 2 changes, shared yours", ms: 4400, status: "ok", down: [], up: [["M","01_doc/03_operations/发布流程.md"],["A","attachments/recipe-flow.png"]] },
+  { at: now - 34 * min, lib: "team-oms-kb", trigger: "auto", summary: "is already up to date", ms: 900, status: "ok", down: [], up: [] },
+  { at: now - 2 * hr, lib: "team-cookbook-kb", trigger: "auto", summary: "failed — couldn't reach GitHub (proxy refused the connection)", ms: 30000, status: "error", down: [], up: [] },
+];
+
+const jobs = [
+  { name: "Morning team digest", sched: { kind: "daily", hour: 9, minute: 0 }, enabled: true,
+    instr: "Every morning, read what changed in the team libraries since yesterday and write a short digest to Daily/YYYY-MM-DD 团队日报.md: one bullet per changed note with who changed it and what. Skip notes that are in conflict and list them at the end.",
+    schedule: "Every day at 09:00", next: nextDaily(9, 0), state: "ok",
+    runs: [
+      { at: now - 2 * hr, status: "ok", trigger: "scheduled", ms: 48000, report: "Summarized 7 changed notes across 3 libraries into **Daily/2026-10-23 团队日报.md**. Two notes in team-cookbook-kb are in conflict and were skipped.", changed: ["Daily/2026-10-23 团队日报.md"] },
+      { at: now - 26 * hr, status: "skipped", trigger: "scheduled", ms: 0, report: "Skipped the 09:00 run — Obsidian wasn't open at that time.", changed: [] },
+      { at: now - 50 * hr, status: "ok", trigger: "scheduled", ms: 51000, report: "Summarized 4 changed notes into **Daily/2026-10-21 团队日报.md**.", changed: ["Daily/2026-10-21 团队日报.md"] },
+    ] },
+  { name: "Tidy the cookbook inbox", sched: { kind: "interval", hours: 6 }, enabled: true,
+    instr: "Look at teams/team-cookbook-kb/04_inbox. Move notes that clearly belong to a section of 01_doc into that section, and link them from the library README. Leave unclear notes where they are.",
+    schedule: "Every 6 hours", next: now + 2 * hr + 13 * min, state: "running",
+    runs: [ { at: now - 4 * hr, status: "ok", trigger: "scheduled", ms: 92000, report: "Moved 3 notes from **04_inbox** to **01_doc/03_operations** and linked them from the README.", changed: ["teams/team-cookbook-kb/README.md", "teams/team-cookbook-kb/01_doc/03_operations/值班表.md"] } ] },
+  { name: "Weekly glossary check", sched: { kind: "daily", hour: 18, minute: 30 }, enabled: true,
+    instr: "Check 术语表.md against the rest of team-cookbook-kb. Add terms that are used but not defined, and flag definitions that contradict how a term is used elsewhere.",
+    schedule: "Every day at 18:30", next: nextDaily(18, 30), state: "error",
+    runs: [ { at: now - 22 * hr, status: "error", trigger: "run by hand", ms: 12000, report: "The request never reached the model: certificate rejected by a TLS-inspecting proxy (self-signed certificate in chain).", changed: [] } ] },
+];
+
+function nextDaily(h, m) { const d = new Date(); d.setHours(h, m, 0, 0); if (d <= new Date()) d.setDate(d.getDate() + 1); return d.getTime(); }
+
+/* ────────────────────────────── State ────────────────────────────── */
+let nextSyncAt = now + 7 * min + 42_000;
+let syncing = false;
+let filter = "all";
+let query = "";
+let tab = "sync";
+let selected = null;
+const open = new Set(["teams/team-cookbook-kb", "teams/team-cookbook-kb/01_doc", "teams/team-cookbook-kb/01_doc/02_domain", "teams/team-oms-kb"]);
+const openEntries = new Set([0]);
+const openJobs = new Set([0]);
+const openRuns = new Set(["0:0"]);
+
+/* ────────────────────────────── Helpers ────────────────────────────── */
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const svg = (id, cls = "") => `<svg class="icon ${cls}"><use href="#${id}"/></svg>`;
+const md = (s) => esc(s).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+function rel(at) {
+  const d = Math.round((Date.now() - at) / min);
+  if (d < 1) return "just now"; if (d < 60) return `${d} min ago`;
+  const h = Math.round(d / 60); return h < 24 ? `${h} h ago` : `${Math.round(h / 24)} d ago`;
+}
+function until(at) {
+  const s = Math.max(0, Math.round((at - Date.now()) / 1000));
+  if (s < 3600) return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60); return `${h} h ${m} min`;
+}
+const clock = (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+function toast(t) { const el = $("#toast"); el.textContent = t; el.classList.add("show"); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove("show"), 2200); }
+const STATUS = {
+  synced: { mark: "✓", label: "Shared, up to date", desc: "This note is on GitHub and matches the latest version from your teammates." },
+  local: { mark: "●", label: "Changed here, not shared yet", desc: "You edited this note. It will be saved and shared on the next sync." },
+  pending: { mark: "↑", label: "Saved, waiting to upload", desc: "Your change is saved locally and will be uploaded on the next sync." },
+  incoming: { mark: "↓", label: "New from teammates", desc: "A teammate changed this note; the latest version is already in your vault." },
+  conflict: { mark: "!", label: "Needs your input", desc: "You and a teammate changed the same part of this note." },
+};
+
+// Walk a library tree into flat file records.
+function filesOf(lib, node = lib.tree, prefix = "") {
+  const out = [];
+  for (const [name, v] of Object.entries(node)) {
+    const p = prefix ? `${prefix}/${name}` : name;
+    if (typeof v === "string") out.push({ lib, rel: p, path: lib.path ? `${lib.path}/${p}` : p, status: v });
+    else out.push(...filesOf(lib, v, p));
+  }
+  return out;
+}
+const allFiles = () => libraries.flatMap((l) => filesOf(l));
+const counts = () => {
+  const c = { conflict: 0, local: 0, pending: 0, incoming: 0, synced: 0 };
+  for (const f of allFiles()) c[f.status]++;
+  return c;
+};
+
+/* ────────────────────────────── Render: top bar ────────────────────────────── */
+function renderTop() {
+  const c = counts();
+  const failedLibs = libraries.filter((l) => l.state === "error");
+  const pill = $("#statePill");
+  pill.className = "mini" + (syncing ? " is-syncing" : failedLibs.length ? " is-error" : c.conflict ? " is-conflict" : "");
+  $("#stateText").textContent = (syncing ? "Syncing… · " : "") + ([failedLibs.length && `${failedLibs.length} library couldn't sync`, c.conflict && `${c.conflict} note(s) need your input`].filter(Boolean).join(" · ") || (syncing ? "" : "Everything is shared"));
+  const running = jobs.filter((j) => j.state === "running").length, failed = jobs.filter((j) => j.state === "error").length;
+  $("#kpis").innerHTML = [
+    ...(failedLibs.length ? [["red", failedLibs.length, "Couldn't<br>sync", "failed"]] : []),
+    ["red", c.conflict, "Need your<br>input", "conflict"],
+    ["orange", c.local + c.pending, "Not shared<br>yet", "local"],
+    ["blue", c.incoming, "New from<br>teammates", "incoming"],
+    [failed ? "red" : "green", jobs.length, `Jobs<br>${[running && `${running} running`, failed && `${failed} failed`].filter(Boolean).join(" · ") || "all OK"}`, "jobs"],
+  ].map(([cls, n, l, act]) => {
+    // Jobs don't depend on the sync; everything else is recounted after it.
+    const loading = syncing && act !== "jobs";
+    return `<div class="kpi ${cls} ${loading ? "is-loading" : ""}" data-act="${act}" title="${loading ? "Recounting after the sync…" : ""}"><div class="n">${loading ? svg("i-refresh", "spin") : n}</div><div class="l">${l}</div></div>`;
+  }).join("");
+  document.querySelectorAll(".kpi").forEach((k) => k.onclick = () => {
+    const a = k.dataset.act;
+    if (a === "jobs") { tab = "jobs"; renderTabs(); }
+    else if (a === "failed") { $("#failCard").scrollIntoView({ behavior: "smooth", block: "center" }); }
+    else { filter = a; renderChips(); renderTree(); }
+  });
+}
+
+function renderCountdown() {
+  const ring = $("#ring"), prog = $("#ringProg");
+  const C = 2 * Math.PI * 22;
+  prog.style.strokeDasharray = C;
+  if (syncing) {
+    ring.classList.add("is-syncing"); $("#ringText").textContent = "";
+    $("#cdBig").textContent = "Syncing now…"; $("#cdSmall").textContent = `${libraries.length} libraries`;
+    $("#syncNow").disabled = true; return;
+  }
+  ring.classList.remove("is-syncing"); $("#syncNow").disabled = false;
+  const left = Math.max(0, nextSyncAt - Date.now());
+  prog.style.strokeDashoffset = C * (1 - left / SYNC_INTERVAL);
+  $("#ringText").textContent = until(nextSyncAt);
+  $("#cdBig").textContent = `Next sync in ${until(nextSyncAt)}`;
+  $("#cdSmall").textContent = `at ${clock(nextSyncAt)} · every 10 min · last ${rel(Math.max(...libraries.map((l) => l.last)))}`;
+  if (left <= 0) runSync("auto");
+}
+
+/* ────────────────────────────── Render: tree ────────────────────────────── */
+function renderChips() {
+  const c = counts();
+  const chips = [["all", "All", null], ["conflict", "Need input", c.conflict], ["local", "Not shared", c.local + c.pending], ["incoming", "New", c.incoming]];
+  $("#chips").innerHTML = chips.map(([k, l, n]) => `<button class="chip ${filter === k ? "on" : ""}" data-f="${k}">${l}${n !== null ? `<span class="c">${n}</span>` : ""}</button>`).join("");
+  document.querySelectorAll("#chips .chip").forEach((b) => b.onclick = () => { filter = b.dataset.f; renderChips(); renderTree(); });
+  const sc = (id) => Object.values(docStatus).filter((d) => d.s === id).length;
+  $("#statusChips").innerHTML = `<span class="lbl">Status</span>` + [["all", "Any"], ...DOC_STATUSES.map((d) => [d.id, d.label])]
+    .map(([k, l]) => `<button class="chip ${statusFilter === k ? "on" : ""}" data-s="${k}">${l}${k !== "all" ? `<span class="c">${sc(k)}</span>` : ""}</button>`).join("");
+  document.querySelectorAll("#statusChips .chip").forEach((b) => b.onclick = () => { statusFilter = b.dataset.s; renderChips(); renderTree(); });
+}
+const syncMatches = (status) => filter === "all" || status === filter || (filter === "local" && status === "pending");
+const matches = (status, full) => syncMatches(status) && (statusFilter === "all" || docStatus[full]?.s === statusFilter);
+const dtag = (full) => { const d = docStatus[full]; if (!d) return ""; const def = DOC_STATUSES.find((x) => x.id === d.s); return `<span class="dtag s-${d.s}" title="Document status: ${def.label} — set by ${d.by}">${def.label}</span>`; };
+function agg(lib, node, prefix) {
+  const c = { conflict: 0, local: 0, incoming: 0, any: false };
+  for (const [name, v] of Object.entries(node)) {
+    const p = prefix ? `${prefix}/${name}` : name;
+    if (typeof v === "string") {
+      const full = lib.path ? `${lib.path}/${p}` : p;
+      const ok = matches(v, full) && (!query || p.toLowerCase().includes(query));
+      if (ok) c.any = true;
+      if (v === "conflict") c.conflict++; else if (v === "local" || v === "pending") c.local++; else if (v === "incoming") c.incoming++;
+    } else { const s = agg(lib, v, p); c.conflict += s.conflict; c.local += s.local; c.incoming += s.incoming; c.any ||= s.any; }
+  }
+  return c;
+}
+function badges(c) {
+  return (c.conflict ? `<span class="badge conflict" title="Need your input">${c.conflict}</span>` : "") +
+         (c.local ? `<span class="badge local" title="Not shared yet">${c.local}</span>` : "") +
+         (c.incoming ? `<span class="badge incoming" title="New from teammates">${c.incoming}</span>` : "");
+}
+function renderTree() {
+  const html = [];
+  const filtering = filter !== "all" || statusFilter !== "all" || query;
+  const walk = (lib, node, prefix, depth) => {
+    const entries = Object.entries(node).sort(([a, va], [b, vb]) => (typeof va === "string") - (typeof vb === "string") || a.localeCompare(b));
+    for (const [name, v] of entries) {
+      const relp = prefix ? `${prefix}/${name}` : name;
+      const full = lib.path ? `${lib.path}/${relp}` : relp;
+      const pad = `style="padding-left:${6 + depth * 14}px"`;
+      if (typeof v === "string") {
+        if (!matches(v, full) || (query && !relp.toLowerCase().includes(query))) continue;
+        html.push(`<div class="node ${selected === full ? "sel" : ""}" data-file="${esc(full)}" ${pad} title="${esc(STATUS[v].label)}">
+          <span class="tw"></span><span class="st ${v}">${STATUS[v].mark}</span>${svg("i-file")}<span class="name">${esc(name)}</span>${dtag(full)}</div>`);
+      } else {
+        const c = agg(lib, v, relp);
+        if (filtering && !c.any) continue;
+        const isOpen = open.has(full) || filtering;
+        html.push(`<div class="node" data-dir="${esc(full)}" ${pad}><span class="tw">${svg(isOpen ? "i-chev-d" : "i-chev-r")}</span>${svg("i-folder")}<span class="name">${esc(name)}</span>${badges(c)}</div>`);
+        if (isOpen) walk(lib, v, relp, depth + 1);
+      }
+    }
+  };
+  for (const lib of libraries) {
+    const key = lib.path || "~personal";
+    const c = agg(lib, lib.tree, "");
+    if (filtering && !c.any) continue;
+    const isOpen = open.has(key) || filtering;
+    html.push(`<div class="node lib" data-dir="${esc(key)}"><span class="tw">${svg(isOpen ? "i-chev-d" : "i-chev-r")}</span><span class="sdot ${dotCls(lib)}"></span><span class="name">${esc(lib.name)}</span>${badges(c)}<span class="meta">${lib.notes}</span></div>`);
+    if (isOpen) walk(lib, lib.tree, "", 1);
+  }
+  const cb = $("#collapseAll");
+  cb.disabled = filtering;
+  cb.title = filtering ? "Filtered views show every match expanded — switch to All to collapse" : "Collapse all";
+  $("#tree").innerHTML = html.join("") || `<div class="empty">Nothing matches.</div>`;
+  document.querySelectorAll("[data-dir]").forEach((n) => n.onclick = () => { const k = n.dataset.dir; open.has(k) ? open.delete(k) : open.add(k); renderTree(); });
+  document.querySelectorAll("[data-file]").forEach((n) => {
+    n.onclick = () => { selected = n.dataset.file; renderTree(); renderInspector(); };
+    n.ondblclick = () => openTimeMachine(n.dataset.file);
+  });
+}
+
+/* ────────────────────────────── Render: libraries + conflicts ────────────────────────────── */
+let libsOpen = false;
+function renderLibs() {
+  const failedN = libraries.filter((l) => l.state === "error").length;
+  const conflictN = libraries.filter((l) => l.state === "conflict").length;
+  const sum = [failedN && `<span style="color:var(--red)">${failedN} couldn't sync</span>`, conflictN && `${conflictN} need input`, `synced ${rel(Math.max(...libraries.map((l) => l.last)))}`].filter(Boolean).join(" · ");
+  // Problems first, so the collapsed strip shows them without scrolling.
+  const order = [...libraries.keys()].sort((x, y) => rank(libraries[x]) - rank(libraries[y]));
+  const head = `<div class="libs-head" id="libsHead"><h3>Libraries</h3><span class="tag">${libraries.length}</span><span class="sum">${sum}</span>
+    <span class="tog">${libsOpen ? "Collapse" : "Expand"} ${svg(libsOpen ? "i-chev-d" : "i-chev-r")}</span></div>`;
+  const body = libsOpen
+    ? `<div class="libs">${order.map((i) => { const l = libraries[i]; const c = agg(l, l.tree, "");
+        const base = l.state === "conflict" ? "Needs your input" : l.state === "error" ? `<span style="color:var(--red)">Couldn't sync</span>` : "Up to date";
+        const st = l.syncing ? `Syncing… <span style="color:var(--faint)">(${l.state === "idle" ? "was up to date" : base})</span>` : base;
+        return `<div class="lib-card"><div class="row1"><span class="sdot ${dotCls(l)}"></span><span class="nm">${esc(l.name)}</span>
+          <button class="btn sm" data-sync="${i}" ${l.syncing ? "disabled" : ""}>${svg("i-refresh", l.syncing ? "spin" : "")}</button></div>
+          <div class="row2">${st} · synced ${rel(l.last)} · ${l.notes} notes</div><div class="row3">${badges(c) || '<span class="tag ok">All shared</span>'}</div></div>`; }).join("")}</div>`
+    : `<div class="libs-strip"><div class="row">${order.map((i) => { const l = libraries[i]; const c = agg(l, l.tree, "");
+        return `<span class="lpill ${l.state}" data-lib="${i}" title="${esc(l.name)}"><span class="sdot ${dotCls(l)}"></span>${esc(l.name)}${badges(c)}</span>`; }).join("")}</div></div>`;
+  $("#libs").innerHTML = head + body;
+  $("#libsHead").onclick = () => { libsOpen = !libsOpen; renderLibs(); };
+  document.querySelectorAll("[data-sync]").forEach((b) => b.onclick = () => toast(`Syncing ${libraries[b.dataset.sync].name}…`));
+  document.querySelectorAll("[data-lib]").forEach((b) => b.onclick = () => { const l = libraries[+b.dataset.lib]; open.add(l.path || "~personal"); renderTree(); toast(`Shows ${l.name} in the tree`); });
+}
+/** Dot class: a sync in flight pulses blue, but the library's own state
+ *  (error, conflict) is never overwritten by it. */
+function dotCls(l) { return l.syncing ? "syncing" : l.state === "idle" ? "" : l.state; }
+function rank(l) { return { error: 0, conflict: 1, syncing: 2 }[l.state] ?? 3; }
+/* ────────────────────────────── Sync failure → terminal fallback ────────────────────────────── */
+let agent = "claude";
+const VAULT = "/Users/jakobhe/myknowledge";
+function fallbackPrompt(l) {
+  return `Covault (an Obsidian plugin) couldn't sync this folder with GitHub. It is a git repo on branch main, remote origin.
+Error: ${l.error}
+
+Please:
+1. Commit any uncommitted changes with a short message.
+2. Pull origin main and merge. Never rebase, force-push or rewrite history.
+3. If notes conflict, merge them keeping both sides' meaning; if two versions contradict each other, keep mine and list the file for me to decide.
+4. Push to origin main.
+Finish with a short summary of what you did and anything I need to check.`;
+}
+function fallbackCommand(l) {
+  const dir = l.path ? `${VAULT}/${l.path}` : VAULT;
+  // The personal KB keeps its git data in .covault/main.git, not .git.
+  const env = l.path ? "" : `GIT_DIR="${VAULT}/.covault/main.git" GIT_WORK_TREE="${VAULT}" `;
+  const bin = agent === "claude" ? "claude" : "pi";
+  return `cd "${dir}" && ${env}${bin} "$(cat <<'EOF'\n${fallbackPrompt(l)}\nEOF\n)"`;
+}
+const errOpen = new Set();
+function renderFailures() {
+  const failed = libraries.filter((l) => l.state === "error");
+  $("#failCard").innerHTML = failed.map((l, i) => `<div class="alert ${l.syncing ? "is-loading" : ""}"><span class="ic">${l.syncing ? svg("i-refresh", "spin") : svg("i-alert")}</span>
+      <div class="msg">${l.syncing
+        ? `<b>Retrying ${esc(l.name)}…</b> <span style="color:var(--muted);font-size:12px">· it failed ${l.attempts}× before — this note stays until it succeeds</span>`
+        : `<b>${esc(l.name)} couldn't sync</b> <span style="color:var(--muted);font-size:12px">· failed ${l.attempts}× · last success ${rel(l.lastOk ?? l.last)} · your notes are safe here</span>`}
+        <span class="e ${errOpen.has(i) ? "full" : ""}">${esc(l.error)}</span></div>
+      <button class="more" data-err="${i}">${errOpen.has(i) ? "Less" : "Details"}</button>
+      <button class="btn sm" data-retry="${esc(l.name)}" ${l.syncing ? "disabled" : ""}>${svg("i-refresh", l.syncing ? "spin" : "")} Retry</button>
+      <button class="btn sm cta" data-claudian="${i}" ${l.syncing ? "disabled" : ""}>${svg("i-bot")} Open in Claudian</button></div>`).join("");
+  document.querySelectorAll("[data-err]").forEach((b) => b.onclick = () => { const i = +b.dataset.err; errOpen.has(i) ? errOpen.delete(i) : errOpen.add(i); renderFailures(); });
+  document.querySelectorAll("[data-retry]").forEach((b) => b.onclick = () => retryLibrary(b.dataset.retry));
+  document.querySelectorAll("[data-claudian]").forEach((b) => b.onclick = () => toast("Opens Claudian in a new conversation with a ready-to-send request to fix this library's sync"));
+}
+
+/* ────────────────────────────── Conflict resolver ────────────────────────────── */
+// Mirrors the plugin's existing ConflictModal: per conflicting place ("hunk"),
+// your version | teammate's version | AI suggestion; pick one or edit, then finish.
+const conflicts = {
+  "teams/team-cookbook-kb/01_doc/02_domain/Recipe 数据模型.md": { who: "Brooker Fang", hunks: [
+    { ctx: "## Ingredient", mine: "- 每个 Ingredient 有唯一 SKU\n- 单位统一为克（g）", theirs: "- 每个 Ingredient 有唯一 SKU\n- 单位统一为克（g），液体为毫升（ml）",
+      ai: "- 每个 Ingredient 有唯一 SKU\n- 单位统一为克（g），液体为毫升（ml）", conf: 5, why: ["Teammate's line extends yours with liquids; nothing of yours is lost."] },
+    { ctx: "## 版本", mine: "- Recipe 修改后版本号 +1", theirs: "- Recipe 修改后生成新版本，旧版本保留 90 天",
+      ai: "- Recipe 修改后版本号 +1，生成新版本；旧版本保留 90 天", conf: 2, why: ["Both describe versioning differently; combined both.", "Check whether \u201c+1\u201d and \u201cnew version\u201d mean the same thing."] },
+  ] },
+  "teams/team-oms-kb/退款流程.md": { who: "Cato Wen", hunks: [
+    { ctx: "## 审批", mine: "- 金额 > $50 需要主管审批", theirs: "- 金额 > $100 需要主管审批",
+      ai: "- 金额 > $50 需要主管审批", conf: 1, why: ["The two versions contradict each other ($50 vs $100). There's no evidence in the note which is right — a person must decide. Kept your version for now."] },
+  ] },
+};
+let rs = null; // { path, i, picks: [] }
+function openResolver(path) { rs = { path, i: 0, picks: [] }; renderResolver(); }
+function closeResolver() { rs = null; $("#resolver").classList.remove("open"); }
+function renderResolver() {
+  const el = $("#resolver");
+  if (!rs) { el.classList.remove("open"); return; }
+  const c = conflicts[rs.path], h = c.hunks[rs.i], pick = rs.picks[rs.i];
+  const dots = c.hunks.map((_, k) => `<span class="${k === rs.i ? "cur" : rs.picks[k] ? "done" : ""}"></span>`).join("");
+  const pane = (key, title, sub, text, extra = "") => `<div class="pane ${key === "ai" ? "ai" : ""} ${pick === key ? "chosen" : ""}">
+      <div class="pane-h"><b>${title}</b><span style="color:var(--muted)">${sub}</span>${extra}</div>
+      <pre>${esc(h.ctx)}\n<span class="hl">${esc(text)}</span></pre>
+      <button class="btn sm ${key === "ai" ? "cta" : ""} pick" data-pick="${key}">${key === "mine" ? "Keep mine" : key === "theirs" ? `Keep ${esc(c.who.split(" ")[0])}'s` : "Use suggestion"}</button></div>`;
+  const conf = `<span class="conf ${h.conf < 3 ? "mid" : ""}" title="AI confidence ${h.conf}/5">${[1,2,3,4,5].map((n) => `<i class="${n <= h.conf ? "on" : ""}"></i>`).join("")}</span>`;
+  const allPicked = c.hunks.every((_, k) => rs.picks[k]);
+  el.innerHTML = `<div class="modal">
+    <div class="modal-head">${svg("i-wrench")}<div class="ttl"><b>Resolve: ${esc(rs.path.split("/").pop())}</b><div class="p">You and ${esc(c.who)} changed the same places. Pick what to keep for each — nothing is shared until you finish.</div></div>
+      <button class="btn sm" id="rsClose">${svg("i-x")}</button></div>
+    <div class="hunknav">Place ${rs.i + 1} of ${c.hunks.length} <div class="dots">${dots}</div><span style="flex:1"></span>
+      <button class="btn sm" id="rsPrev" ${rs.i === 0 ? "disabled" : ""}>Previous</button><button class="btn sm" id="rsNext" ${rs.i === c.hunks.length - 1 ? "disabled" : ""}>Next</button></div>
+    <div class="panes">${pane("mine", "Yours", "this device", h.mine)}${pane("theirs", `${esc(c.who)}'s`, "from GitHub", h.theirs)}${pane("ai", "AI suggestion", "", h.ai, conf)}</div>
+    <div class="why"><b style="color:var(--text)">Why the AI suggests this${h.conf < 3 ? " — low confidence, please check" : ""}</b><ul>${h.why.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>
+    <div class="modal-foot"><span class="grow">${allPicked ? "All places decided." : `${c.hunks.filter((_, k) => !rs.picks[k]).length} place(s) left.`} Finishing saves the merged note and shares it with your team.</span>
+      <button class="btn sm" id="rsLater">Decide later</button><button class="btn sm cta" id="rsFinish" ${allPicked ? "" : "disabled"}>Finish &amp; share</button></div></div>`;
+  el.classList.add("open");
+  $("#rsClose").onclick = closeResolver; $("#rsLater").onclick = closeResolver;
+  $("#rsPrev").onclick = () => { rs.i--; renderResolver(); };
+  $("#rsNext").onclick = () => { rs.i++; renderResolver(); };
+  el.querySelectorAll("[data-pick]").forEach((b) => b.onclick = () => { rs.picks[rs.i] = b.dataset.pick; if (rs.i < c.hunks.length - 1) rs.i++; renderResolver(); });
+  $("#rsFinish").onclick = () => {
+    const lib = libraries.find((l) => l.path && rs.path.startsWith(l.path + "/"));
+    setStatus(lib, rs.path.slice(lib.path.length + 1), "synced");
+    lib.state = agg(lib, lib.tree, "").conflict ? "conflict" : "idle";
+    syncLog.unshift({ at: Date.now(), lib: lib.name, trigger: "manual", summary: `resolved ${rs.path.split("/").pop()} and shared it`, ms: 2100, status: "ok", down: [], up: [["M", rs.path.slice(lib.path.length + 1)]] });
+    openEntries.clear(); openEntries.add(0);
+    closeResolver(); renderAll(); toast("Resolved — the merged note was shared with your team");
+  };
+}
+
+function renderConflicts() {
+  const list = allFiles().filter((f) => f.status === "conflict");
+  if (!list.length) { $("#conflictCard").innerHTML = ""; return; }
+  $("#conflictCard").innerHTML = `<div class="card conflicts"><div class="card-head">${svg("i-alert")}<h3>${list.length} note(s) need your input</h3><button class="btn sm cta" id="resolveAll">Resolve all…</button></div>
+    ${list.map((f) => `<div class="crow ${selected === f.path ? "is-sel" : ""}"><span class="st conflict">!</span><div class="path"><a class="flink" data-open="${esc(f.path)}"><b>${esc(f.rel.split("/").pop())}</b></a> <span class="sub">— ${esc(f.lib.name)}/${esc(f.rel)}</span>
+      <div class="sub">${esc(fileInfo[f.path]?.conflict ?? "You and a teammate changed the same part.")}</div></div>
+      <button class="btn sm cta" data-resolve="${esc(f.path)}">${svg("i-wrench")} Resolve</button></div>`).join("")}</div>`;
+  $("#resolveAll").onclick = () => openResolver(list[0].path);
+  document.querySelectorAll("[data-resolve]").forEach((b) => b.onclick = () => openResolver(b.dataset.resolve));
+  document.querySelectorAll("#conflictCard [data-open]").forEach((b) => b.onclick = () => showFile(b.dataset.open));
+}
+/** Select a note: reveal it in the tree and open its details. */
+function showFile(full) { selected = full; revealInTree(full); renderTree(); renderInspector(); renderConflicts(); }
+function revealInTree(full) {
+  const lib = libraries.find((l) => l.path && full.startsWith(l.path + "/"));
+  if (!lib) return; open.add(lib.path);
+  const parts = full.slice(lib.path.length + 1).split("/"); let acc = lib.path;
+  for (const p of parts.slice(0, -1)) { acc += "/" + p; open.add(acc); }
+}
+
+/* ────────────────────────────── Render: logs ────────────────────────────── */
+function renderTabs() {
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
+  $("#cSync").textContent = syncLog.length; $("#cJobs").textContent = jobs.length;
+  tab === "sync" ? renderSyncLog() : renderJobs();
+}
+/** A log path as a link when the note still exists, plain text otherwise. */
+function fileLink(libName, relPath) {
+  const lib = libraries.find((l) => l.name === libName);
+  const full = lib ? (lib.path ? `${lib.path}/${relPath}` : relPath) : null;
+  return full && allFiles().some((f) => f.path === full) ? `<a class="flink" data-logfile="${esc(full)}">${esc(relPath)}</a>` : esc(relPath);
+}
+function renderSyncLog() {
+  $("#tabBody").innerHTML = `<div class="log">${syncLog.map((e, i) => {
+    const tagCls = e.status === "ok" ? "ok" : e.status === "error" ? "err" : "skip";
+    const tagTxt = e.status === "ok" ? "Synced" : e.status === "error" ? "Failed" : "Needs input";
+    const hasFiles = e.up.length + e.down.length > 0;
+    return `<div class="entry"><div class="l1" data-entry="${i}"><span class="time">${new Date(e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>
+      <span class="tag ${tagCls}">${tagTxt}</span><span class="lib">${esc(e.lib)}</span><span class="sum">${esc(e.summary)}</span>${e.status === "error" ? `<button class="btn sm" data-fix="1">${svg("i-bot")} Fix with Claudian</button>` : ""}<span class="tag">${e.trigger}</span><span class="dur">${(e.ms / 1000).toFixed(1)}s</span></div>
+      ${hasFiles && openEntries.has(i) ? `<div class="files">${e.up.map(([k, p]) => `<div><span class="ar up">↑</span><span class="k">${k}</span>${fileLink(e.lib, p)}</div>`).join("")}${e.down.map(([k, p, w]) => `<div><span class="ar down">↓</span><span class="k">${k}</span>${fileLink(e.lib, p)} <span class="who">— ${esc(w)}</span></div>`).join("")}</div>` : ""}</div>`;
+  }).join("")}</div>`;
+  document.querySelectorAll("[data-logfile]").forEach((a) => a.onclick = (ev) => { ev.stopPropagation(); showFile(a.dataset.logfile); });
+  document.querySelectorAll("[data-fix]").forEach((b) => b.onclick = (ev) => { ev.stopPropagation(); $("#failCard").scrollIntoView({ behavior: "smooth", block: "center" }); });
+  document.querySelectorAll("[data-entry]").forEach((el) => el.onclick = () => { const i = +el.dataset.entry; openEntries.has(i) ? openEntries.delete(i) : openEntries.add(i); renderSyncLog(); });
+}
+let editingJob = null;
+let draft = null;
+function jobEditor(j, ji) {
+  draft ??= { name: j.name, instr: j.instr, sched: { ...j.sched }, enabled: j.enabled };
+  const d = draft, p = (n) => String(n).padStart(2, "0");
+  return `<div class="jedit" data-editor="${ji}">
+    <label>Name<input type="text" data-f="name" value="${esc(d.name)}"></label>
+    <div><div style="font-size:12px;color:var(--muted);margin-bottom:4px">Runs</div>
+      <div class="schedrow">
+        <div class="seg"><button data-kind="interval" class="${d.sched.kind === "interval" ? "on" : ""}">Every N hours</button><button data-kind="daily" class="${d.sched.kind === "daily" ? "on" : ""}">Every day at</button></div>
+        ${d.sched.kind === "interval" ? `every <input type="number" min="1" max="168" data-f="hours" value="${d.sched.hours ?? 6}"> hours` : `at <input type="time" data-f="time" value="${p(d.sched.hour ?? 9)}:${p(d.sched.minute ?? 0)}">`}
+        <label style="display:flex;align-items:center;gap:6px;margin-left:auto;color:var(--text)"><input type="checkbox" data-f="enabled" ${d.enabled ? "checked" : ""}> Enabled</label>
+      </div></div>
+    <label>Instructions for the agent<textarea data-f="instr">${esc(d.instr)}</textarea></label>
+    <div class="foot"><span class="grow">Want help rewording it? <a href="#">Refine it by chat in Automations</a></span>
+      <button class="btn sm danger-text" data-jdel="${ji}">Delete</button><button class="btn sm" data-jcancel>Cancel</button><button class="btn sm cta" data-jsave="${ji}">Save</button></div>
+  </div>`;
+}
+function describeSched(s) { const p = (n) => String(n).padStart(2, "0"); return s.kind === "interval" ? (s.hours === 1 ? "Every hour" : `Every ${s.hours} hours`) : `Every day at ${p(s.hour)}:${p(s.minute)}`; }
+function wireJobEditor() {
+  const ed = document.querySelector("[data-editor]"); if (!ed) return;
+  ed.querySelectorAll("[data-f]").forEach((i) => i.oninput = i.onchange = () => {
+    const f = i.dataset.f;
+    if (f === "name") draft.name = i.value; else if (f === "instr") draft.instr = i.value; else if (f === "enabled") draft.enabled = i.checked;
+    else if (f === "hours") draft.sched.hours = Math.max(1, Math.min(168, +i.value || 1));
+    else if (f === "time") { const [h, m] = i.value.split(":").map(Number); draft.sched.hour = h; draft.sched.minute = m; }
+  });
+  ed.querySelectorAll("[data-kind]").forEach((b) => b.onclick = () => { draft.sched = b.dataset.kind === "interval" ? { kind: "interval", hours: draft.sched.hours ?? 6 } : { kind: "daily", hour: draft.sched.hour ?? 9, minute: draft.sched.minute ?? 0 }; renderJobs(); });
+  ed.querySelector("[data-jcancel]").onclick = () => { editingJob = null; draft = null; renderJobs(); };
+  ed.querySelector("[data-jsave]").onclick = () => {
+    const j = jobs[editingJob];
+    Object.assign(j, { name: draft.name.trim() || j.name, instr: draft.instr, sched: draft.sched, enabled: draft.enabled, schedule: describeSched(draft.sched) });
+    j.next = draft.sched.kind === "daily" ? nextDaily(draft.sched.hour, draft.sched.minute) : Date.now() + draft.sched.hours * hr;
+    editingJob = null; draft = null; renderJobs(); toast(`Saved “${j.name}” — next run ${until(j.next)} from now`);
+  };
+  ed.querySelector("[data-jdel]").onclick = () => { if (confirm(`Delete “${jobs[editingJob].name}” and its run log?`)) { jobs.splice(editingJob, 1); editingJob = null; draft = null; renderJobs(); renderTop(); } };
+}
+function renderJobs() {
+  $("#tabBody").innerHTML = `<div class="log">${jobs.map((j, ji) => {
+    const st = j.state === "running" ? `<span class="tag run">${svg("i-refresh", "spin")} Running</span>` : j.state === "error" ? `<span class="tag err">Last run failed</span>` : `<span class="tag ok">Last run OK</span>`;
+    return `<div class="job"><div class="jh" data-job="${ji}">${svg(openJobs.has(ji) ? "i-chev-d" : "i-chev-r")}${svg("i-bot")}
+      <div class="jinfo"><div class="jn">${esc(j.name)}</div><div class="js">${esc(j.schedule)}${j.enabled ? "" : " · paused"} · last ${j.runs[0] ? rel(j.runs[0].at) : "never"}</div></div>${st}
+      <div class="jnext">next in<br><b data-until="${j.next}">${until(j.next)}</b></div>
+      <button class="btn sm" data-edit="${ji}" title="Edit">${svg("i-pencil")}</button>
+      <button class="btn sm" data-run="${ji}" title="Run now">${svg("i-play")}</button></div>
+      ${editingJob === ji ? jobEditor(j, ji) : ""}
+      ${openJobs.has(ji) && editingJob !== ji ? `<div class="jbody">${j.runs.map((r, ri) => {
+        const key = `${ji}:${ri}`; const cls = r.status === "ok" ? "ok" : r.status === "error" ? "err" : "skip";
+        return `<div class="run"><div class="rl" data-runlog="${key}"><span class="tag ${cls}">${r.status === "ok" ? "Done" : r.status === "error" ? "Failed" : "Skipped"}</span>
+          <span class="rt">${new Date(r.at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span><span class="tag">${r.trigger}</span>
+          ${r.ms ? `<span class="dur">${Math.round(r.ms / 1000)}s</span>` : ""}${r.changed.length ? `<span class="dur">· ${r.changed.length} note(s) changed</span>` : ""}</div>
+          ${openRuns.has(key) ? `<div class="report">${md(r.report)}${r.changed.length ? `<div style="margin-top:6px">${r.changed.map((c) => `<a href="#">${esc(c)}</a>`).join("")}</div>` : ""}</div>` : ""}</div>`;
+      }).join("")}</div>` : ""}</div>`;
+  }).join("")}<div class="empty" style="font-size:12px">Jobs are set up in the Automations tab — <a href="#" style="color:var(--accent)">open Automations</a>.</div></div>`;
+  document.querySelectorAll("[data-edit]").forEach((b) => b.onclick = (ev) => { ev.stopPropagation(); const i = +b.dataset.edit; editingJob = editingJob === i ? null : i; renderJobs(); });
+  wireJobEditor();
+  document.querySelectorAll("[data-job]").forEach((el) => el.onclick = (ev) => { if (ev.target.closest("[data-run],[data-edit]")) return; const i = +el.dataset.job; openJobs.has(i) ? openJobs.delete(i) : openJobs.add(i); renderJobs(); });
+  document.querySelectorAll("[data-runlog]").forEach((el) => el.onclick = () => { const k = el.dataset.runlog; openRuns.has(k) ? openRuns.delete(k) : openRuns.add(k); renderJobs(); });
+  document.querySelectorAll("[data-run]").forEach((b) => b.onclick = () => { jobs[+b.dataset.run].state = "running"; renderJobs(); renderTop(); toast(`Started “${jobs[+b.dataset.run].name}”`); });
+}
+document.querySelectorAll("#tabs button").forEach((b) => b.onclick = () => { tab = b.dataset.tab; renderTabs(); });
+
+/* ────────────────────────────── Render: inspector ────────────────────────────── */
+const COLORS = { draft: "var(--faint)", review: "var(--yellow)", approved: "var(--green)", outdated: "var(--red)" };
+const SYNC_COLOR = { synced: "var(--green)", local: "var(--orange)", pending: "var(--orange)", incoming: "var(--blue)", conflict: "var(--red)" };
+const AVATAR = ["#7c5cf5", "#2f9e6e", "#d9822b", "#3a8eef", "#c2477a"];
+const avatar = (name) => `<span class="av" style="background:${AVATAR[[...name].reduce((a, c) => a + c.charCodeAt(0), 0) % AVATAR.length]}" title="${esc(name)}">${esc(name === "You" ? "Y" : name.split(" ").map((w) => w[0]).join("").slice(0, 2))}</span>`;
+
+function renderInspector() {
+  const insp = $("#insp");
+  const f = allFiles().find((x) => x.path === selected);
+  if (!f) { insp.classList.remove("open"); return; }
+  insp.classList.add("open");
+  const s = STATUS[f.status];
+  const track = { synced: ["done", "done", "done", "done"], local: ["warn", "", "", ""], pending: ["done", "warn", "", ""], incoming: ["done", "done", "done", "done"], conflict: ["done", "done", "bad", ""] }[f.status];
+  const d = docStatus[f.path];
+  const vers = historyOf(f.path);
+  const parts = f.rel.split("/");
+  const lastWho = vers[0].who;
+  $("#inspInner").innerHTML = `
+    <div class="ix-head">
+      <div class="ix-top">
+        <div class="ix-fileicon">${svg("i-file")}</div>
+        <div class="ix-title"><h4>${esc(parts.at(-1).replace(/\.md$/, ""))}</h4>
+          <div class="ix-crumb"><span class="lib">${esc(f.lib.name)}</span>${parts.slice(0, -1).map((p) => `<span>/</span><span>${esc(p)}</span>`).join("")}</div></div>
+        <button class="ix-close" id="closeInsp" title="Close">${svg("i-x")}</button>
+      </div>
+      <div class="ix-actions">
+        <button class="btn sm cta" id="ixOpen">Open note</button>
+        <button class="btn sm" id="openTm">${svg("i-history")} Time machine</button>
+        ${f.status === "conflict" ? `<button class="btn sm danger" id="inspResolve">${svg("i-wrench")} Resolve</button>` : ""}
+        ${f.status === "local" || f.status === "pending" ? `<button class="btn sm" id="ixShare">${svg("i-refresh")} Share now</button>` : ""}
+      </div>
+    </div>
+    <div class="ix-body">
+      <div class="ix-sec">
+        <div class="ix-label">Sync</div>
+        <div class="ix-sync" style="--c:${SYNC_COLOR[f.status]}">
+          <div class="t"><span class="st ${f.status}">${s.mark}</span>${s.label}</div>
+          <div class="d">${esc(fileInfo[f.path]?.conflict ?? s.desc)}</div>
+          <div class="track">${["Edited", "Saved", "Uploaded", "Teammates"].map((l, i) => `<div class="tk ${track[i]}">${l}</div>`).join("")}</div>
+        </div>
+      </div>
+      <div class="ix-sec">
+        <div class="ix-label">Document status</div>
+        <div class="ds-seg">${DOC_STATUSES.map((x) => `<button class="${d?.s === x.id ? "on" : ""}" style="--c:${COLORS[x.id]}" data-ds="${x.id}"><i></i>${x.label}</button>`).join("")}</div>
+        <div class="ds-by">${d ? `${avatar(d.by)} Set by ${esc(d.by)} · ${rel(d.at)}<button data-ds="">Clear</button>` : "Not set — pick one above. It's saved in the note and shared with the team."}</div>
+      </div>
+      <div class="ix-sec">
+        <div class="ix-label">Details</div>
+        <div class="facts">
+          <span class="k">${svg("i-library")} Library</span><span class="v">${esc(f.lib.name)}</span>
+          <span class="k">${svg("i-clock")} Last change</span><span class="v">${f.status === "local" ? `${avatar("You")} You · not shared yet` : `${avatar(lastWho)} ${esc(lastWho)} · ${rel(vers[0].at)}`}</span>
+          <span class="k">${svg("i-refresh")} On GitHub</span><span class="v">${f.status === "local" || f.status === "pending" ? "An older version" : f.status === "conflict" ? "Teammate's version" : "Same as here"}</span>
+          <span class="k">${svg("i-history")} Versions</span><span class="v">${vers.length} · first by ${esc(vers.at(-1).who)}, ${rel(vers.at(-1).at)}</span>
+        </div>
+      </div>
+      <div class="ix-sec">
+        <div class="ix-label">Recent changes</div>
+        <div class="mini-tl">${vers.slice(0, 3).map((v) => `<div class="it">${avatar(v.who)}<div class="tx"><div class="m">${esc(v.msg)}</div><div class="s">${esc(v.who)} · ${rel(v.at)}</div></div></div>`).join("")}</div>
+        <button class="ix-link" id="ixAllHist">See all ${vers.length} versions in Time machine ${svg("i-chev-r")}</button>
+      </div>
+    </div>`;
+  $("#closeInsp").onclick = () => { selected = null; renderTree(); renderInspector(); };
+  $("#ixOpen").onclick = () => toast("Opens the note in the editor");
+  $("#ixShare")?.addEventListener("click", () => runSync("manual"));
+  $("#openTm").onclick = () => openTimeMachine(f.path);
+  $("#ixAllHist").onclick = () => openTimeMachine(f.path);
+  $("#inspResolve")?.addEventListener("click", () => openResolver(f.path));
+  $("#inspInner").querySelectorAll("[data-ds]").forEach((b) => b.onclick = () => {
+    if (b.dataset.ds) docStatus[f.path] = { s: b.dataset.ds, by: "You", at: Date.now() }; else delete docStatus[f.path];
+    if (f.status === "synced") setStatus(f.lib, f.rel, "local"); // changing the status is an edit like any other
+    renderAll(); toast("Status saved in the note — shared with the team on the next sync");
+  });
+}
+
+/* ────────────────────────────── Time machine ────────────────────────────── */
+// Mock history: newest first. In the plugin each version is a commit that
+// touched the file (git log -- path), content read at that commit.
+const day = 24 * hr;
+const histories = {
+  "teams/team-cookbook-kb/01_doc/02_domain/过敏原标注.md": [
+    { local: true, at: now - 20 * min, who: "You", msg: "Not shared yet — edited on this device", text:
+`# 过敏原标注
+
+所有 recipe 必须标注 FDA 规定的 9 大过敏原。
+
+## 标注规则
+- 原料级别标注，菜品自动汇总
+- 交叉污染风险单独标注为「可能含有」
+- 芝麻自 2023 年起列入强制标注
+
+## 门店展示
+- 菜单上用图标显示，悬停显示全名
+- 新增：外卖平台同步展示过敏原
+
+## 负责人
+- 数据：Brooker Fang
+- 审核：Cato Wen` },
+    { at: now - 3 * hr, who: "Cato Wen", msg: "Add sesame rule and reviewer", text:
+`# 过敏原标注
+
+所有 recipe 必须标注 FDA 规定的 9 大过敏原。
+
+## 标注规则
+- 原料级别标注，菜品自动汇总
+- 交叉污染风险单独标注为「可能含有」
+- 芝麻自 2023 年起列入强制标注
+
+## 门店展示
+- 菜单上用图标显示，悬停显示全名
+
+## 负责人
+- 数据：Brooker Fang
+- 审核：Cato Wen` },
+    { at: now - day - 2 * hr, who: "Brooker Fang", msg: "Cross-contact labeling", text:
+`# 过敏原标注
+
+所有 recipe 必须标注 FDA 规定的过敏原。
+
+## 标注规则
+- 原料级别标注，菜品自动汇总
+- 交叉污染风险单独标注为「可能含有」
+
+## 门店展示
+- 菜单上用图标显示，悬停显示全名
+
+## 负责人
+- 数据：Brooker Fang` },
+    { at: now - 3 * day, who: "You", msg: "Store display section", text:
+`# 过敏原标注
+
+所有 recipe 必须标注 FDA 规定的过敏原。
+
+## 标注规则
+- 原料级别标注，菜品自动汇总
+
+## 门店展示
+- 菜单上用图标显示，悬停显示全名
+
+## 负责人
+- 数据：Brooker Fang` },
+    { at: now - 9 * day, who: "Felix Li", msg: "Create 过敏原标注", text:
+`# 过敏原标注
+
+所有 recipe 必须标注 FDA 规定的过敏原。
+
+## 标注规则
+- 原料级别标注，菜品自动汇总
+
+## 负责人
+- 数据：Brooker Fang` },
+  ],
+};
+function historyOf(path) {
+  if (histories[path]) return histories[path];
+  const title = path.split("/").pop().replace(/\.md$/, "");
+  const base = `# ${title}\n\n这是「${title}」的说明。\n\n## 要点\n- 第一条要点`;
+  histories[path] = [
+    { at: now - 5 * hr, who: "Nancy Liu", msg: `Update ${title}`, text: base + "\n- 第二条要点\n- 第三条要点（新增）" },
+    { at: now - 2 * day, who: "You", msg: `Update ${title}`, text: base + "\n- 第二条要点" },
+    { at: now - 12 * day, who: "Felix Li", msg: `Create ${title}`, text: base },
+  ];
+  return histories[path];
+}
+
+// lo..hi = selected versions (indices into newest-first history); one version in "read" mode.
+let tm = { path: null, idx: 0, mode: "read", lo: 0, hi: 0, anchor: 0 };
+
+function openTimeMachine(path) { tm = { path, idx: 0, mode: "diff", lo: 0, hi: 0, anchor: 0 }; renderTimeMachine(); }
+const selectOne = (k) => { tm.idx = tm.lo = tm.hi = tm.anchor = k; };
+function closeTimeMachine() { tm.path = null; $("#tm").classList.remove("open"); }
+
+// Line diff (LCS) between two versions, collapsed to changes ± 2 lines.
+function diffLines(a, b, full = false) {
+  const A = a.split("\n"), B = b.split("\n"), n = A.length, m = B.length;
+  const L = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = A[i] === B[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const out = []; let i = 0, j = 0;
+  while (i < n || j < m) {
+    if (i < n && j < m && A[i] === B[j]) { out.push(["ctx", A[i]]); i++; j++; }
+    else if (i < n && (j >= m || L[i + 1][j] >= L[i][j + 1])) { out.push(["del", A[i]]); i++; }
+    else { out.push(["add", B[j]]); j++; }
+  }
+  if (full) return out;
+  const keep = out.map((o, k) => o[0] !== "ctx" || out.slice(Math.max(0, k - 2), k + 3).some((x) => x[0] !== "ctx"));
+  const res = []; let gap = false;
+  out.forEach((o, k) => { if (keep[k]) { res.push(o); gap = false; } else if (!gap) { res.push(["gap", "⋯"]); gap = true; } });
+  return res;
+}
+function stats(a, b) { const d = diffLines(a, b); return [d.filter((x) => x[0] === "add").length, d.filter((x) => x[0] === "del").length]; }
+function renderMd(t) {
+  return t.split("\n").map((l) => l.startsWith("## ") ? `<h2>${esc(l.slice(3))}</h2>` : l.startsWith("# ") ? `<h1>${esc(l.slice(2))}</h1>`
+    : l.startsWith("- ") ? `<ul><li>${esc(l.slice(2))}</li></ul>` : l.trim() ? `<p>${esc(l)}</p>` : "").join("").replace(/<\/ul><ul>/g, "");
+}
+const fmtDay = (at) => { const d = new Date(at), t = new Date(); const y = new Date(); y.setDate(t.getDate() - 1);
+  return d.toDateString() === t.toDateString() ? "Today" : d.toDateString() === y.toDateString() ? "Yesterday" : d.toLocaleDateString([], { month: "long", day: "numeric" }); };
+
+function renderTimeMachine() {
+  const el = $("#tm");
+  if (!tm.path) { el.classList.remove("open"); return; }
+  const f = allFiles().find((x) => x.path === tm.path);
+  const vers = historyOf(tm.path);
+  const multiMode = tm.mode === "diff";
+  const lo = multiMode ? tm.lo : tm.idx, hi = multiMode ? tm.hi : tm.idx;
+  const many = hi > lo;
+  // Newest selected version vs. the one just before the oldest selected:
+  // exactly the changes the selected versions made, combined.
+  const v = vers[lo], base = vers[hi + 1], prev = base;
+  const isNewest = lo === 0;
+  const [plus, minus] = stats(base?.text ?? "", v.text);
+  const authorOf = (line) => { for (let k = hi; k >= lo; k--) if (vers[k].text.split("\n").includes(line) && !(vers[k + 1]?.text ?? "").split("\n").includes(line)) return vers[k].who; return ""; };
+  const sel = vers.slice(lo, hi + 1);
+  const who = [...new Set(sel.map((x) => x.who))];
+  const span = `${new Date(vers[hi].at).toLocaleDateString([], { month: "short", day: "numeric" })} → ${fmtDay(vers[lo].at)}`;
+  let lastDay = "";
+  const timeline = vers.map((x, k) => {
+    const d = fmtDay(x.at); const head = d !== lastDay ? `<div class="tl-day">${d}</div>` : ""; lastDay = d;
+    const p = vers[k + 1]; const [a, dl] = p ? stats(p.text, x.text) : [x.text.split("\n").length, 0];
+    return head + `<div class="ver ${k >= lo && k <= hi ? "sel" : ""} ${k === 0 && !x.local ? "now" : ""} ${x.local ? "local" : ""}" data-ver="${k}"><span class="vcheck">✓</span><span class="vd"></span>
+      <div class="vi"><div class="vm">${esc(x.msg)}</div><div class="vs">${esc(x.who)} · ${clock(x.at)}${k === 0 ? (x.local ? " · this device" : " · current") : ""}</div></div>
+      <span class="vc"><span class="a">+${a}</span> <span class="d">−${dl}</span></span></div>`;
+  }).join("");
+  const body = tm.mode === "read" ? `<div class="page-body">${renderMd(v.text)}</div>`
+    : `<div class="diff inline">${diffLines(base?.text ?? "", v.text, true).map(([k, t]) => `<div class="${k} ${t.startsWith("## ") ? "h2" : t.startsWith("# ") ? "h1" : t.startsWith("- ") ? "li" : ""}">${esc(t.replace(/^#{1,2} /, "").replace(/^- /, "")) || "&nbsp;"}${k === "add" && many ? `<span class="by">${esc(authorOf(t))}</span>` : ""}</div>`).join("")}</div>`;
+  el.innerHTML = `
+    <div class="tm-head">
+      <button class="btn sm" id="tmBack">${svg("i-arrow-l")} Workbench</button>
+      ${svg("i-history")}
+      <div class="ttl"><b>${esc(tm.path.split("/").pop())}</b><div class="p">${esc(f ? f.lib.name + " / " + f.rel : tm.path)} · ${vers.length} versions</div></div>
+      <button class="btn sm" id="tmRestore" ${isNewest || many ? "disabled" : ""} title="${many ? "Select a single version to restore it" : ""}">${svg("i-undo")} Restore this version</button>
+      <button class="btn sm cta" id="tmOpen">Open note</button>
+    </div>
+    ${multiMode ? `<div class="selbar">${many
+      ? `<b>${sel.length} versions selected</b> · ${span} · by ${esc(who.join(", "))} — showing their changes combined <span style="flex:1"></span><button class="btn sm" id="tmClearSel">Select one</button>`
+      : `Showing the version with its changes marked in place · tick more boxes to combine several versions · <b>Shift-click</b> selects a range`}</div>` : ""}
+    <div class="tm-body">
+      <div class="tm-stage">
+        <div class="scrub" ${many ? 'style="visibility:hidden"' : ""}><span>${new Date(vers.at(-1).at).toLocaleDateString([], { month: "short", day: "numeric" })}</span>
+          <input type="range" id="tmScrub" min="0" max="${vers.length - 1}" value="${vers.length - 1 - tm.idx}"><span>${vers[0].local ? "Now (this device)" : "Now"}</span></div>
+        <div class="stack">
+          ${tm.idx < vers.length - 1 ? '<div class="ghost g1"></div>' : ""}${tm.idx < vers.length - 2 ? '<div class="ghost g2"></div>' : ""}
+          <div class="page">
+            <div class="page-head">${many
+              ? `<b>Changes in ${sel.length} versions</b> — ${span} · ${esc(who.join(", "))}`
+              : `${v.local ? '<span class="st local">●</span>' : ""}<b>${esc(v.msg)}</b> — ${esc(v.who)}, ${new Date(v.at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`}
+              <span style="flex:1"></span><span class="vc" style="font-family:ui-monospace,Menlo,monospace"><span style="color:var(--green)">+${plus}</span> <span style="color:var(--red)">−${minus}</span> ${many ? "combined" : base ? "vs previous" : "first version"}</span></div>
+            ${body}
+          </div>
+        </div>
+      </div>
+      <div class="tl"><div class="resizer" data-resize="tl" style="left:-3px;position:sticky;float:left;height:100%"></div>${timeline}</div>
+    </div>
+    <div class="tm-foot"><span class="kbd">↑</span> <span class="kbd">↓</span> step through versions · <span class="kbd">Shift</span>+<span class="kbd">↑↓</span> or tick boxes to combine versions · <span class="kbd">Esc</span> back to the workbench</div>`;
+  el.classList.add("open");
+  el.classList.toggle("multi", multiMode);
+  $("#tmClearSel")?.addEventListener("click", () => { selectOne(tm.lo); renderTimeMachine(); });
+  $("#tmBack").onclick = closeTimeMachine;
+  $("#tmOpen").onclick = () => toast("Opens the current note in the editor");
+  $("#tmRestore").onclick = () => toast(`Restores “${v.msg}” as a new change (nothing in history is lost); it's shared on the next sync`);
+  $("#tmScrub").oninput = (e) => { selectOne(vers.length - 1 - +e.target.value); renderTimeMachine(); };
+  el.querySelectorAll("[data-ver]").forEach((x) => x.onclick = (e) => {
+    const k = +x.dataset.ver;
+    const onBox = e.target.closest(".vcheck");
+    if (multiMode && onBox && !e.shiftKey) {
+      const inRange = k >= tm.lo && k <= tm.hi;
+      if (!inRange) { tm.lo = Math.min(tm.lo, k); tm.hi = Math.max(tm.hi, k); }   // add (fills the gap)
+      else if (tm.hi === tm.lo) { /* the only one — keep it */ }
+      else if (k === tm.lo) tm.lo++;                                              // uncheck newest end
+      else if (k === tm.hi) tm.hi--;                                              // uncheck oldest end
+      else toast("Changes combine over consecutive versions — uncheck from the top or bottom of the selection");
+      tm.idx = tm.lo; tm.anchor = k;
+    }
+    else if (multiMode && e.shiftKey) { tm.lo = Math.min(tm.anchor, k); tm.hi = Math.max(tm.anchor, k); tm.idx = tm.lo; }
+    else if (multiMode && (e.metaKey || e.ctrlKey)) {
+      // Changes only combine over a contiguous stretch of history, so
+      // adding extends the range and removing trims it from that end.
+      if (k < tm.lo || k > tm.hi) { tm.lo = Math.min(tm.lo, k); tm.hi = Math.max(tm.hi, k); }
+      else if (k === tm.lo && tm.hi > tm.lo) tm.lo++;
+      else if (k === tm.hi && tm.hi > tm.lo) tm.hi--;
+      tm.idx = tm.lo;
+    } else selectOne(k);
+    renderTimeMachine();
+  });
+  el.querySelectorAll("[data-mode]").forEach((x) => x.onclick = () => { tm.mode = x.dataset.mode; if (tm.mode === "read") selectOne(tm.lo); renderTimeMachine(); });
+}
+document.addEventListener("keydown", (e) => {
+  if (!tm.path) return;
+  const n = historyOf(tm.path).length;
+  if (e.key === "Escape") closeTimeMachine();
+  else if (e.key === "ArrowDown") { if (e.shiftKey && tm.mode === "diff") tm.hi = Math.min(n - 1, tm.hi + 1); else selectOne(Math.min(n - 1, tm.idx + 1)); renderTimeMachine(); e.preventDefault(); }
+  else if (e.key === "ArrowUp") { if (e.shiftKey && tm.mode === "diff") tm.lo = Math.max(0, tm.lo - 1), tm.idx = tm.lo; else selectOne(Math.max(0, tm.idx - 1)); renderTimeMachine(); e.preventDefault(); }
+});
+
+/* ────────────────────────────── Resizable panels ────────────────────────────── */
+// Each side panel has a drag handle on its inner edge. Widths persist
+// (in the plugin: app.saveLocalStorage, per device).
+const PANELS = {
+  tree: { v: "--tree-w", min: 220, max: 560, dir: 1 },
+  insp: { v: "--insp-w", min: 260, max: 600, dir: -1 },
+  tl: { v: "--tl-w", min: 240, max: 620, dir: -1 },
+};
+for (const [k, p] of Object.entries(PANELS)) {
+  const saved = localStorage.getItem(`covault-${k}-w`);
+  if (saved) document.documentElement.style.setProperty(p.v, saved + "px");
+}
+document.addEventListener("pointerdown", (e) => {
+  const h = e.target.closest("[data-resize]");
+  if (!h) return;
+  const p = PANELS[h.dataset.resize];
+  const start = e.clientX;
+  const startW = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(p.v));
+  h.classList.add("dragging"); document.body.classList.add("resizing");
+  const move = (ev) => {
+    const w = Math.min(p.max, Math.max(p.min, startW + p.dir * (ev.clientX - start)));
+    document.documentElement.style.setProperty(p.v, w + "px");
+  };
+  const up = () => {
+    window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
+    h.classList.remove("dragging"); document.body.classList.remove("resizing");
+    localStorage.setItem(`covault-${h.dataset.resize}-w`, parseFloat(getComputedStyle(document.documentElement).getPropertyValue(p.v)));
+  };
+  window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
+  e.preventDefault();
+});
+// Double-click a handle to reset that panel's width.
+document.addEventListener("dblclick", (e) => {
+  const h = e.target.closest("[data-resize]"); if (!h) return;
+  document.documentElement.style.removeProperty(PANELS[h.dataset.resize].v); localStorage.removeItem(`covault-${h.dataset.resize}-w`);
+});
+
+/* ────────────────────────────── Simulated sync ────────────────────────────── */
+function runSync(trigger) {
+  if (syncing) return;
+  syncing = true; libraries.forEach((l) => { l.syncing = true; });
+  renderAll();
+  setTimeout(() => {
+    syncing = false;
+    // Local edits get shared; the failing library is still failing.
+    const shared = [];
+    for (const lib of libraries) {
+      lib.syncing = false;
+      if (!lib.error) lib.last = Date.now();
+      for (const f of filesOf(lib)) if (f.status === "local" || f.status === "pending") { setStatus(lib, f.rel, "synced"); shared.push([lib.name, f.rel]); }
+      lib.state = lib.error ? "error" : agg(lib, lib.tree, "").conflict ? "conflict" : "idle";
+      if (lib.error) lib.attempts++;
+    }
+    if (libraries.some((l) => l.error)) syncLog.unshift({ at: Date.now(), lib: "team-ccp-kb", trigger, summary: "failed — couldn't reach GitHub (proxy refused the connection)", ms: 30000, status: "error", down: [], up: [] });
+    if (shared.length) syncLog.unshift({ at: Date.now(), lib: shared[0][0], trigger, summary: `saved ${shared.length} change(s), shared yours`, ms: 3900, status: "ok", down: [], up: shared.map(([, p]) => ["M", p]) });
+    openEntries.clear(); openEntries.add(0);
+    nextSyncAt = Date.now() + SYNC_INTERVAL;
+    renderAll(); toast("Sync finished");
+  }, 3000);
+}
+/** Retry one library. In the mock the retry succeeds, so the alert goes —
+ *  only after the library actually synced, never when the retry starts. */
+function retryLibrary(name) {
+  const lib = libraries.find((l) => l.name === name);
+  if (!lib || lib.syncing) return;
+  lib.syncing = true; renderAll();
+  setTimeout(() => {
+    lib.syncing = false; lib.error = null; lib.attempts = 0; lib.last = Date.now();
+    lib.state = agg(lib, lib.tree, "").conflict ? "conflict" : "idle";
+    syncLog.unshift({ at: Date.now(), lib: lib.name, trigger: "manual", summary: "synced after retry — got teammates' updates", ms: 2600, status: "ok", down: [["M", "SLA.md", "Nancy Liu"]], up: [] });
+    openEntries.clear(); openEntries.add(0);
+    renderAll(); toast(`${lib.name} is syncing again`);
+  }, 2500);
+}
+function setStatus(lib, relPath, status) {
+  const parts = relPath.split("/"); let node = lib.tree;
+  for (const p of parts.slice(0, -1)) node = node[p];
+  node[parts.at(-1)] = status;
+}
+$("#syncNow").onclick = () => runSync("manual");
+$("#q").oninput = (e) => { query = e.target.value.trim().toLowerCase(); renderTree(); };
+$("#collapseAll").onclick = () => { open.clear(); renderTree(); };
+// Filtering expands every match, so collapsing only means something unfiltered.
+$("#themeBtn").onclick = () => { const r = document.documentElement; r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark"; };
+
+function renderAll() { renderTop(); renderCountdown(); renderChips(); renderTree(); renderLibs(); renderFailures(); renderConflicts(); renderTabs(); renderInspector(); }
+// Deep links for review screenshots: ?tab=jobs&file=<path>
+const params = new URLSearchParams(location.search);
+if (params.get("tab")) tab = params.get("tab");
+if (params.get("file")) { selected = params.get("file"); revealInTree(selected); }
+renderAll();
+if (params.get("selftest") === "insp") {
+  localStorage.clear();
+  selected = "teams/team-oms-kb/退款流程.md"; renderInspector();
+  setTimeout(() => {
+    const h = document.querySelector('[data-resize="insp"]');
+    const x0 = h.getBoundingClientRect().left;
+    h.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: x0 + 2 }));
+    window.dispatchEvent(new PointerEvent("pointermove", { clientX: x0 - 100 }));
+    window.dispatchEvent(new PointerEvent("pointerup", {}));
+    const hit = document.elementFromPoint(x0 + 2, 400)?.dataset?.resize ?? "none";
+    setTimeout(() => {
+      document.title = `SELFTEST var=${getComputedStyle(document.documentElement).getPropertyValue("--insp-w").trim()} insp=${Math.round(document.getElementById("insp").getBoundingClientRect().width)} hit=${hit}`;
+      localStorage.clear();
+    }, 400);
+  }, 300);
+}
+if (params.get("selftest") === "resize") {
+  localStorage.clear();
+  const h = document.querySelector('[data-resize="tree"]');
+  const x0 = h.getBoundingClientRect().left;
+  h.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: x0 }));
+  window.dispatchEvent(new PointerEvent("pointermove", { clientX: x0 + 120 }));
+  window.dispatchEvent(new PointerEvent("pointerup", {}));
+  const w = getComputedStyle(document.documentElement).getPropertyValue("--tree-w").trim();
+  const col = document.querySelector(".body > .col").getBoundingClientRect().width;
+  document.title = `SELFTEST tree-w=${w} col=${col} saved=${localStorage.getItem("covault-tree-w")}`;
+  localStorage.clear();
+}
+if (params.get("selftest") === "tm") {
+  // Simulates ticking boxes: open history, What changed, tick v2 then v4, then untick v4.
+  openTimeMachine("teams/team-cookbook-kb/01_doc/02_domain/过敏原标注.md");
+  document.querySelector('[data-mode="diff"]').click();
+  const tick = (k) => document.querySelector(`[data-ver="${k}"] .vcheck`).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  const log = [];
+  tick(2); log.push(`${tm.lo}-${tm.hi}`);
+  tick(4); log.push(`${tm.lo}-${tm.hi}`);
+  tick(4); log.push(`${tm.lo}-${tm.hi}`);
+  document.querySelector('[data-ver="1"] .vm').dispatchEvent(new MouseEvent("click", { bubbles: true })); log.push(`${tm.lo}-${tm.hi}`);
+  document.title = "SELFTEST " + log.join(" ");
+}
+if (params.get("selftest") === "sync") {
+  const snap = (tag) => `${tag}: kpis=${document.querySelectorAll(".kpi").length} alert=${document.querySelectorAll("#failCard .alert").length}${document.querySelector("#failCard .alert.is-loading") ? "(loading)" : ""}`;
+  const log = [snap("before")];
+  runSync("manual"); log.push(snap("during"));
+  setTimeout(() => {
+    log.push(snap("after sync"));
+    retryLibrary("team-ccp-kb"); log.push(snap("retrying"));
+    setTimeout(() => { log.push(snap("after retry")); document.title = "SELFTEST " + log.join(" | "); }, 2700);
+  }, 3200);
+}
+if (params.get("editjob")) { tab = "jobs"; editingJob = +params.get("editjob"); renderTabs(); }
+if (params.get("midsync")) { syncing = true; libraries.forEach((l) => { l.syncing = true; }); renderAll(); }
+if (params.get("libs") === "open") { libsOpen = true; renderLibs(); }
+if (params.get("resolve")) openResolver(params.get("resolve"));
+if (params.get("tm")) {
+  const [lo, hi] = (params.get("range") || `${params.get("v") || 0}-${params.get("v") || 0}`).split("-").map(Number);
+  tm = { path: selected, idx: lo, mode: params.get("tm"), lo, hi, anchor: lo }; renderTimeMachine();
+}
+setInterval(() => {
+  renderCountdown();
+  document.querySelectorAll("[data-until]").forEach((el) => el.textContent = until(+el.dataset.until));
+}, 1000);
+</script>
+</body>
+</html>

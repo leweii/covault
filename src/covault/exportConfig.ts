@@ -11,12 +11,15 @@
  */
 import type { CovaultSettings } from "../settings";
 import type { CovaultManifest, ManifestRepo } from "./manifest";
+import { normalizeAttachmentFolder } from "./attachments";
+import { sanitizeDocStatuses } from "../workbench/docStatus";
 
 /** 2 dropped `settings.author`; 3 dropped `settings.baseOrg` (there is no
  *  stored organization any more — it is chosen per library); 4 dropped
- *  `settings.ask` (the built-in Ask agent is gone). An older file may still
- *  carry any of them; import ignores them. */
-export const EXPORT_VERSION = 4;
+ *  `settings.ask` (the built-in Ask agent is gone); 5 added
+ *  `settings.docStatuses`. An older file may still carry the dropped ones;
+ *  import ignores them. */
+export const EXPORT_VERSION = 5;
 
 export function buildConfigExport(settings: CovaultSettings, manifest: CovaultManifest): object {
   return {
@@ -29,6 +32,10 @@ export function buildConfigExport(settings: CovaultSettings, manifest: CovaultMa
       llm: { provider: settings.llm.provider, model: settings.llm.model },
       sync: { auto: settings.sync.auto, intervalMinutes: settings.sync.intervalMinutes },
       announceToAgents: settings.announceToAgents,
+      libraryAttachmentFolder: settings.libraryAttachmentFolder,
+      // The team's vocabulary for notes — the one thing here that is
+      // meant to be identical on every teammate's machine.
+      docStatuses: settings.docStatuses.map(({ id, label, color }) => ({ id, label, color })),
       personalKb: settings.mainRepo ? { url: settings.mainRepo.url, branch: settings.mainRepo.branch } : null,
     },
     personalKbScope: { scope: manifest.scope, include: manifest.include },
@@ -57,6 +64,8 @@ export type ImportKey =
   | "syncAuto"
   | "syncInterval"
   | "announceAgents"
+  | "libraryAttachmentFolder"
+  | "docStatuses"
   | "personalKbScope";
 
 /** One field the user is asked to confirm before it is written. */
@@ -66,7 +75,7 @@ export interface ImportChange {
   label: string;
   from: string;
   to: string;
-  /** The value to assign when confirmed. */
+  /** The value to assign when confirmed (structured values travel as JSON). */
   value: string | number | boolean;
 }
 
@@ -148,6 +157,28 @@ export function planConfigImport(
     typeof sync.intervalMinutes === "number" ? sync.intervalMinutes : null,
   );
   add("announceAgents", "Announce libraries to AI assistants", current.announceToAgents, asBool(settings.announceToAgents));
+  const attachmentFolder = asString(settings.libraryAttachmentFolder);
+  if (attachmentFolder !== null) {
+    try {
+      add("libraryAttachmentFolder", "Attachment folder in libraries", current.libraryAttachmentFolder, normalizeAttachmentFolder(attachmentFolder));
+    } catch {
+      skipped.push(`The attachment folder "${attachmentFolder}" — not a plain folder path inside a library.`);
+    }
+  }
+
+  const statuses = sanitizeDocStatuses(settings.docStatuses);
+  if (statuses) {
+    const theirs = JSON.stringify(statuses);
+    if (theirs !== JSON.stringify(current.docStatuses)) {
+      changes.push({
+        key: "docStatuses",
+        label: "Document statuses",
+        from: current.docStatuses.map((s) => s.label).join(", ") || "(none)",
+        to: statuses.map((s) => s.label).join(", "),
+        value: theirs,
+      });
+    }
+  }
 
   const scope = (file.personalKbScope ?? {}) as Record<string, unknown>;
   const wanted = asString(scope.scope);

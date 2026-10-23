@@ -17,6 +17,8 @@ import { MainKbModal } from "./MainKbModal";
 import { SharedItemsModal } from "./SharedItemsModal";
 import { ImportConfigModal } from "./ImportConfigModal";
 import { RecommendedPluginsModal } from "./RecommendedPluginsModal";
+import { DEFAULT_LIBRARY_ATTACHMENT_FOLDER, normalizeAttachmentFolder } from "../covault/attachments";
+import { isHexColor, statusIdFor } from "../workbench/docStatus";
 
 /**
  * Covault settings, declarative (Obsidian 1.13+): definitions feed the
@@ -55,6 +57,8 @@ export class CovaultSettingTab extends PluginSettingTab {
       this.githubGroup(),
       this.personalKbGroup(),
       this.librariesList(),
+      this.attachmentsGroup(),
+      this.docStatusesList(),
       this.aiGroup(),
       this.syncGroup(),
     ];
@@ -96,6 +100,8 @@ export class CovaultSettingTab extends PluginSettingTab {
         return s.customLlm.model;
       case "announceAgents":
         return s.announceToAgents;
+      case "libraryAttachmentFolder":
+        return s.libraryAttachmentFolder;
       case "syncAuto":
         return s.sync.auto;
       case "syncInterval":
@@ -133,6 +139,14 @@ export class CovaultSettingTab extends PluginSettingTab {
         break;
       case "customModel":
         s.customLlm.model = String(value).trim();
+        break;
+      case "libraryAttachmentFolder":
+        try {
+          s.libraryAttachmentFolder = normalizeAttachmentFolder(String(value));
+        } catch (e) {
+          new Notice(`Covault: ${(e as Error).message}`);
+          return;
+        }
         break;
       case "announceAgents":
         // Owns its own persistence: writes/removes the skill files too.
@@ -418,6 +432,73 @@ export class CovaultSettingTab extends PluginSettingTab {
   }
 
   // ── Shared libraries ─────────────────────────────────────────────
+  /**
+   * The statuses people can give a note (Draft, Approved…). Each row is a
+   * colour swatch and an editable name; the label is what gets written
+   * into notes, so renaming one doesn't relabel notes already carrying
+   * the old name — they show as an unknown status until re-set.
+   */
+  private docStatusesList(): SettingDefinitionList {
+    const statuses = this.plugin.settings.docStatuses;
+    const save = () => this.plugin.saveSettings();
+    return {
+      type: "list",
+      heading: "Document statuses",
+      emptyState: "No statuses yet — add one to label notes as draft, in review, approved…",
+      items: statuses.map((status, index) => ({
+        name: status.label,
+        desc: "Shown on notes whose status property is this name.",
+        render: (setting: Setting) => {
+          setting.addColorPicker((picker) =>
+            picker.setValue(status.color).onChange(async (value) => {
+              if (!isHexColor(value)) return;
+              statuses[index]!.color = value.toLowerCase();
+              await save();
+            }),
+          );
+          setting.addText((text) =>
+            text
+              .setPlaceholder("Status name")
+              .setValue(status.label)
+              .onChange(async (value) => {
+                const label = value.trim();
+                if (!label) return;
+                statuses[index]!.label = label;
+                await save();
+              }),
+          );
+        },
+      })),
+      onDelete: (index: number) => {
+        statuses.splice(index, 1);
+        void save().then(() => this.update());
+      },
+      addItem: {
+        name: "Add a status…",
+        action: () => {
+          statuses.push({ id: statusIdFor("New status", statuses), label: "New status", color: "#8a8a8a" });
+          void save().then(() => this.update());
+        },
+      },
+    };
+  }
+
+  private attachmentsGroup(): SettingDefinitionGroup {
+    return {
+      type: "group",
+      heading: "Attachments",
+      items: [
+        {
+          name: "Attachment folder in libraries",
+          desc:
+            "Files pasted or dropped into a library's notes are saved in this folder, relative to the library's root — so they sync with the library. Leave empty to use Obsidian's own attachment setting.",
+          aliases: ["attachments", "images", "paste", "pasted image", "folder", "relative path"],
+          control: { type: "text", key: "libraryAttachmentFolder", placeholder: DEFAULT_LIBRARY_ATTACHMENT_FOLDER },
+        },
+      ],
+    };
+  }
+
   private librariesList(): SettingDefinitionList {
     const repos = this.plugin.libraryManifest.load().repos;
     return {

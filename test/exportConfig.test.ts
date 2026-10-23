@@ -29,7 +29,7 @@ const manifest: CovaultManifest = {
 describe("buildConfigExport", () => {
   it("carries every setting a teammate needs to reproduce the setup", () => {
     const out = JSON.parse(JSON.stringify(buildConfigExport(settings(), manifest)));
-    expect(out.covaultExport).toBe(4);
+    expect(out.covaultExport).toBe(5);
     // No organization travels with a setup: it is picked per library.
     expect(out.settings).not.toHaveProperty("baseOrg");
     expect(out.settings.llm).toEqual({ provider: "anthropic", model: "claude-sonnet-5" });
@@ -62,7 +62,7 @@ describe("the export leaves personal identity out", () => {
 describe("parseConfigImport", () => {
   it("accepts a current export", () => {
     const text = JSON.stringify(buildConfigExport(settings(), manifest));
-    expect(parseConfigImport(text).covaultExport).toBe(4);
+    expect(parseConfigImport(text).covaultExport).toBe(5);
   });
 
   it("rejects text that isn't JSON", () => {
@@ -130,11 +130,36 @@ describe("planConfigImport", () => {
     expect(plan.skipped.join(" ")).toContain("individually shared notes");
   });
 
+  it("carries the library attachment folder, and refuses one that escapes the library", () => {
+    const raw = file();
+    raw.settings.libraryAttachmentFolder = "assets/img";
+    expect(planConfigImport(blank(), empty, raw).changes.find((c) => c.key === "libraryAttachmentFolder")).toMatchObject({
+      from: "attachments",
+      to: "assets/img",
+    });
+    raw.settings.libraryAttachmentFolder = "../../etc";
+    const bad = planConfigImport(blank(), empty, raw);
+    expect(bad.changes.find((c) => c.key === "libraryAttachmentFolder")).toBeUndefined();
+    expect(bad.skipped.join(" ")).toContain("attachment folder");
+  });
+
   it("ignores the Ask settings an older (v3) export still carries", () => {
     const raw = { ...file(), covaultExport: 3 };
     raw.settings.ask = { requireApproval: false, mcpServers: "{}", cliHints: "x" };
     const plan = planConfigImport(blank(), empty, raw);
     expect(plan.changes.some((c) => (c.key as string).startsWith("ask"))).toBe(false);
+  });
+
+  it("carries the team's document statuses, and only lists a change when they differ", () => {
+    const raw = file();
+    expect(raw.settings.docStatuses.map((s: { id: string }) => s.id)).toEqual(["draft", "review", "approved", "outdated"]);
+    expect(planConfigImport(blank(), empty, raw).changes.find((c) => c.key === "docStatuses")).toBeUndefined();
+    raw.settings.docStatuses = [{ id: "wip", label: "WIP", color: "#123456" }];
+    const change = planConfigImport(blank(), empty, raw).changes.find((c) => c.key === "docStatuses");
+    expect(change).toMatchObject({ from: "Draft, In review, Approved, Outdated", to: "WIP" });
+    expect(JSON.parse(String(change!.value))).toEqual([{ id: "wip", label: "WIP", color: "#123456" }]);
+    raw.settings.docStatuses = "garbage";
+    expect(planConfigImport(blank(), empty, raw).changes.find((c) => c.key === "docStatuses")).toBeUndefined();
   });
 
   it("survives a file with junk where the sections should be", () => {

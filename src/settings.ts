@@ -35,6 +35,27 @@ export interface SharedRepoSetting {
   branch: string;
 }
 
+/**
+ * A document status people set by hand — "Draft", "Approved"… — as opposed
+ * to the sync status Covault works out. Written into a note's frontmatter
+ * (`status`, plus `status_by` / `status_at`), so Obsidian's own properties
+ * panel shows and edits the same value, and it travels with the note.
+ */
+export interface DocStatusDef {
+  /** Stable key; the label is what's written into notes and shown. */
+  id: string;
+  label: string;
+  /** #rrggbb */
+  color: string;
+}
+
+export const DEFAULT_DOC_STATUSES: DocStatusDef[] = [
+  { id: "draft", label: "Draft", color: "#8a8a8a" },
+  { id: "review", label: "In review", color: "#e0ac00" },
+  { id: "approved", label: "Approved", color: "#44cf6e" },
+  { id: "outdated", label: "Outdated", color: "#fb464c" },
+];
+
 export interface CovaultSettings {
   authMethod: AuthMethod;
   /** PAT fallback mode (secret). */
@@ -76,6 +97,15 @@ export interface CovaultSettings {
    *  assistants working in this vault discover the libraries on their own. */
   announceToAgents: boolean;
 
+  /** Folder, relative to a library's root, where attachments pasted or
+   *  dropped into that library's notes are saved — so they sync with the
+   *  library. "" = leave it to Obsidian's own attachment setting. */
+  libraryAttachmentFolder: string;
+
+  /** The document statuses on offer in the workbench. A team shares one
+   *  set through configuration export, like the rest of a setup. */
+  docStatuses: DocStatusDef[];
+
   /** Add network-level detail (request sizes, timings) to the always-on
    *  operations log. Off by default: only useful while chasing a bug. */
   debugMode: boolean;
@@ -96,6 +126,8 @@ export const DEFAULT_SETTINGS: CovaultSettings = {
   repos: [],
   author: { name: "", email: "" },
   announceToAgents: true,
+  libraryAttachmentFolder: "attachments",
+  docStatuses: DEFAULT_DOC_STATUSES,
   debugMode: false,
   mainRepo: null,
 };
